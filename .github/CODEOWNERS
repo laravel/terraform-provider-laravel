@@ -1,0 +1,18 @@
+# Code owners for the Laravel Cloud Terraform provider.
+#
+# Listed owners are requested for review automatically on every pull request
+# touching a matching path. The last matching pattern wins.
+#
+# See https://docs.github.com/articles/about-code-owners
+
+# Default owner for everything in the repository.
+*                       @laravel/cloud
+
+# Release plumbing: signing, the version gate, and the published artifacts.
+/.github/workflows/     @laravel/cloud
+/.goreleaser.yml        @laravel/cloud
+/terraform-registry-manifest.json @laravel/cloud
+
+# Generated provider documentation — regenerate with `make generate` rather
+# than editing by hand.
+/docs/                  @laravel/cloud

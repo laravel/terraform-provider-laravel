@@ -1,0 +1,8 @@
+# Local secrets -- never commit. run.sh sources this if present.
+.env.local
+
+# Terraform state / lock artifacts
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl

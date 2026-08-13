@@ -1,0 +1,36 @@
+# Binary — GNUmakefile builds ./terraform-provider-laravel (~25MB)
+terraform-provider-laravel
+terraform-provider-laravelcloud
+
+# GoReleaser
+dist/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform.lock.hcl
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Keys
+*.asc
+*.gpg
+
+# Local secrets
+.env
+.env.local
+
+# Local agent / assistant state
+.claude/
+.remember/
+docs/superpowers/
+
+# OS
+.DS_Store
+Thumbs.db

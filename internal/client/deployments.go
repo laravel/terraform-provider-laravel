@@ -1,0 +1,26 @@
+package client
+
+import (
+	"context"
+	"fmt"
+)
+
+func (c *Client) ListDeployments(ctx context.Context, environmentID string) ([]DeploymentData, error) {
+	return listAll[DeploymentData](ctx, c, fmt.Sprintf("/environments/%s/deployments", environmentID))
+}
+
+func (c *Client) GetDeployment(ctx context.Context, id string) (*DeploymentData, error) {
+	var doc Document[DeploymentData]
+	if err := c.do(ctx, "GET", fmt.Sprintf("/deployments/%s", id), nil, &doc); err != nil {
+		return nil, err
+	}
+	return &doc.Data, nil
+}
+
+func (c *Client) CreateDeployment(ctx context.Context, environmentID string) (*DeploymentData, error) {
+	var doc Document[DeploymentData]
+	if err := c.do(ctx, "POST", fmt.Sprintf("/environments/%s/deployments", environmentID), nil, &doc); err != nil {
+		return nil, err
+	}
+	return &doc.Data, nil
+}

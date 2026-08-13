@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  validate-version:
+    name: Validate Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The tag name is untrusted input (anyone able to push a tag controls
+      # it), so it is passed through the environment rather than interpolated
+      # into the script body.
+      - name: Validate semver format
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # The official semver.org grammar, transcribed to POSIX ERE. A looser
+          # "[0-9]+\.[0-9]+\.[0-9]+" would accept leading zeros (v01.2.3) and
+          # empty prerelease identifiers (v1.0.0-..), which the Terraform
+          # Registry rejects downstream. Matches the leading "v" explicitly so
+          # the check does not lean on the workflow's tag filter.
+          NUM='(0|[1-9][0-9]*)'
+          ID='(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)'
+          SEMVER="^v${NUM}\.${NUM}\.${NUM}(-${ID}(\.${ID})*)?(\+[0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*)?$"
+
+          if ! printf '%s' "$TAG" | grep -qE "$SEMVER"; then
+            echo "ERROR: tag '$TAG' is not valid semver; expected vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          echo "Tag $TAG is valid semver"
+
+      - name: Check version not decremented
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Compare MAJOR.MINOR.PATCH only. `sort -V` does not implement semver
+          # precedence for prerelease suffixes (it orders 1.0.0 before
+          # 1.0.0-rc1, the reverse of the spec), so comparing full strings
+          # would reject the normal v1.0.0-rc1 -> v1.0.0 promotion. Core-only
+          # comparison still catches the case this guards: a major/minor/patch
+          # going backwards.
+          core() { printf '%s' "${1%%[-+]*}"; }
+
+          VER=$(core "${TAG#v}")
+          PREV=$(git tag -l 'v*' \
+                 | grep -vFx "$TAG" \
+                 | sed 's/^v//' \
+                 | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' \
+                 | while read -r t; do core "$t"; echo; done \
+                 | sort -V \
+                 | tail -1)
+
+          if [ -z "$PREV" ]; then
+            echo "No previous version tag; $TAG is the first release."
+            exit 0
+          fi
+
+          LOWEST=$(printf '%s\n%s\n' "$VER" "$PREV" | sort -V | head -1)
+          if [ "$VER" != "$PREV" ] && [ "$VER" = "$LOWEST" ]; then
+            echo "ERROR: $TAG ($VER) is lower than the latest existing tag v$PREV"
+            exit 1
+          fi
+          echo "Version check passed: v$PREV -> $TAG"
+
+  release:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    needs: validate-version
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: "go.mod"
+          cache: true
+
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@v7
+        id: import_gpg
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          # Pinned to the v2 line: `latest` would silently jump to v3 and
+          # hard-fail on options v3 removes.
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}

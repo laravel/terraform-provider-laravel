@@ -1,0 +1,15 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/laravel/.github/blob/main/SECURITY.md
+    about: >-
+      Do not open a public issue. Report security vulnerabilities privately
+      following the Laravel security policy.
+  - name: Laravel Cloud support
+    url: https://cloud.laravel.com/docs
+    about: >-
+      Questions about Laravel Cloud itself, rather than this Terraform
+      provider.
+  - name: Support question
+    url: https://laravel.com/docs/contributions#support-questions
+    about: Usage questions belong in the Laravel support channels.

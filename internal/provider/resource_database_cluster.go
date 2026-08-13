@@ -1,0 +1,285 @@
+package provider
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/laravel/terraform-provider-laravel/internal/client"
+)
+
+var (
+	_ resource.Resource                = &DatabaseClusterResource{}
+	_ resource.ResourceWithImportState = &DatabaseClusterResource{}
+)
+
+type DatabaseClusterResource struct {
+	client *client.Client
+}
+
+type DatabaseClusterResourceModel struct {
+	ID         types.String `tfsdk:"id"`
+	Name       types.String `tfsdk:"name"`
+	Type       types.String `tfsdk:"type"`
+	Region     types.String `tfsdk:"region"`
+	Status     types.String `tfsdk:"status"`
+	ClusterID  types.Int64  `tfsdk:"cluster_id"`
+	Config     types.String `tfsdk:"config"`
+	Connection types.Object `tfsdk:"connection_details"`
+	CreatedAt  types.String `tfsdk:"created_at"`
+}
+
+// databaseConnectionAttrTypes describes the connection_details object shared by
+// the database cluster and database restore resources. It is modeled as a
+// types.Object (not a Go pointer-struct) so the framework can represent the
+// value as unknown during the create plan — a pointer-struct cannot hold
+// unknown, which otherwise fails Create's Plan.Get.
+var databaseConnectionAttrTypes = map[string]attr.Type{
+	"hostname": types.StringType,
+	"port":     types.Int64Type,
+	"protocol": types.StringType,
+	"driver":   types.StringType,
+	"username": types.StringType,
+	"password": types.StringType,
+}
+
+func mapDatabaseConnection(c *client.DatabaseConnection) types.Object {
+	if c == nil {
+		return types.ObjectNull(databaseConnectionAttrTypes)
+	}
+	obj, _ := types.ObjectValue(databaseConnectionAttrTypes, map[string]attr.Value{
+		"hostname": types.StringValue(c.Hostname),
+		"port":     types.Int64Value(int64(c.Port)),
+		"protocol": types.StringValue(c.Protocol),
+		"driver":   types.StringValue(c.Driver),
+		"username": types.StringValue(c.Username),
+		"password": types.StringValue(c.Password),
+	})
+	return obj
+}
+
+func NewDatabaseClusterResource() resource.Resource {
+	return &DatabaseClusterResource{}
+}
+
+func (r *DatabaseClusterResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_cloud_database_cluster"
+}
+
+func (r *DatabaseClusterResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "Manages a Laravel Cloud database cluster.",
+		Attributes: map[string]schema.Attribute{
+			"id": schema.StringAttribute{
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"name": schema.StringAttribute{
+				Required:    true,
+				Description: "Cluster name (3-40 characters, lowercase alphanumeric).",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"type": schema.StringAttribute{
+				Required:    true,
+				Description: "Database type (e.g. laravel_mysql_84, aws_rds_mysql_8, neon_serverless_postgres_18, etc.).",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"region": schema.StringAttribute{
+				Required:    true,
+				Description: "Cloud region.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"status": schema.StringAttribute{
+				Computed:    true,
+				Description: "Cluster status.",
+			},
+			"cluster_id": schema.Int64Attribute{
+				Optional:    true,
+				Description: "Dedicated cluster ID.",
+			},
+			"config": schema.StringAttribute{
+				Required:    true,
+				Description: "JSON-encoded configuration specific to the database type (required by the API).",
+			},
+			"connection_details": schema.SingleNestedAttribute{
+				Computed:    true,
+				Description: "Read-only connection details for the cluster.",
+				Attributes: map[string]schema.Attribute{
+					"hostname": schema.StringAttribute{Computed: true},
+					"port":     schema.Int64Attribute{Computed: true},
+					"protocol": schema.StringAttribute{Computed: true},
+					"driver":   schema.StringAttribute{Computed: true},
+					"username": schema.StringAttribute{Computed: true},
+					"password": schema.StringAttribute{Computed: true, Sensitive: true},
+				},
+			},
+			"created_at": schema.StringAttribute{
+				Computed: true,
+			},
+		},
+	}
+}
+
+func (r *DatabaseClusterResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	if req.ProviderData == nil {
+		return
+	}
+	c, ok := req.ProviderData.(*client.Client)
+	if !ok {
+		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		return
+	}
+	r.client = c
+}
+
+func (r *DatabaseClusterResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan DatabaseClusterResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	createReq := client.CreateDatabaseClusterRequest{
+		Type:   plan.Type.ValueString(),
+		Name:   plan.Name.ValueString(),
+		Region: plan.Region.ValueString(),
+	}
+	if !plan.ClusterID.IsNull() {
+		v := int(plan.ClusterID.ValueInt64())
+		createReq.ClusterID = &v
+	}
+	if !plan.Config.IsNull() {
+		var cfg map[string]any
+		if err := json.Unmarshal([]byte(plan.Config.ValueString()), &cfg); err != nil {
+			resp.Diagnostics.AddError("Invalid config JSON", err.Error())
+			return
+		}
+		createReq.Config = cfg
+	}
+
+	cluster, err := r.client.CreateDatabaseCluster(ctx, createReq)
+	if err != nil {
+		resp.Diagnostics.AddError("Error creating database cluster", err.Error())
+		return
+	}
+
+	plan.ID = types.StringValue(cluster.ID)
+	plan.Status = types.StringValue(cluster.Attributes.Status)
+	plan.Connection = mapDatabaseConnection(cluster.Attributes.Connection)
+	plan.CreatedAt = types.StringPointerValue(cluster.Attributes.CreatedAt)
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *DatabaseClusterResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var state DatabaseClusterResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	cluster, err := r.client.GetDatabaseCluster(ctx, state.ID.ValueString())
+	if err != nil {
+		if client.IsNotFound(err) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
+		resp.Diagnostics.AddError("Error reading database cluster", err.Error())
+		return
+	}
+
+	state.Name = types.StringValue(cluster.Attributes.Name)
+	state.Type = types.StringValue(cluster.Attributes.DBType)
+	state.Region = types.StringValue(cluster.Attributes.Region)
+	state.Status = types.StringValue(cluster.Attributes.Status)
+	state.Connection = mapDatabaseConnection(cluster.Attributes.Connection)
+	state.CreatedAt = types.StringPointerValue(cluster.Attributes.CreatedAt)
+
+	if cluster.Attributes.Config != nil {
+		cfgBytes, _ := json.Marshal(cluster.Attributes.Config)
+		state.Config = types.StringValue(string(cfgBytes))
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+func (r *DatabaseClusterResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan DatabaseClusterResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var state DatabaseClusterResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	updateReq := client.UpdateDatabaseClusterRequest{}
+	if !plan.Config.IsNull() {
+		var cfg map[string]any
+		if err := json.Unmarshal([]byte(plan.Config.ValueString()), &cfg); err != nil {
+			resp.Diagnostics.AddError("Invalid config JSON", err.Error())
+			return
+		}
+		updateReq.Config = cfg
+	}
+
+	cluster, err := r.client.UpdateDatabaseCluster(ctx, state.ID.ValueString(), updateReq)
+	if err != nil {
+		resp.Diagnostics.AddError("Error updating database cluster", err.Error())
+		return
+	}
+
+	plan.ID = state.ID
+	plan.Status = types.StringValue(cluster.Attributes.Status)
+	plan.Connection = mapDatabaseConnection(cluster.Attributes.Connection)
+	plan.CreatedAt = types.StringPointerValue(cluster.Attributes.CreatedAt)
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *DatabaseClusterResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state DatabaseClusterResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// The cluster may still be processing schema deletions. Retry for up
+	// to 5 minutes if the API says schemas are still attached or an
+	// update operation is in progress.
+	id := state.ID.ValueString()
+	err := client.RetryOnConflict(ctx, 30, 10*time.Second, func() error {
+		return r.client.DeleteDatabaseCluster(ctx, id)
+	}, func(err error) bool {
+		msg := err.Error()
+		return strings.Contains(msg, "schemas attached") ||
+			strings.Contains(msg, "update operation is already in progress")
+	})
+	if err != nil {
+		resp.Diagnostics.AddError("Error deleting database cluster", err.Error())
+	}
+}
+
+func (r *DatabaseClusterResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
