@@ -2,7 +2,7 @@
 
 Manage [Laravel Cloud](https://cloud.laravel.com) infrastructure as code.
 
-> **Status**: Early development. The Laravel Cloud API is in Early Access and
+> **BETA RELEASE**: The Terraform Provider for the Laravel Cloud API is in Early Access and
 > subject to change, so provider resources and attributes may change between
 > releases.
 
