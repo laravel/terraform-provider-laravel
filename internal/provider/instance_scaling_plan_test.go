@@ -7,6 +7,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 )
@@ -93,4 +94,46 @@ resource "laravel_cloud_instance" "scaled" {
   %[2]s
 }
 `, baseURL, scaling)
+}
+
+// TestInstanceSwitchToAutoScalingPlan covers moving an existing instance from
+// custom to automatic scaling.
+//
+// min_replicas and max_replicas are Optional+Computed with UseStateForUnknown,
+// so removing them from config does not plan a change -- the prior values carry
+// forward. That left an instance with scaling_type "auto" and replica counts
+// still set: the exact combination the validator rejects and the API 422s, with
+// no way out, because removing them from config did nothing and setting them
+// failed validation. The plan must clear them instead.
+func TestInstanceSwitchToAutoScalingPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+
+	const addr = "laravel_cloud_instance.scaled"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: instanceScalingConfig(baseURL,
+					"scaling_type = \"custom\"\n  min_replicas = 2\n  max_replicas = 5"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("min_replicas"), knownvalue.Int64Exact(2)),
+				},
+			},
+			{
+				Config: instanceScalingConfig(baseURL, `scaling_type = "auto"`),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("scaling_type"), knownvalue.StringExact("auto")),
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("min_replicas"), knownvalue.Null()),
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("max_replicas"), knownvalue.Null()),
+				},
+			},
+			{
+				Config: instanceScalingConfig(baseURL, `scaling_type = "auto"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+		},
+	})
 }

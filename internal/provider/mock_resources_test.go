@@ -37,6 +37,21 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			collectionPattern: "/databases/clusters", itemPattern: "/databases/clusters/{id}",
 			patch: true, del: true,
 			seed: seedCluster,
+			// The platform creates a database inside every new cluster. It is
+			// not managed by Terraform, and it is what makes a cluster
+			// impossible to delete without sweeping its databases first.
+			afterCreate: func(f *fakeCloud, clusterID string) {
+				f.seq++
+				id := fmt.Sprintf("db-schema-%d", f.seq)
+				if f.objects["database"] == nil {
+					f.objects["database"] = map[string]map[string]any{}
+				}
+				f.objects["database"][id] = map[string]any{
+					"name": autoCreatedDatabaseName, "status": "available",
+				}
+				key := "database:" + clusterID
+				f.children[key] = append(f.children[key], id)
+			},
 		},
 		{
 			typeName: "storage_bucket", idPrefix: "bucket",
@@ -70,6 +85,18 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 				// Echo the body; managed-queue / status pointer fields are left
 				// absent so they decode to null (not zero values).
 				return cloneMap(body)
+			},
+			// The API does not report replica counts for an automatically
+			// scaled instance -- they are rejected on the way in and absent on
+			// the way out.
+			patchFn: func(attrs, patch map[string]any) {
+				for k, v := range patch {
+					attrs[k] = v
+				}
+				if attrs["scaling_type"] == "auto" {
+					delete(attrs, "min_replicas")
+					delete(attrs, "max_replicas")
+				}
 			},
 		},
 		{
@@ -281,6 +308,12 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 // connection object (with the cluster-only `driver` field) and a stable status.
 // The `config` field is echoed from the request as a map so the provider's
 // Read, which re-marshals it to a JSON string, round-trips cleanly.
+// autoCreatedDatabaseName is the database the platform creates alongside every
+// new cluster. It is what makes a cluster impossible to delete without first
+// removing its databases -- and it is not managed by Terraform, which is why
+// sweeping databases on destroy has to be opt-in.
+const autoCreatedDatabaseName = "production"
+
 func seedCluster(body map[string]any, _ string) map[string]any {
 	a := cloneMap(body)
 	a["status"] = "available"

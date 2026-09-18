@@ -20,6 +20,7 @@ var (
 	_ resource.Resource                   = &InstanceResource{}
 	_ resource.ResourceWithImportState    = &InstanceResource{}
 	_ resource.ResourceWithValidateConfig = &InstanceResource{}
+	_ resource.ResourceWithModifyPlan     = &InstanceResource{}
 )
 
 type InstanceResource struct {
@@ -231,15 +232,21 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		v := int(plan.ScalingMemoryThresholdPercentage.ValueInt64())
 		createReq.ScalingMemoryThresholdPercentage = &v
 	}
-	if !plan.SleepWithApp.IsNull() {
+	// These three are Optional+Computed with no default, so a value the user
+	// did not set arrives UNKNOWN, not null. IsNull() alone is false for an
+	// unknown value and ValueBool()/ValueInt64() then yield the zero value, so
+	// the request carried sleep_with_app=false, visibility_timeout=0 and
+	// shutdown_timeout=0 on every create that left them out -- overwriting
+	// whatever the platform would otherwise have chosen.
+	if !plan.SleepWithApp.IsNull() && !plan.SleepWithApp.IsUnknown() {
 		v := plan.SleepWithApp.ValueBool()
 		createReq.SleepWithApp = &v
 	}
-	if !plan.VisibilityTimeout.IsNull() {
+	if !plan.VisibilityTimeout.IsNull() && !plan.VisibilityTimeout.IsUnknown() {
 		v := int(plan.VisibilityTimeout.ValueInt64())
 		createReq.VisibilityTimeout = &v
 	}
-	if !plan.ShutdownTimeout.IsNull() {
+	if !plan.ShutdownTimeout.IsNull() && !plan.ShutdownTimeout.IsUnknown() {
 		v := int(plan.ShutdownTimeout.ValueInt64())
 		createReq.ShutdownTimeout = &v
 	}
@@ -301,11 +308,15 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		v := plan.ScalingType.ValueString()
 		updateReq.ScalingType = &v
 	}
-	if !plan.MinReplicas.Equal(state.MinReplicas) {
+	// A null planned replica count means "not applicable" -- the instance is
+	// scaling automatically, and the API rejects the field outright. Sending
+	// ValueInt64() of a null would post 0, which is neither what the plan says
+	// nor a value the API accepts.
+	if !plan.MinReplicas.Equal(state.MinReplicas) && !plan.MinReplicas.IsNull() {
 		v := int(plan.MinReplicas.ValueInt64())
 		updateReq.MinReplicas = &v
 	}
-	if !plan.MaxReplicas.Equal(state.MaxReplicas) {
+	if !plan.MaxReplicas.Equal(state.MaxReplicas) && !plan.MaxReplicas.IsNull() {
 		v := int(plan.MaxReplicas.ValueInt64())
 		updateReq.MaxReplicas = &v
 	}
@@ -379,8 +390,8 @@ func mapInstanceToState(inst *client.InstanceData, state *InstanceResourceModel)
 	state.Type = types.StringValue(inst.Attributes.InstanceType)
 	state.Size = types.StringValue(inst.Attributes.Size)
 	state.ScalingType = types.StringValue(inst.Attributes.ScalingType)
-	state.MinReplicas = types.Int64Value(int64(inst.Attributes.MinReplicas))
-	state.MaxReplicas = types.Int64Value(int64(inst.Attributes.MaxReplicas))
+	state.MinReplicas = types.Int64PointerValue(inst.Attributes.MinReplicas)
+	state.MaxReplicas = types.Int64PointerValue(inst.Attributes.MaxReplicas)
 	state.UsesScheduler = types.BoolValue(inst.Attributes.UsesScheduler)
 	state.CreatedAt = types.StringPointerValue(inst.Attributes.CreatedAt)
 	if inst.Attributes.ScalingCPUThresholdPercentage != nil {
@@ -475,5 +486,46 @@ func (r *InstanceResource) ValidateConfig(ctx context.Context, req resource.Vali
 			"min_replicas is required for custom scaling",
 			"scaling_type is \"custom\", which requires min_replicas to be set.",
 		)
+	}
+}
+
+// ModifyPlan clears the replica counts when the instance scales automatically.
+//
+// min_replicas and max_replicas are Optional+Computed with UseStateForUnknown,
+// so removing them from config does not plan a change -- the prior values are
+// carried forward. Switching an existing instance from "custom" to "auto" would
+// therefore leave the old counts in state and on the server, which is exactly
+// the combination ValidateConfig declares impossible and the API rejects, with
+// no way out: removing them from config does nothing and setting them fails
+// validation.
+//
+// Planning them as null instead makes the transition mean what it says.
+func (r *InstanceResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	// Nothing to do when the resource is being destroyed.
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan InstanceResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if plan.ScalingType.IsUnknown() || plan.ScalingType.ValueString() != "auto" {
+		return
+	}
+
+	changed := false
+	if !plan.MinReplicas.IsNull() {
+		plan.MinReplicas = types.Int64Null()
+		changed = true
+	}
+	if !plan.MaxReplicas.IsNull() {
+		plan.MaxReplicas = types.Int64Null()
+		changed = true
+	}
+	if changed {
+		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 	}
 }

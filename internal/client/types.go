@@ -187,12 +187,14 @@ type InstanceData struct {
 }
 
 type InstanceAttributes struct {
-	Name                             string `json:"name"`
-	InstanceType                     string `json:"type"`
-	Size                             string `json:"size"`
-	ScalingType                      string `json:"scaling_type"`
-	MinReplicas                      int    `json:"min_replicas"`
-	MaxReplicas                      int    `json:"max_replicas"`
+	Name         string `json:"name"`
+	InstanceType string `json:"type"`
+	Size         string `json:"size"`
+	ScalingType  string `json:"scaling_type"`
+	// Nullable: an automatically scaled instance has no replica counts, and a
+	// plain int would report 0 where the value is absent.
+	MinReplicas                      *int64 `json:"min_replicas"`
+	MaxReplicas                      *int64 `json:"max_replicas"`
 	UsesScheduler                    bool   `json:"uses_scheduler"`
 	ScalingCPUThresholdPercentage    *int   `json:"scaling_cpu_threshold_percentage"`
 	ScalingMemoryThresholdPercentage *int   `json:"scaling_memory_threshold_percentage"`

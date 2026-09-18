@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -123,6 +124,8 @@ provider "laravel" {
 resource "laravel_cloud_database_cluster" "db" {
   name   = "primary"
   region = "us-east-2"
+  # A test fixture opts in so the auto-created database does not block cleanup.
+  force_destroy = true
   %[2]s
   config = jsonencode({ size = "mysql-flex-1gb" })
 }
@@ -137,10 +140,11 @@ provider "laravel" {
 }
 
 resource "laravel_cloud_database_cluster" "db" {
-  name   = "primary"
-  region = "us-east-2"
-  type   = "laravel_mysql_84"
-  config = jsonencode({ size = "mysql-flex-1gb" })
+  name          = "primary"
+  region        = "us-east-2"
+  type          = "laravel_mysql_84"
+  force_destroy = true
+  config        = jsonencode({ size = "mysql-flex-1gb" })
 }
 
 resource "laravel_cloud_database_snapshot" "snap" {
@@ -184,4 +188,84 @@ func TestDatabaseClusterConfigDefaultsPlan(t *testing.T) {
 			},
 		},
 	})
+}
+
+// TestDatabaseClusterForceDestroyPlan pins the guard on the most destructive
+// path in the provider.
+//
+// The API refuses to delete a cluster while any database is attached, and a
+// cluster always carries at least the one created with it, so a destroy cannot
+// succeed without removing them. Removing them implicitly would be worse than
+// the failure it replaces: the cluster may hold databases created outside
+// Terraform, this resource's state does not track them, and
+// lifecycle.prevent_destroy could not protect them because they are not
+// resources in state. So the sweep is opt-in.
+//
+// Without force_destroy, destroy must fail and name what is in the way.
+// TestDatabaseClusterForceDestroyPlan pins the guard on the most destructive
+// path in the provider.
+//
+// The API refuses to delete a cluster while any database is attached, and the
+// platform creates one inside every new cluster, so a destroy cannot succeed
+// without removing them. Removing them implicitly would be worse than the
+// failure it replaces: a cluster may hold databases created outside Terraform,
+// this resource's state does not track them, and lifecycle.prevent_destroy
+// could not protect them because they are not resources in state. So the sweep
+// is opt-in, and without it the destroy must fail and name what is in the way.
+func TestDatabaseClusterForceDestroyPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: databaseClusterNoForceDestroyConfig(baseURL),
+			},
+			{
+				Config:      databaseClusterNoForceDestroyConfig(baseURL),
+				Destroy:     true,
+				ExpectError: regexp.MustCompile(`still contains databases`),
+			},
+			// Opting in lets the destroy proceed, and leaves the harness able to
+			// clean up after itself.
+			{
+				Config: databaseClusterForceDestroyConfig(baseURL),
+			},
+		},
+	})
+}
+
+func databaseClusterForceDestroyConfig(baseURL string) string {
+	return fmt.Sprintf(`
+provider "laravel" {
+  token    = "test-token"
+  base_url = %[1]q
+}
+
+resource "laravel_cloud_database_cluster" "db" {
+  name          = "primary"
+  region        = "us-east-2"
+  type          = "laravel_mysql_84"
+  force_destroy = true
+  config        = jsonencode({ size = "mysql-flex-1gb" })
+}
+`, baseURL)
+}
+
+// databaseClusterNoForceDestroyConfig deliberately omits force_destroy, which
+// is the default and the case the guard protects.
+func databaseClusterNoForceDestroyConfig(baseURL string) string {
+	return fmt.Sprintf(`
+provider "laravel" {
+  token    = "test-token"
+  base_url = %[1]q
+}
+
+resource "laravel_cloud_database_cluster" "db" {
+  name   = "primary"
+  region = "us-east-2"
+  type   = "laravel_mysql_84"
+  config = jsonencode({ size = "mysql-flex-1gb" })
+}
+`, baseURL)
 }

@@ -295,7 +295,25 @@ func (r *DomainResource) Update(ctx context.Context, req resource.UpdateRequest,
 	// update could be for -- so with no verification method there is no call
 	// to make.
 	if plan.VerificationMethod.IsNull() || plan.VerificationMethod.IsUnknown() {
-		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		// Carry the plan forward, not the prior state: verification_method is
+		// Optional-only, so removing it from config plans a null, and writing
+		// the old value back would contradict the plan and fail the apply with
+		// "provider produced inconsistent result after apply". The computed
+		// attributes are copied across because there is no fresh response.
+		plan.ID = state.ID
+		plan.EnvironmentID = state.EnvironmentID
+		plan.DomainType = state.DomainType
+		plan.HostnameStatus = state.HostnameStatus
+		plan.SSLStatus = state.SSLStatus
+		plan.OriginStatus = state.OriginStatus
+		plan.CloudflareStrategy = state.CloudflareStrategy
+		plan.Downtime = state.Downtime
+		plan.Stage = state.Stage
+		plan.ActionRequired = state.ActionRequired
+		plan.LastVerifiedAt = state.LastVerifiedAt
+		plan.DNSRecords = state.DNSRecords
+		plan.CreatedAt = state.CreatedAt
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
 	}
 

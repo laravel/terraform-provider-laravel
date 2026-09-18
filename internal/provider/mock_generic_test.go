@@ -66,6 +66,11 @@ type crudSpec struct {
 	relationshipName string
 	relationshipType string
 
+	// afterCreate runs once an object has been stored, with its ID. It models
+	// side effects the API performs on create -- notably a database cluster
+	// auto-creating a database inside itself.
+	afterCreate func(f *fakeCloud, id string)
+
 	// createOnlyAttrs names attributes the API returns when the object is
 	// created and omits from every later response -- credentials, typically.
 	// They are stripped from GET, PATCH and list responses. Modelling this is
@@ -139,6 +144,10 @@ func (f *fakeCloud) genCreate(s crudSpec) http.HandlerFunc {
 				f.parents[s.typeName] = map[string]string{}
 			}
 			f.parents[s.typeName][id] = parentID
+		}
+
+		if s.afterCreate != nil {
+			s.afterCreate(f, id)
 		}
 
 		respID := id

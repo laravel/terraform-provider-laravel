@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -103,9 +102,11 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"color": schema.StringAttribute{
-				Optional:    true,
-				Computed:    true,
-				Description: "Environment color (blue, green, orange, purple, red, yellow, cyan, gray).",
+				Optional: true,
+				Computed: true,
+				Description: "Environment color (blue, green, orange, purple, red, yellow, cyan, gray). " +
+					"Write-only: the API accepts this but never reports it back, so a change made " +
+					"outside Terraform cannot be detected and state keeps the configured value.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -194,30 +195,35 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"uses_purge_edge_cache_on_deploy": schema.BoolAttribute{
 				Optional: true,
 				Computed: true,
+				Description: "Whether a deploy purges the edge cache. Write-only: the API " +
+					"accepts this but never reports it back, so drift cannot be detected.",
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"timeout": schema.Int64Attribute{
-				Optional:    true,
-				Computed:    true,
-				Description: "Request timeout (5-60 seconds).",
+				Optional: true,
+				Computed: true,
+				Description: "Request timeout (5-60 seconds). Write-only: the API accepts this " +
+					"but never reports it back, so drift cannot be detected.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
 			},
 			"sleep_timeout": schema.Int64Attribute{
-				Optional:    true,
-				Computed:    true,
-				Description: "Sleep timeout (1-60).",
+				Optional: true,
+				Computed: true,
+				Description: "Sleep timeout (1-60). Write-only: the API accepts this but never " +
+					"reports it back, so drift cannot be detected.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
 			},
 			"shutdown_timeout": schema.Int64Attribute{
-				Optional:    true,
-				Computed:    true,
-				Description: "Shutdown timeout (1-600).",
+				Optional: true,
+				Computed: true,
+				Description: "Shutdown timeout (1-600). Write-only: the API accepts this but " +
+					"never reports it back, so drift cannot be detected.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -348,13 +354,21 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	// to PATCH the environment so the remote state matches the plan.
 	// We pass origPlan so we only PATCH fields the user explicitly set
 	// (not fields that were unknown and got filled from the API).
-	// A configured vanity domain is applied through its own endpoint. This
-	// runs before the settings PATCH so that a failure here is reported
-	// against the environment that already exists.
+	// A configured vanity domain is applied through its own endpoint.
+	//
+	// The environment already exists at this point, so a failure here must NOT
+	// abort Create: returning early would skip resp.State.Set below and leave a
+	// live, billing environment that Terraform has no record of and cannot
+	// destroy. The vanity hostname is the only thing lost, and the next apply
+	// retries it, so this is a warning -- matching how the settings PATCH below
+	// already handles the same situation.
 	if !configuredVanity.IsNull() && !configuredVanity.IsUnknown() {
-		applyVanityDomain(ctx, r.client, env.ID, configuredVanity, &resp.Diagnostics)
-		if resp.Diagnostics.HasError() {
-			return
+		if err := applyVanityDomain(ctx, r.client, env.ID, configuredVanity); err != nil {
+			resp.Diagnostics.AddWarning(
+				"Could not set the vanity domain after creating the environment",
+				"The environment was created, but setting its vanity domain failed: "+err.Error()+
+					". The configured value is kept in state; run 'terraform apply' again to retry.",
+			)
 		}
 		plan.VanityDomain = configuredVanity
 	}
@@ -458,9 +472,11 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 
 	// The vanity domain has its own PUT route and is not part of the
 	// environment update body.
+	// On update the resource is already in state, so Terraform keeps the prior
+	// state when this errors and nothing is orphaned -- a failure here is fatal.
 	if !plan.VanityDomain.Equal(state.VanityDomain) {
-		applyVanityDomain(ctx, r.client, state.ID.ValueString(), plan.VanityDomain, &resp.Diagnostics)
-		if resp.Diagnostics.HasError() {
+		if err := applyVanityDomain(ctx, r.client, state.ID.ValueString(), plan.VanityDomain); err != nil {
+			resp.Diagnostics.AddError("Error setting vanity domain", err.Error())
 			return
 		}
 	}
@@ -528,97 +544,103 @@ func (r *EnvironmentResource) ImportState(ctx context.Context, req resource.Impo
 }
 
 // buildEnvironmentUpdateFromStateDiff compares the plan against the current
-// state and only includes fields that actually changed. This avoids sending
+// state and only includes fields that actually changed.
+//
+// Comparisons use Equal rather than ValueBool/ValueString, which collapse null
+// onto the zero value: with the latter, setting a write-only boolean to false
+// after it had been null looked like no change at all, so nothing was sent and
+// -- since these attributes are never read back -- the divergence could never
+// be noticed or corrected. This avoids sending
 // server-managed values (color, sleep_timeout, etc.) that the user never set.
 func buildEnvironmentUpdateFromStateDiff(plan, state EnvironmentResourceModel) *client.UpdateEnvironmentRequest {
 	req := client.UpdateEnvironmentRequest{}
 	hasUpdates := false
 
-	if plan.Name.ValueString() != state.Name.ValueString() {
+	if !plan.Name.Equal(state.Name) {
 		v := plan.Name.ValueString()
 		req.Name = &v
 		hasUpdates = true
 	}
-	if plan.Branch.ValueString() != state.Branch.ValueString() {
+	if !plan.Branch.Equal(state.Branch) {
 		v := plan.Branch.ValueString()
 		req.Branch = &v
 		hasUpdates = true
 	}
-	if plan.Color.ValueString() != state.Color.ValueString() {
+	if !plan.Color.Equal(state.Color) {
 		v := plan.Color.ValueString()
 		req.Color = &v
 		hasUpdates = true
 	}
-	if plan.PHPVersion.ValueString() != state.PHPVersion.ValueString() {
+	if !plan.PHPVersion.Equal(state.PHPVersion) {
 		v := plan.PHPVersion.ValueString()
 		req.PHPVersion = &v
 		hasUpdates = true
 	}
-	if plan.NodeVersion.ValueString() != state.NodeVersion.ValueString() {
+	if !plan.NodeVersion.Equal(state.NodeVersion) {
 		v := plan.NodeVersion.ValueString()
 		req.NodeVersion = &v
 		hasUpdates = true
 	}
-	if plan.BuildCommand.ValueString() != state.BuildCommand.ValueString() {
+	if !plan.BuildCommand.Equal(state.BuildCommand) {
 		v := plan.BuildCommand.ValueString()
 		req.BuildCommand = &v
 		hasUpdates = true
 	}
-	if plan.DeployCommand.ValueString() != state.DeployCommand.ValueString() {
+	if !plan.DeployCommand.Equal(state.DeployCommand) {
 		v := plan.DeployCommand.ValueString()
 		req.DeployCommand = &v
 		hasUpdates = true
 	}
-	if plan.UsesPushToDeploy.ValueBool() != state.UsesPushToDeploy.ValueBool() {
+	if !plan.UsesPushToDeploy.Equal(state.UsesPushToDeploy) {
 		v := plan.UsesPushToDeploy.ValueBool()
 		req.UsesPushToDeploy = &v
 		hasUpdates = true
 	}
-	if plan.UsesOctane.ValueBool() != state.UsesOctane.ValueBool() {
+	if !plan.UsesOctane.Equal(state.UsesOctane) {
 		v := plan.UsesOctane.ValueBool()
 		req.UsesOctane = &v
 		hasUpdates = true
 	}
-	if plan.CacheStrategy.ValueString() != state.CacheStrategy.ValueString() {
+	if !plan.CacheStrategy.Equal(state.CacheStrategy) {
 		v := plan.CacheStrategy.ValueString()
 		req.CacheStrategy = &v
 		hasUpdates = true
 	}
-	if plan.Timeout.ValueInt64() != state.Timeout.ValueInt64() {
+	if !plan.Timeout.Equal(state.Timeout) {
 		v := int(plan.Timeout.ValueInt64())
 		req.Timeout = &v
 		hasUpdates = true
 	}
-	if plan.SleepTimeout.ValueInt64() != state.SleepTimeout.ValueInt64() {
+	if !plan.SleepTimeout.Equal(state.SleepTimeout) {
 		v := int(plan.SleepTimeout.ValueInt64())
 		req.SleepTimeout = &v
 		hasUpdates = true
 	}
-	if plan.ShutdownTimeout.ValueInt64() != state.ShutdownTimeout.ValueInt64() {
+	if !plan.ShutdownTimeout.Equal(state.ShutdownTimeout) {
 		v := int(plan.ShutdownTimeout.ValueInt64())
 		req.ShutdownTimeout = &v
 		hasUpdates = true
 	}
-	if plan.UsesDeployHook.ValueBool() != state.UsesDeployHook.ValueBool() {
+	if !plan.UsesDeployHook.Equal(state.UsesDeployHook) {
 		v := plan.UsesDeployHook.ValueBool()
 		req.UsesDeployHook = &v
 		hasUpdates = true
 	}
-	if plan.UsesVanityDomain.ValueBool() != state.UsesVanityDomain.ValueBool() {
+	if !plan.UsesVanityDomain.Equal(state.UsesVanityDomain) {
 		v := plan.UsesVanityDomain.ValueBool()
 		req.UsesVanityDomain = &v
 		hasUpdates = true
 	}
-	if plan.UsesPurgeEdgeCacheOnDeploy.ValueBool() != state.UsesPurgeEdgeCacheOnDeploy.ValueBool() {
+	if !plan.UsesPurgeEdgeCacheOnDeploy.Equal(state.UsesPurgeEdgeCacheOnDeploy) {
 		v := plan.UsesPurgeEdgeCacheOnDeploy.ValueBool()
 		req.UsesPurgeEdgeCacheOnDeploy = &v
 		hasUpdates = true
 	}
-	if plan.DatabaseSchemaID.ValueString() != state.DatabaseSchemaID.ValueString() {
+	if !plan.DatabaseSchemaID.Equal(state.DatabaseSchemaID) {
 		req.DatabaseSchemaID = attachOrDetach(plan.DatabaseSchemaID)
 		hasUpdates = true
 	}
-	if plan.CacheID.ValueString() != state.CacheID.ValueString() {
+	if !plan.CacheID.Equal(state.CacheID) {
 		req.CacheID = attachOrDetach(plan.CacheID)
 		hasUpdates = true
 	}
@@ -809,13 +831,12 @@ func resolveUnknownInt64ToNull(v *types.Int64) {
 // field on the environment update body, so it is a separate call. A null value
 // means "keep whatever the platform assigned" -- there is no endpoint to clear
 // one, so nothing is sent.
-func applyVanityDomain(ctx context.Context, c *client.Client, environmentID string, vanity types.String, diags *diag.Diagnostics) {
+func applyVanityDomain(ctx context.Context, c *client.Client, environmentID string, vanity types.String) error {
 	if vanity.IsNull() || vanity.IsUnknown() || vanity.ValueString() == "" {
-		return
+		return nil
 	}
-	if _, err := c.SetVanityDomain(ctx, environmentID, client.UpdateVanityDomainRequest{
+	_, err := c.SetVanityDomain(ctx, environmentID, client.UpdateVanityDomainRequest{
 		Name: vanity.ValueString(),
-	}); err != nil {
-		diags.AddError("Error setting vanity domain", err.Error())
-	}
+	})
+	return err
 }

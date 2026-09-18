@@ -70,6 +70,10 @@ resource "laravel_cloud_environment" "env" {
 
 const clusterStack = `
 resource "laravel_cloud_database_cluster" "cluster" {
+  # The platform creates a database inside every cluster, so a test
+  # fixture has to opt in to sweeping it on destroy.
+  force_destroy = true
+
   name   = "main-db"
   type   = "laravel_mysql_84"
   region = "us-east-1"

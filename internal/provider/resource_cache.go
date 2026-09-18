@@ -301,8 +301,17 @@ func mapCacheToState(c *client.CacheData, state *CacheResourceModel) {
 	state.Status = types.StringValue(c.Attributes.Status)
 	state.AutoUpgradeEnabled = types.BoolValue(c.Attributes.AutoUpgradeEnabled)
 	state.IsPublic = types.BoolValue(c.Attributes.IsPublic)
-	state.Connection = mapCacheConnection(c.Attributes.Connection)
 	state.CreatedAt = types.StringPointerValue(c.Attributes.CreatedAt)
+
+	// The API reports an empty connection block whenever an operation is in
+	// progress -- right after create, and again while a resize is applying. If
+	// that were mapped straight through, a refresh or an update would null out
+	// connection_details.password in state, silently, and anything referencing
+	// it would start reading an empty credential. Keep what is already stored
+	// until the API has something real to replace it with.
+	if c.Attributes.Connection.IsReady() || state.Connection.IsNull() || state.Connection.IsUnknown() {
+		state.Connection = mapCacheConnection(c.Attributes.Connection)
+	}
 }
 
 // cacheConnectionPoll bounds how long Create waits for a new cache to report

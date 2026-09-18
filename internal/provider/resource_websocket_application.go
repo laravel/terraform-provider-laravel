@@ -89,7 +89,9 @@ func (r *WebsocketApplicationResource) Schema(_ context.Context, _ resource.Sche
 				ElementType: types.StringType,
 				Description: "Allowed origins for WebSocket connections. The API always " +
 					"returns a list here, empty when no origins are restricted, so this is " +
-					"Computed as well as Optional.",
+					"Computed as well as Optional. Because it is computed, REMOVING this " +
+					"attribute from the configuration leaves the existing origins in place " +
+					"rather than clearing them -- assign an empty list to clear them.",
 				PlanModifiers: []planmodifier.List{
 					listplanmodifier.UseStateForUnknown(),
 				},

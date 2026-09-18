@@ -28,16 +28,17 @@ type DatabaseClusterResource struct {
 }
 
 type DatabaseClusterResourceModel struct {
-	ID         types.String `tfsdk:"id"`
-	Name       types.String `tfsdk:"name"`
-	Type       types.String `tfsdk:"type"`
-	Region     types.String `tfsdk:"region"`
-	Status     types.String `tfsdk:"status"`
-	ClusterID  types.String `tfsdk:"cluster_id"`
-	Version    types.String `tfsdk:"version"`
-	Config     types.String `tfsdk:"config"`
-	Connection types.Object `tfsdk:"connection_details"`
-	CreatedAt  types.String `tfsdk:"created_at"`
+	ID           types.String `tfsdk:"id"`
+	Name         types.String `tfsdk:"name"`
+	Type         types.String `tfsdk:"type"`
+	Region       types.String `tfsdk:"region"`
+	Status       types.String `tfsdk:"status"`
+	ClusterID    types.String `tfsdk:"cluster_id"`
+	Version      types.String `tfsdk:"version"`
+	Config       types.String `tfsdk:"config"`
+	Connection   types.Object `tfsdk:"connection_details"`
+	CreatedAt    types.String `tfsdk:"created_at"`
+	ForceDestroy types.Bool   `tfsdk:"force_destroy"`
 }
 
 // databaseConnectionAttrTypes describes the connection_details object shared by
@@ -131,6 +132,16 @@ func (r *DatabaseClusterResource) Schema(_ context.Context, _ resource.SchemaReq
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
+			},
+			"force_destroy": schema.BoolAttribute{
+				Optional: true,
+				Description: "Allow destroying this cluster even though it still contains " +
+					"databases. The API refuses to delete a cluster while any database is " +
+					"attached, and a cluster always carries at least the one the platform " +
+					"creates with it, so destroying is impossible without this. Setting it " +
+					"true DELETES EVERY DATABASE IN THE CLUSTER, including ones Terraform " +
+					"did not create and does not manage. Defaults to false, in which case " +
+					"destroy fails and names the databases that are in the way.",
 			},
 			"config": schema.StringAttribute{
 				Required:    true,
@@ -282,12 +293,39 @@ func (r *DatabaseClusterResource) Delete(ctx context.Context, req resource.Delet
 
 	id := state.ID.ValueString()
 
-	// A cluster always carries at least the default schema the API creates
-	// alongside it, and the API refuses to delete a cluster while any schema is
-	// attached. Retrying that call alone can never succeed -- nothing else
-	// removes the schema -- so every destroy failed and left a billable
-	// database behind. The schemas have to go first.
-	if diags := deleteClusterSchemas(ctx, r.client, id); diags != nil {
+	// A cluster always carries at least the database the platform creates
+	// alongside it, and the API refuses to delete a cluster while any database
+	// is attached -- so a destroy cannot succeed without removing them first.
+	//
+	// Removing them is destructive well beyond what Terraform manages: the
+	// cluster may also hold databases created in the dashboard or by another
+	// tool, and this resource's state does not track them. Doing it implicitly
+	// would turn a failed destroy, which is recoverable, into silent data loss,
+	// which is not -- and lifecycle.prevent_destroy could not guard it, because
+	// those databases are not resources in state. So it is opt-in, on the same
+	// reasoning as force_destroy on a storage bucket.
+	if !state.ForceDestroy.ValueBool() {
+		names, err := clusterDatabaseNames(ctx, r.client, id)
+		if err != nil {
+			resp.Diagnostics.AddError("Error listing databases before deleting cluster", err.Error())
+			return
+		}
+		if len(names) > 0 {
+			resp.Diagnostics.AddError(
+				"Database cluster still contains databases",
+				fmt.Sprintf(
+					"The cluster %q cannot be deleted because it still contains %d database(s): %s.\n\n"+
+						"The API refuses to delete a cluster with databases attached, and a cluster always "+
+						"carries at least the one created with it. Either remove them first, or set "+
+						"force_destroy = true on this resource to have Terraform delete every database in "+
+						"the cluster as part of the destroy.\n\n"+
+						"force_destroy deletes ALL of them, including any this configuration does not manage.",
+					id, len(names), strings.Join(names, ", "),
+				),
+			)
+			return
+		}
+	} else if diags := deleteClusterSchemas(ctx, r.client, id); diags != nil {
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
 			return
@@ -456,3 +494,25 @@ const (
 	databaseDeleteAttempts = 120
 	databaseDeleteInterval = 10 * time.Second
 )
+
+// clusterDatabaseNames returns the names of every database in the cluster, so a
+// refused destroy can say what is actually in the way. A cluster that is
+// already gone has nothing in it.
+func clusterDatabaseNames(ctx context.Context, c *client.Client, clusterID string) ([]string, error) {
+	schemas, err := c.ListDatabases(ctx, clusterID)
+	if err != nil {
+		if client.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	names := make([]string, 0, len(schemas))
+	for _, s := range schemas {
+		name := s.Attributes.Name
+		if name == "" {
+			name = s.ID
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
