@@ -220,6 +220,9 @@ func (r *BackgroundProcessResource) ImportState(ctx context.Context, req resourc
 }
 
 func mapBackgroundProcessToState(bp *client.BackgroundProcessData, state *BackgroundProcessResourceModel) {
+	if instanceID := bp.Relationships.Instance.RelatedID(); instanceID != "" {
+		state.InstanceID = types.StringValue(instanceID)
+	}
 	state.ID = types.StringValue(bp.ID)
 	state.Type = types.StringValue(bp.Attributes.ProcessType)
 	state.Processes = types.Int64Value(int64(bp.Attributes.Processes))

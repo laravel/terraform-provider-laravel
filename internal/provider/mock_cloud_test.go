@@ -39,6 +39,9 @@ type fakeCloud struct {
 	// type name -> object ID -> attributes. See mock_generic_test.go.
 	objects  map[string]map[string]map[string]any
 	children map[string][]string // "<parentKey>" -> ordered child object IDs
+	// parents maps "<typeName>" -> child ID -> parent ID, so responses can
+	// carry the JSON:API relationship the real API reports.
+	parents map[string]map[string]string
 }
 
 // newFakeCloud starts an httptest.Server backed by a fresh in-memory store and
@@ -53,6 +56,7 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 		appEnvs:  map[string][]string{},
 		objects:  map[string]map[string]map[string]any{},
 		children: map[string][]string{},
+		parents:  map[string]map[string]string{},
 	}
 
 	mux := http.NewServeMux()

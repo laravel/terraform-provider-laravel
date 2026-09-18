@@ -65,6 +65,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			typeName: "instance", idPrefix: "instance", parentWildcard: "eid",
 			collectionPattern: "/environments/{eid}/instances", itemPattern: "/instances/{id}",
 			patch: true, del: true,
+			relationshipName: "environment", relationshipType: "environments",
 			seed: func(body map[string]any, _ string) map[string]any {
 				// Echo the body; managed-queue / status pointer fields are left
 				// absent so they decode to null (not zero values).
@@ -75,6 +76,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			typeName: "domain", idPrefix: "domain", parentWildcard: "eid",
 			collectionPattern: "/environments/{eid}/domains", itemPattern: "/domains/{id}",
 			patch: true, del: true,
+			relationshipName: "environment", relationshipType: "environments",
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
 				// The request sends www_redirect; the API echoes it as `redirect`.
@@ -179,6 +181,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			typeName: "background_process", idPrefix: "bgp", parentWildcard: "iid",
 			collectionPattern: "/instances/{iid}/background-processes", itemPattern: "/background-processes/{id}",
 			patch: true, del: true,
+			relationshipName: "instance", relationshipType: "instances",
 			seed: func(body map[string]any, _ string) map[string]any {
 				return cloneMap(body) // config is ignored on read-back by the provider
 			},

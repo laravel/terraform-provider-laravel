@@ -181,6 +181,9 @@ type InstanceData struct {
 	ID         string             `json:"id"`
 	Type       string             `json:"type"`
 	Attributes InstanceAttributes `json:"attributes"`
+	// Relationships carries the parent link, which is what makes import
+	// work: the import id names this resource only.
+	Relationships InstanceRelationships `json:"relationships"`
 }
 
 type InstanceAttributes struct {
@@ -254,6 +257,9 @@ type DomainData struct {
 	ID         string           `json:"id"`
 	Type       string           `json:"type"`
 	Attributes DomainAttributes `json:"attributes"`
+	// Relationships carries the parent link, which is what makes import
+	// work: the import id names this resource only.
+	Relationships DomainRelationships `json:"relationships"`
 }
 
 type DomainAttributes struct {
@@ -507,6 +513,9 @@ type BackgroundProcessData struct {
 	ID         string                      `json:"id"`
 	Type       string                      `json:"type"`
 	Attributes BackgroundProcessAttributes `json:"attributes"`
+	// Relationships carries the parent link, which is what makes import
+	// work: the import id names this resource only.
+	Relationships BackgroundProcessRelationships `json:"relationships"`
 }
 
 type BackgroundProcessAttributes struct {
@@ -906,4 +915,45 @@ type EdgeNetworkAttributes struct {
 	TenancyType string  `json:"tenancy_type"`
 	Status      string  `json:"status"`
 	CreatedAt   *string `json:"created_at"`
+}
+
+// ---------------------------------------------------------------------
+// JSON:API relationships
+// ---------------------------------------------------------------------
+
+// Relationship is a JSON:API to-one relationship. It is how a resource's
+// parent is discovered on import, where the parent id is not in the import
+// string and cannot be inferred from anything else in state.
+type Relationship struct {
+	Data *ResourceIdentifier `json:"data"`
+}
+
+// ResourceIdentifier is a JSON:API resource identifier object.
+type ResourceIdentifier struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
+// ID returns the related resource's id, or "" when the relationship is absent
+// or explicitly null.
+func (r Relationship) RelatedID() string {
+	if r.Data == nil {
+		return ""
+	}
+	return r.Data.ID
+}
+
+// InstanceRelationships are the relationships on an instance resource object.
+type InstanceRelationships struct {
+	Environment Relationship `json:"environment"`
+}
+
+// DomainRelationships are the relationships on a domain resource object.
+type DomainRelationships struct {
+	Environment Relationship `json:"environment"`
+}
+
+// BackgroundProcessRelationships are the relationships on a background process.
+type BackgroundProcessRelationships struct {
+	Instance Relationship `json:"instance"`
 }

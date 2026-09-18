@@ -368,6 +368,12 @@ func (r *InstanceResource) ImportState(ctx context.Context, req resource.ImportS
 }
 
 func mapInstanceToState(inst *client.InstanceData, state *InstanceResourceModel) {
+	// environment_id is not part of the import id and forces replacement, so
+	// without adopting it from the relationship an imported instance would be
+	// proposed for destruction on the very next plan.
+	if envID := inst.Relationships.Environment.RelatedID(); envID != "" {
+		state.EnvironmentID = types.StringValue(envID)
+	}
 	state.ID = types.StringValue(inst.ID)
 	state.Name = types.StringValue(inst.Attributes.Name)
 	state.Type = types.StringValue(inst.Attributes.InstanceType)

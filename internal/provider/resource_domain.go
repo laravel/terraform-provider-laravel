@@ -331,6 +331,9 @@ func (r *DomainResource) ImportState(ctx context.Context, req resource.ImportSta
 }
 
 func mapDomainToState(d *client.DomainData, state *DomainResourceModel) {
+	if envID := d.Relationships.Environment.RelatedID(); envID != "" {
+		state.EnvironmentID = types.StringValue(envID)
+	}
 	state.ID = types.StringValue(d.ID)
 	state.Name = types.StringValue(d.Attributes.Name)
 	state.DomainType = types.StringValue(d.Attributes.DomainType)

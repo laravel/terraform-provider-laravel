@@ -59,6 +59,13 @@ type crudSpec struct {
 	// present in the body is merged in (overwriting).
 	patchFn func(attrs, patch map[string]any)
 
+	// relationshipName, when set, is the JSON:API relationship key under which
+	// the parent is reported (e.g. "environment"), and relationshipType is the
+	// parent's resource type. The real API always includes these, and they are
+	// the only way an imported child can learn its parent id.
+	relationshipName string
+	relationshipType string
+
 	// createOnlyAttrs names attributes the API returns when the object is
 	// created and omits from every later response -- credentials, typically.
 	// They are stripped from GET, PATCH and list responses. Modelling this is
@@ -128,6 +135,10 @@ func (f *fakeCloud) genCreate(s crudSpec) http.HandlerFunc {
 		if s.parentWildcard != "" {
 			key := s.typeName + ":" + parentID
 			f.children[key] = append(f.children[key], id)
+			if f.parents[s.typeName] == nil {
+				f.parents[s.typeName] = map[string]string{}
+			}
+			f.parents[s.typeName][id] = parentID
 		}
 
 		respID := id
@@ -149,7 +160,7 @@ func (f *fakeCloud) genGet(s crudSpec) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, fmt.Errorf("%s not found", s.typeName))
 			return
 		}
-		writeJSON(w, http.StatusOK, jsonAPIObject(id, s.typeName, s.withoutCreateOnly(attrs)))
+		writeJSON(w, http.StatusOK, map[string]any{"data": f.dataWithParent(s, id, s.withoutCreateOnly(attrs))})
 	}
 }
 
@@ -201,12 +212,12 @@ func (f *fakeCloud) genList(s crudSpec) http.HandlerFunc {
 		if s.parentWildcard != "" {
 			for _, id := range f.children[s.typeName+":"+parentID] {
 				if attrs, ok := f.objects[s.typeName][id]; ok {
-					out = append(out, jsonAPIData(id, s.typeName, s.withoutCreateOnly(attrs)))
+					out = append(out, f.dataWithParent(s, id, s.withoutCreateOnly(attrs)))
 				}
 			}
 		} else {
 			for id, attrs := range f.objects[s.typeName] {
-				out = append(out, jsonAPIData(id, s.typeName, s.withoutCreateOnly(attrs)))
+				out = append(out, f.dataWithParent(s, id, s.withoutCreateOnly(attrs)))
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": out})
@@ -229,6 +240,28 @@ func decodeBody(r *http.Request) map[string]any {
 
 func jsonAPIData(id, typeName string, attrs map[string]any) map[string]any {
 	return map[string]any{"id": id, "type": typeName, "attributes": attrs}
+}
+
+// relationshipTo builds a JSON:API to-one relationship block.
+func relationshipTo(name, parentType, parentID string) map[string]any {
+	return map[string]any{
+		name: map[string]any{
+			"data": map[string]any{"type": parentType, "id": parentID},
+		},
+	}
+}
+
+// dataWithParent is jsonAPIData plus the parent relationship the real API
+// reports, when the spec declares one.
+func (f *fakeCloud) dataWithParent(s crudSpec, id string, attrs map[string]any) map[string]any {
+	d := jsonAPIData(id, s.typeName, attrs)
+	if s.relationshipName == "" {
+		return d
+	}
+	if parentID, ok := f.parents[s.typeName][id]; ok && parentID != "" {
+		d["relationships"] = relationshipTo(s.relationshipName, s.relationshipType, parentID)
+	}
+	return d
 }
 
 func jsonAPIObject(id, typeName string, attrs map[string]any) map[string]any {
