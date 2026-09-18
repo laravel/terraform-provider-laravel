@@ -234,6 +234,8 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 		f.registerCRUD(mux, s)
 	}
 
+	registerDataSourceRoutes(mux)
+
 	// -------- bespoke endpoints --------
 
 	// Environment variables: a single "set" POST replaces the whole set; the
