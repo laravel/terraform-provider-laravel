@@ -55,7 +55,7 @@ func (d *InstanceSizesDataSource) Schema(_ context.Context, _ datasource.SchemaR
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
 							Computed:    true,
-							Description: "Size identifier (e.g. compute-1).",
+							Description: "Size identifier (e.g. flex.c-1vcpu-256mb, mq-pro-1gb).",
 						},
 						"label": schema.StringAttribute{
 							Computed:    true,

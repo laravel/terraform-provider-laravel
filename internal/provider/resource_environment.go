@@ -430,12 +430,6 @@ func setUnknownBoolFromAPI(field *types.Bool, apiVal bool) {
 	}
 }
 
-func setUnknownInt64FromAPI(field *types.Int64, apiVal int64) {
-	if field.IsUnknown() {
-		*field = types.Int64Value(apiVal)
-	}
-}
-
 func (r *EnvironmentResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state EnvironmentResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)

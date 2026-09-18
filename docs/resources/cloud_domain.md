@@ -56,27 +56,16 @@ resource "laravel_cloud_domain" "example" {
 ### Read-Only
 
 - `action_required` (String) What still has to be done before the domain verifies (add_txt_records, add_dns_records, failed), or null when nothing is pending.
-- `dns_records` (Attributes) The DNS records that must exist for this domain to verify and serve traffic. Use these to create the records at your DNS provider. (see [below for nested schema](#nestedatt--dns_records))
-- `last_verified_at` (String) When the domain was last successfully verified.
-- `stage` (String) Verification stage (pre_verification, origin).
-
 - `created_at` (String)
+- `dns_records` (Attributes) The DNS records that must exist for this domain to verify and serve traffic. Use these to create the records at your DNS provider. (see [below for nested schema](#nestedatt--dns_records))
 - `downtime` (Boolean) Whether attaching the domain incurs downtime.
 - `hostname_status` (String) Hostname verification status.
 - `id` (String) The ID of this resource.
+- `last_verified_at` (String) When the domain was last successfully verified.
 - `origin_status` (String) Origin verification status.
 - `ssl_status` (String) SSL certificate status.
+- `stage` (String) Verification stage (pre_verification, origin).
 - `type` (String) Domain type (root, www, wildcard).
-
-## Import
-
-Import is supported using the following syntax:
-
-The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
-
-```shell
-terraform import laravel_cloud_domain.example "{domain_id}"
-```
 
 <a id="nestedatt--dns_records"></a>
 ### Nested Schema for `dns_records`
@@ -97,3 +86,13 @@ Read-Only:
 - `name` (String) Record name.
 - `type` (String) Record type (CNAME or TXT).
 - `value` (String) Record value.
+
+## Import
+
+Import is supported using the following syntax:
+
+The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
+
+```shell
+terraform import laravel_cloud_domain.example "{domain_id}"
+```

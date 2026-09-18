@@ -30,9 +30,10 @@ data "laravel_cloud_instance_sizes" "available" {}
 Read-Only:
 
 - `compute_class` (String) Compute class (general, compute, memory).
-- `cpu_count` (Number) Number of CPU cores.
+- `cpu_count` (Number) Number of CPU cores. Managed-queue sizes may express a fractional vCPU (e.g. 0.5).
 - `cpu_type` (String) CPU type.
 - `description` (String) Size description.
+- `instance_class` (String) Which instance class this size belongs to: "general" for service instances, "managed_queue" for managed queues.
 - `label` (String) Human-friendly label.
 - `memory_mib` (Number) Memory in MiB.
-- `name` (String) Size identifier (e.g. compute-1).
+- `name` (String) Size identifier (e.g. flex.c-1vcpu-256mb, mq-pro-1gb).
