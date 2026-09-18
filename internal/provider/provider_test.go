@@ -50,3 +50,21 @@ func testAccBranch() string {
 	}
 	return defaultTestBranch
 }
+
+// testAccPreCheckSlowResource skips acceptance tests for resources whose
+// provisioning takes long enough to dominate a test run.
+//
+// A database cluster routinely takes twenty minutes or more to become
+// available, and nothing in it -- not its schemas, not the cluster itself --
+// can be deleted until it does. A create-then-destroy cycle therefore either
+// blocks the run for a very long time or gives up and leaves a billable
+// database behind. These tests are opt-in rather than part of the default
+// acceptance run; the provider's behaviour is covered by the plan tests, which
+// exercise the same code paths against the in-memory fake in under a second.
+func testAccPreCheckSlowResource(t *testing.T) {
+	t.Helper()
+
+	if os.Getenv("LARAVEL_CLOUD_ACC_SLOW") == "" {
+		t.Skip("set LARAVEL_CLOUD_ACC_SLOW=1 to run acceptance tests that provision slow resources (e.g. database clusters)")
+	}
+}

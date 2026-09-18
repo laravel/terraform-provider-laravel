@@ -295,7 +295,7 @@ func (r *DatabaseClusterResource) Delete(ctx context.Context, req resource.Delet
 	}
 
 	// The cluster may still be settling after the schema deletions.
-	err := client.RetryOnConflict(ctx, 30, 10*time.Second, func() error {
+	err := client.RetryOnConflict(ctx, databaseDeleteAttempts, databaseDeleteInterval, func() error {
 		return r.client.DeleteDatabaseCluster(ctx, id)
 	}, func(err error) bool {
 		msg := err.Error()
@@ -329,7 +329,7 @@ func deleteClusterSchemas(ctx context.Context, c *client.Client, clusterID strin
 
 	for _, schema := range schemas {
 		schemaID := schema.ID
-		err := client.RetryOnConflict(ctx, 30, 10*time.Second, func() error {
+		err := client.RetryOnConflict(ctx, databaseDeleteAttempts, databaseDeleteInterval, func() error {
 			if err := c.DeleteDatabase(ctx, clusterID, schemaID); err != nil {
 				if client.IsNotFound(err) {
 					return nil
@@ -446,3 +446,13 @@ func jsonEqual(a, b any) bool {
 	}
 	return string(ab) == string(bb)
 }
+
+// Deleting anything in a database cluster fails while the cluster is still
+// provisioning, and provisioning a cluster routinely takes longer than ten
+// minutes. The previous five-minute budget was shorter than the operation it
+// was waiting on, so a create-then-destroy cycle -- an acceptance test, or a
+// user correcting a mistake -- gave up and left a billable database behind.
+const (
+	databaseDeleteAttempts = 120
+	databaseDeleteInterval = 10 * time.Second
+)

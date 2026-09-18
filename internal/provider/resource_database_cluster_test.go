@@ -12,7 +12,10 @@ func TestAccDatabaseClusterResource_basic(t *testing.T) {
 	rName := fmt.Sprintf("tf-test-%s", acctest.RandString(8))
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testAccPreCheckSlowResource(t)
+		},
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create and Read
