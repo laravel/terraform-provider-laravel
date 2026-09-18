@@ -62,13 +62,14 @@ resource "laravel_cloud_environment" "example" {
 - `uses_push_to_deploy` (Boolean)
 - `uses_vanity_domain` (Boolean)
 
+- `vanity_domain` (String) Vanity domain hostname for the environment (3-100 characters). Set through the API's dedicated vanity-domain endpoint rather than the environment update body. Leave unset to keep the assigned default.
+
 ### Read-Only
 
 - `created_at` (String)
 - `id` (String) The ID of this resource.
 - `php_major_version` (String) Major PHP version reported by the API (e.g. "8.4").
 - `status` (String) Current environment status.
-- `vanity_domain` (String) Vanity domain hostname assigned to the environment, if any.
 
 ## Import
 

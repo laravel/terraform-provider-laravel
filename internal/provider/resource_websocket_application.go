@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -84,8 +85,14 @@ func (r *WebsocketApplicationResource) Schema(_ context.Context, _ resource.Sche
 			},
 			"allowed_origins": schema.ListAttribute{
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
-				Description: "Allowed origins for WebSocket connections.",
+				Description: "Allowed origins for WebSocket connections. The API always " +
+					"returns a list here, empty when no origins are restricted, so this is " +
+					"Computed as well as Optional.",
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"ping_interval": schema.Int64Attribute{
 				Optional:    true,
@@ -140,7 +147,10 @@ func (r *WebsocketApplicationResource) Create(ctx context.Context, req resource.
 	createReq := client.CreateWebsocketApplicationRequest{
 		Name: plan.Name.ValueString(),
 	}
-	if !plan.AllowedOrigins.IsNull() {
+	// allowed_origins is Computed as well as Optional, so it is unknown here
+	// whenever the user did not set it -- decoding an unknown list into
+	// []string fails outright.
+	if !plan.AllowedOrigins.IsNull() && !plan.AllowedOrigins.IsUnknown() {
 		var origins []string
 		resp.Diagnostics.Append(plan.AllowedOrigins.ElementsAs(ctx, &origins, false)...)
 		if resp.Diagnostics.HasError() {
@@ -206,13 +216,18 @@ func (r *WebsocketApplicationResource) Update(ctx context.Context, req resource.
 		v := plan.Name.ValueString()
 		updateReq.Name = &v
 	}
-	if !plan.AllowedOrigins.IsNull() {
-		var origins []string
-		resp.Diagnostics.Append(plan.AllowedOrigins.ElementsAs(ctx, &origins, false)...)
-		if resp.Diagnostics.HasError() {
-			return
+	if !plan.AllowedOrigins.Equal(state.AllowedOrigins) && !plan.AllowedOrigins.IsUnknown() {
+		// An explicitly empty list is how origins are cleared, so the slice is
+		// non-nil even when there is nothing in it -- see the request struct,
+		// where allowed_origins deliberately carries no omitempty.
+		origins := []string{}
+		if !plan.AllowedOrigins.IsNull() {
+			resp.Diagnostics.Append(plan.AllowedOrigins.ElementsAs(ctx, &origins, false)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
 		}
-		updateReq.AllowedOrigins = origins
+		updateReq.AllowedOrigins = &origins
 	}
 	if !plan.PingInterval.IsNull() && !plan.PingInterval.IsUnknown() {
 		v := int(plan.PingInterval.ValueInt64())
@@ -266,16 +281,41 @@ func mapWebsocketApplicationToState(ctx context.Context, wsApp *client.Websocket
 	state.ID = types.StringValue(wsApp.ID)
 	state.Name = types.StringValue(wsApp.Attributes.Name)
 	state.AppID = types.StringValue(wsApp.Attributes.AppID)
-	state.Key = types.StringValue(wsApp.Attributes.Key)
-	state.Secret = types.StringValue(wsApp.Attributes.Secret)
+	// key and secret are merged into the response conditionally -- in practice
+	// only when the application is created. A later GET omits them, so writing
+	// them unconditionally replaced the stored credentials with empty strings,
+	// silently and with no error, breaking anything referencing .secret.
+	state.Key = preserveWebsocketCredential(state.Key, wsApp.Attributes.Key)
+	state.Secret = preserveWebsocketCredential(state.Secret, wsApp.Attributes.Secret)
 	state.PingInterval = types.Int64Value(int64(wsApp.Attributes.PingInterval))
 	state.ActivityTimeout = types.Int64Value(int64(wsApp.Attributes.ActivityTimeout))
 	state.MaxMessageSize = types.Int64Value(int64(wsApp.Attributes.MaxMessageSize))
 	state.MaxConnections = types.Int64Value(int64(wsApp.Attributes.MaxConnections))
 	state.CreatedAt = types.StringPointerValue(wsApp.Attributes.CreatedAt)
-	// allowed_origins mapped via list conversion
-	if wsApp.Attributes.AllowedOrigins != nil {
-		origins, _ := types.ListValueFrom(ctx, types.StringType, wsApp.Attributes.AllowedOrigins)
+	origins, diags := types.ListValueFrom(ctx, types.StringType, nonNilStrings(wsApp.Attributes.AllowedOrigins))
+	if !diags.HasError() {
 		state.AllowedOrigins = origins
 	}
+}
+
+// preserveWebsocketCredential keeps an already-stored key or secret when the
+// API does not return one. The credentials are only present in the create
+// response; treating their absence as an empty value would discard them.
+func preserveWebsocketCredential(current types.String, returned string) types.String {
+	if returned != "" {
+		return types.StringValue(returned)
+	}
+	if !current.IsNull() && !current.IsUnknown() && current.ValueString() != "" {
+		return current
+	}
+	return types.StringNull()
+}
+
+// nonNilStrings normalises a nil slice to an empty one so that "no origins"
+// round-trips as an empty list rather than null.
+func nonNilStrings(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
 }

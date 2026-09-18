@@ -599,10 +599,15 @@ type CreateWebsocketApplicationRequest struct {
 }
 
 type UpdateWebsocketApplicationRequest struct {
-	Name            *string  `json:"name,omitempty"`
-	AllowedOrigins  []string `json:"allowed_origins,omitempty"`
-	PingInterval    *int     `json:"ping_interval,omitempty"`
-	ActivityTimeout *int     `json:"activity_timeout,omitempty"`
+	Name *string `json:"name,omitempty"`
+	// AllowedOrigins is a pointer to a slice, not a plain slice, because an
+	// empty array is how origins are cleared. With `[]string` + omitempty an
+	// empty list marshals to nothing, the field is dropped from the body, and
+	// the API keeps the previous origins -- so clearing them was impossible.
+	// A nil pointer omits the field; a pointer to an empty slice sends [].
+	AllowedOrigins  *[]string `json:"allowed_origins,omitempty"`
+	PingInterval    *int      `json:"ping_interval,omitempty"`
+	ActivityTimeout *int      `json:"activity_timeout,omitempty"`
 }
 
 // ---------------------------------------------------------------------
@@ -884,3 +889,21 @@ func (q QueueStatusValue) MarshalJSON() ([]byte, error) {
 
 // IsZero reports whether no queue status was returned.
 func (q QueueStatusValue) IsZero() bool { return q.Value == "" }
+
+// ---------------------------------------------------------------------
+// Edge Network
+// ---------------------------------------------------------------------
+
+type EdgeNetworkData struct {
+	ID         string                `json:"id"`
+	Type       string                `json:"type"`
+	Attributes EdgeNetworkAttributes `json:"attributes"`
+}
+
+type EdgeNetworkAttributes struct {
+	Name        string  `json:"name"`
+	Domain      string  `json:"domain"`
+	TenancyType string  `json:"tenancy_type"`
+	Status      string  `json:"status"`
+	CreatedAt   *string `json:"created_at"`
+}

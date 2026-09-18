@@ -526,6 +526,10 @@ resource "laravel_cloud_websocket_application" "wsapp" {
 				ResourceName:      "laravel_cloud_websocket_application.wsapp",
 				ImportState:       true,
 				ImportStateVerify: true,
+				// key and secret are returned only when the application is
+				// created, so an imported application cannot recover them.
+				// They stay null rather than being filled with empty strings.
+				ImportStateVerifyIgnore: []string{"key", "secret"},
 				ImportStateIdFunc: func(s *terraform.State) (string, error) {
 					rs, ok := s.RootModule().Resources["laravel_cloud_websocket_application.wsapp"]
 					if !ok {

@@ -58,6 +58,26 @@ type crudSpec struct {
 	// patchFn applies a PATCH body to the stored attributes. If nil, every key
 	// present in the body is merged in (overwriting).
 	patchFn func(attrs, patch map[string]any)
+
+	// createOnlyAttrs names attributes the API returns when the object is
+	// created and omits from every later response -- credentials, typically.
+	// They are stripped from GET, PATCH and list responses. Modelling this is
+	// what makes it possible to catch a provider that treats their absence as
+	// an empty value and overwrites the stored secret.
+	createOnlyAttrs []string
+}
+
+// withoutCreateOnly returns a copy of attrs with the create-only attributes
+// removed, or attrs itself when there are none.
+func (s crudSpec) withoutCreateOnly(attrs map[string]any) map[string]any {
+	if len(s.createOnlyAttrs) == 0 {
+		return attrs
+	}
+	out := cloneMap(attrs)
+	for _, k := range s.createOnlyAttrs {
+		delete(out, k)
+	}
+	return out
 }
 
 // registerCRUD wires a crudSpec's handlers onto the mux.
@@ -129,7 +149,7 @@ func (f *fakeCloud) genGet(s crudSpec) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, fmt.Errorf("%s not found", s.typeName))
 			return
 		}
-		writeJSON(w, http.StatusOK, jsonAPIObject(id, s.typeName, attrs))
+		writeJSON(w, http.StatusOK, jsonAPIObject(id, s.typeName, s.withoutCreateOnly(attrs)))
 	}
 }
 
@@ -181,12 +201,12 @@ func (f *fakeCloud) genList(s crudSpec) http.HandlerFunc {
 		if s.parentWildcard != "" {
 			for _, id := range f.children[s.typeName+":"+parentID] {
 				if attrs, ok := f.objects[s.typeName][id]; ok {
-					out = append(out, jsonAPIData(id, s.typeName, attrs))
+					out = append(out, jsonAPIData(id, s.typeName, s.withoutCreateOnly(attrs)))
 				}
 			}
 		} else {
 			for id, attrs := range f.objects[s.typeName] {
-				out = append(out, jsonAPIData(id, s.typeName, attrs))
+				out = append(out, jsonAPIData(id, s.typeName, s.withoutCreateOnly(attrs)))
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": out})

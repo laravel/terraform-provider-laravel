@@ -66,6 +66,7 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	mux.HandleFunc("POST /applications/{id}/environments", f.createEnvironment)
 	mux.HandleFunc("GET /environments/{id}", f.getEnvironment)
 	mux.HandleFunc("PATCH /environments/{id}", f.updateEnvironment)
+	mux.HandleFunc("PUT /environments/{id}/vanity-domain", f.setVanityDomain)
 	mux.HandleFunc("DELETE /environments/{id}", f.deleteEnvironment)
 
 	// All other resources are served by the generic JSON:API engine.
@@ -199,6 +200,29 @@ func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 	f.envs[id] = env
 	f.appEnvs[appID] = append(f.appEnvs[appID], id)
 	writeJSON(w, http.StatusCreated, client.Document[client.EnvironmentData]{Data: *env})
+}
+
+func (f *fakeCloud) setVanityDomain(w http.ResponseWriter, r *http.Request) {
+	var req client.UpdateVanityDomainRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	env, ok := f.envs[r.PathValue("id")]
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Errorf("environment not found"))
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("name is required"))
+		return
+	}
+	env.Attributes.VanityDomain = &req.Name
+	writeJSON(w, http.StatusOK, client.Document[client.EnvironmentData]{Data: *env})
 }
 
 func (f *fakeCloud) getEnvironment(w http.ResponseWriter, r *http.Request) {

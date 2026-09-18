@@ -146,3 +146,69 @@ resource "laravel_cloud_environment" "minimal" {
 }
 `, baseURL)
 }
+
+// TestEnvironmentVanityDomainPlan covers the vanity domain, which the API
+// exposes as its own PUT /environments/{id}/vanity-domain route rather than a
+// field on the environment update body. It was previously Computed-only, so
+// the hostname could not be set from Terraform at all.
+func TestEnvironmentVanityDomainPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	config := environmentVanityConfig(baseURL, "my-app-staging")
+
+	const envAddr = "laravel_cloud_environment.vanity"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(envAddr, tfjsonpath.New("vanity_domain"),
+						knownvalue.StringExact("my-app-staging")),
+				},
+			},
+			{
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			// Renaming it must go through the dedicated endpoint in place,
+			// not force a replacement.
+			{
+				Config: environmentVanityConfig(baseURL, "my-app-prod"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(envAddr, plancheck.ResourceActionUpdate),
+					},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(envAddr, tfjsonpath.New("vanity_domain"),
+						knownvalue.StringExact("my-app-prod")),
+				},
+			},
+		},
+	})
+}
+
+func environmentVanityConfig(baseURL, vanity string) string {
+	return fmt.Sprintf(`
+provider "laravel" {
+  token    = "test-token"
+  base_url = %[1]q
+}
+
+resource "laravel_cloud_application" "example" {
+  name       = "vanity-app"
+  repository = "laravel/laravel"
+  region     = "us-east-2"
+}
+
+resource "laravel_cloud_environment" "vanity" {
+  application_id = laravel_cloud_application.example.id
+  name           = "production"
+  branch         = "main"
+  vanity_domain  = %[2]q
+}
+`, baseURL, vanity)
+}

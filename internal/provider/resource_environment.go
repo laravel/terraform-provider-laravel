@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -129,8 +130,11 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"vanity_domain": schema.StringAttribute{
-				Computed:    true,
-				Description: "Vanity domain hostname assigned to the environment, if any.",
+				Optional: true,
+				Computed: true,
+				Description: "Vanity domain hostname for the environment (3-100 characters). " +
+					"Set through the API's dedicated vanity-domain endpoint rather than the " +
+					"environment update body. Leave unset to keep the assigned default.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -265,6 +269,9 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 
 	appID := plan.ApplicationID.ValueString()
 	wantName := plan.Name.ValueString()
+	// Captured before the API response overwrites plan.VanityDomain below;
+	// this is the value the user actually configured, if any.
+	configuredVanity := plan.VanityDomain
 
 	// Laravel Cloud auto-creates a default environment when an application
 	// is created. Check whether an environment with the requested name
@@ -341,6 +348,17 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	// to PATCH the environment so the remote state matches the plan.
 	// We pass origPlan so we only PATCH fields the user explicitly set
 	// (not fields that were unknown and got filled from the API).
+	// A configured vanity domain is applied through its own endpoint. This
+	// runs before the settings PATCH so that a failure here is reported
+	// against the environment that already exists.
+	if !configuredVanity.IsNull() && !configuredVanity.IsUnknown() {
+		applyVanityDomain(ctx, r.client, env.ID, configuredVanity, &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		plan.VanityDomain = configuredVanity
+	}
+
 	patchReq := buildEnvironmentUpdateFromDiff(origPlan, env, adopted)
 	if patchReq != nil {
 		_, err := r.client.UpdateEnvironment(ctx, env.ID, *patchReq)
@@ -426,9 +444,18 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
+	// The vanity domain has its own PUT route and is not part of the
+	// environment update body.
+	if !plan.VanityDomain.Equal(state.VanityDomain) {
+		applyVanityDomain(ctx, r.client, state.ID.ValueString(), plan.VanityDomain, &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
 	updateReq := buildEnvironmentUpdateFromStateDiff(plan, state)
 	if updateReq == nil {
-		// Nothing changed — just keep state as-is.
+		// Nothing else changed — just keep state as-is.
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
 	}
@@ -756,5 +783,22 @@ func resolveUnknownBoolToNull(v *types.Bool) {
 func resolveUnknownInt64ToNull(v *types.Int64) {
 	if v.IsUnknown() {
 		*v = types.Int64Null()
+	}
+}
+
+// applyVanityDomain points the environment at the configured vanity hostname.
+//
+// The API exposes this as PUT /environments/{id}/vanity-domain rather than a
+// field on the environment update body, so it is a separate call. A null value
+// means "keep whatever the platform assigned" -- there is no endpoint to clear
+// one, so nothing is sent.
+func applyVanityDomain(ctx context.Context, c *client.Client, environmentID string, vanity types.String, diags *diag.Diagnostics) {
+	if vanity.IsNull() || vanity.IsUnknown() || vanity.ValueString() == "" {
+		return
+	}
+	if _, err := c.SetVanityDomain(ctx, environmentID, client.UpdateVanityDomainRequest{
+		Name: vanity.ValueString(),
+	}); err != nil {
+		diags.AddError("Error setting vanity domain", err.Error())
 	}
 }

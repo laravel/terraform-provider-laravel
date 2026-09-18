@@ -191,6 +191,9 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			typeName: "websocket_application", idPrefix: "wsa", parentWildcard: "sid",
 			collectionPattern: "/websocket-servers/{sid}/applications", itemPattern: "/websocket-applications/{id}",
 			patch: true, del: true,
+			// key and secret are merged into the create response only; every
+			// later read omits them.
+			createOnlyAttrs: []string{"key", "secret"},
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
 				a["app_id"] = "wsapp-0001"
