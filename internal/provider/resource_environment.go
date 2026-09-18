@@ -361,7 +361,19 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 
 	patchReq := buildEnvironmentUpdateFromDiff(origPlan, env, adopted)
 	if patchReq != nil {
-		_, err := r.client.UpdateEnvironment(ctx, env.ID, *patchReq)
+		patched, err := r.client.UpdateEnvironment(ctx, env.ID, *patchReq)
+		if err == nil && patched != nil {
+			// Read-only values the PATCH changed must come from its response.
+			// php_version is sent as "8.4:1" and reported back only as a major
+			// version, so the create response still said the platform default
+			// (8.5) while the environment was really on 8.4 -- state was wrong
+			// the moment apply finished, and an import disagreed with it.
+			plan.PHPMajorVersion = types.StringValue(patched.Attributes.PHPMajorVersion)
+			plan.Slug = types.StringValue(patched.Attributes.Slug)
+			plan.Status = types.StringValue(patched.Attributes.Status)
+			setUnknownStringPtrFromAPI(&plan.BuildCommand, patched.Attributes.BuildCommand)
+			setUnknownStringPtrFromAPI(&plan.DeployCommand, patched.Attributes.DeployCommand)
+		}
 		if err != nil {
 			// PATCH failed (e.g. dev server returns HTML). Keep the plan
 			// values in state so Terraform doesn't error. The next Read
@@ -691,25 +703,30 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 		req.CacheStrategy = &v
 		hasUpdates = true
 	}
-	if !plan.BuildCommand.IsNull() {
+	// These are Optional+Computed, so a value the user did not set arrives here
+	// UNKNOWN rather than null. IsNull() alone is false for an unknown value,
+	// and ValueString() on it yields "" -- which sent build_command: "" and
+	// made the API null out the application's default build and deploy
+	// commands on every single environment create.
+	if !plan.BuildCommand.IsNull() && !plan.BuildCommand.IsUnknown() {
 		v := plan.BuildCommand.ValueString()
 		if env.Attributes.BuildCommand == nil || v != *env.Attributes.BuildCommand {
 			req.BuildCommand = &v
 			hasUpdates = true
 		}
 	}
-	if !plan.DeployCommand.IsNull() {
+	if !plan.DeployCommand.IsNull() && !plan.DeployCommand.IsUnknown() {
 		v := plan.DeployCommand.ValueString()
 		if env.Attributes.DeployCommand == nil || v != *env.Attributes.DeployCommand {
 			req.DeployCommand = &v
 			hasUpdates = true
 		}
 	}
-	if !plan.DatabaseSchemaID.IsNull() {
+	if !plan.DatabaseSchemaID.IsNull() && !plan.DatabaseSchemaID.IsUnknown() {
 		req.DatabaseSchemaID = client.AttachID(plan.DatabaseSchemaID.ValueString())
 		hasUpdates = true
 	}
-	if !plan.CacheID.IsNull() {
+	if !plan.CacheID.IsNull() && !plan.CacheID.IsUnknown() {
 		req.CacheID = client.AttachID(plan.CacheID.ValueString())
 		hasUpdates = true
 	}

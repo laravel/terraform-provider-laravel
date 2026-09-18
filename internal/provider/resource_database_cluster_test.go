@@ -21,7 +21,7 @@ func TestAccDatabaseClusterResource_basic(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("laravel_cloud_database_cluster.test", "name", rName),
 					resource.TestCheckResourceAttrSet("laravel_cloud_database_cluster.test", "id"),
-					resource.TestCheckResourceAttr("laravel_cloud_database_cluster.test", "type", "laravel_mysql_8"),
+					resource.TestCheckResourceAttr("laravel_cloud_database_cluster.test", "type", "laravel_mysql"),
 					resource.TestCheckResourceAttr("laravel_cloud_database_cluster.test", "region", "us-east-2"),
 					resource.TestCheckResourceAttrSet("laravel_cloud_database_cluster.test", "status"),
 				),
@@ -42,10 +42,11 @@ func testAccDatabaseClusterConfig(name string) string {
 	return fmt.Sprintf(`
 resource "laravel_cloud_database_cluster" "test" {
   name   = %[1]q
-  type   = "laravel_mysql_8"
-  region = "us-east-2"
+  type    = "laravel_mysql"
+  version = "8.4"
+  region  = "us-east-2"
   config = jsonencode({
-    size                     = "db-flex.m-1vcpu-512mb"
+    size                     = "mysql-flex-512mb"
     storage                  = 10
     is_public                = false
     uses_scheduled_snapshots = false

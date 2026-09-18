@@ -408,12 +408,22 @@ type CacheAttributes struct {
 	CreatedAt          *string          `json:"created_at"`
 }
 
+// CacheConnection is the cache's connection block. Every field is nullable:
+// a cache that is still provisioning returns nulls, and the credentials are
+// merged in conditionally. Pointers keep "not reported yet" distinguishable
+// from an empty hostname or a zero port.
 type CacheConnection struct {
-	Hostname string `json:"hostname"`
-	Port     int    `json:"port"`
-	Protocol string `json:"protocol"`
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Hostname *string `json:"hostname"`
+	Port     *int64  `json:"port"`
+	Protocol *string `json:"protocol"`
+	Username *string `json:"username"`
+	Password *string `json:"password"`
+}
+
+// IsReady reports whether the API has populated the connection block. A cache
+// created a moment ago is still provisioning and reports an empty connection.
+func (c *CacheConnection) IsReady() bool {
+	return c != nil && c.Hostname != nil && *c.Hostname != "" && c.Port != nil && *c.Port != 0
 }
 
 type CreateCacheRequest struct {
