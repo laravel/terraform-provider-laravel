@@ -22,13 +22,14 @@ type InstanceSizesDataSourceModel struct {
 }
 
 type InstanceSizeItemModel struct {
-	Name         types.String `tfsdk:"name"`
-	Label        types.String `tfsdk:"label"`
-	Description  types.String `tfsdk:"description"`
-	CPUType      types.String `tfsdk:"cpu_type"`
-	ComputeClass types.String `tfsdk:"compute_class"`
-	CPUCount     types.Int64  `tfsdk:"cpu_count"`
-	MemoryMiB    types.Int64  `tfsdk:"memory_mib"`
+	Name          types.String  `tfsdk:"name"`
+	Label         types.String  `tfsdk:"label"`
+	Description   types.String  `tfsdk:"description"`
+	CPUType       types.String  `tfsdk:"cpu_type"`
+	ComputeClass  types.String  `tfsdk:"compute_class"`
+	CPUCount      types.Float64 `tfsdk:"cpu_count"`
+	InstanceClass types.String  `tfsdk:"instance_class"`
+	MemoryMiB     types.Int64   `tfsdk:"memory_mib"`
 }
 
 func NewInstanceSizesDataSource() datasource.DataSource {
@@ -72,9 +73,15 @@ func (d *InstanceSizesDataSource) Schema(_ context.Context, _ datasource.SchemaR
 							Computed:    true,
 							Description: "Compute class (general, compute, memory).",
 						},
-						"cpu_count": schema.Int64Attribute{
-							Computed:    true,
-							Description: "Number of CPU cores.",
+						"cpu_count": schema.Float64Attribute{
+							Computed: true,
+							Description: "Number of CPU cores. Managed-queue sizes may express " +
+								"a fractional vCPU (e.g. 0.5).",
+						},
+						"instance_class": schema.StringAttribute{
+							Computed: true,
+							Description: "Which instance class this size belongs to: " +
+								"\"general\" for service instances, \"managed_queue\" for managed queues.",
 						},
 						"memory_mib": schema.Int64Attribute{
 							Computed:    true,
@@ -110,17 +117,25 @@ func (d *InstanceSizesDataSource) Read(ctx context.Context, _ datasource.ReadReq
 		ID: types.StringValue("instance_sizes"),
 	}
 
-	for _, s := range result.Data.General {
-		state.Sizes = append(state.Sizes, InstanceSizeItemModel{
-			Name:         types.StringValue(s.Name),
-			Label:        types.StringValue(s.Label),
-			Description:  types.StringValue(s.Description),
-			CPUType:      types.StringValue(s.CPUType),
-			ComputeClass: types.StringValue(s.ComputeClass),
-			CPUCount:     types.Int64Value(int64(s.CPUCount)),
-			MemoryMiB:    types.Int64Value(int64(s.MemoryMiB)),
-		})
+	// The API returns sizes split by instance class. Both are surfaced, tagged
+	// with instance_class so a managed queue can be told from a service size --
+	// they are disjoint sets and a size from the wrong one is rejected.
+	appendSizes := func(sizes []client.InstanceSizeInfo, instanceClass string) {
+		for _, s := range sizes {
+			state.Sizes = append(state.Sizes, InstanceSizeItemModel{
+				Name:          types.StringValue(s.Name),
+				Label:         types.StringValue(s.Label),
+				Description:   types.StringValue(s.Description),
+				CPUType:       types.StringValue(s.CPUType),
+				ComputeClass:  types.StringValue(s.ComputeClass),
+				CPUCount:      types.Float64Value(s.CPUCount),
+				MemoryMiB:     types.Int64Value(int64(s.MemoryMiB)),
+				InstanceClass: types.StringValue(instanceClass),
+			})
+		}
 	}
+	appendSizes(result.Data.General, "general")
+	appendSizes(result.Data.ManagedQueue, "managed_queue")
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }

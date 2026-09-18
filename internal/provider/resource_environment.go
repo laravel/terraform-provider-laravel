@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -317,19 +318,24 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 
 	// For Computed+Optional fields that the user did NOT explicitly set,
 	// accept whatever the API returned as the initial value.
-	setUnknownStringFromAPI(&plan.Color, env.Attributes.Color)
 	setUnknownStringFromAPI(&plan.NodeVersion, env.Attributes.NodeVersion)
 	setUnknownStringPtrFromAPI(&plan.BuildCommand, env.Attributes.BuildCommand)
 	setUnknownStringPtrFromAPI(&plan.DeployCommand, env.Attributes.DeployCommand)
 	setUnknownBoolFromAPI(&plan.UsesPushToDeploy, env.Attributes.UsesPushToDeploy)
 	setUnknownBoolFromAPI(&plan.UsesDeployHook, env.Attributes.UsesDeployHook)
-	setUnknownBoolFromAPI(&plan.UsesVanityDomain, env.Attributes.VanityDomain != nil && *env.Attributes.VanityDomain != "")
 	setUnknownBoolFromAPI(&plan.UsesOctane, env.Attributes.UsesOctane)
-	setUnknownBoolFromAPI(&plan.UsesPurgeEdgeCacheOnDeploy, env.Attributes.UsesPurgeEdgeCacheOnDeploy)
-	setUnknownInt64FromAPI(&plan.Timeout, int64(env.Attributes.Timeout))
-	setUnknownInt64FromAPI(&plan.SleepTimeout, int64(env.Attributes.SleepTimeout))
-	setUnknownInt64FromAPI(&plan.ShutdownTimeout, int64(env.Attributes.ShutdownTimeout))
-	setUnknownStringFromAPI(&plan.CacheStrategy, env.Attributes.CacheStrategy)
+	setUnknownStringFromAPI(&plan.CacheStrategy, env.Attributes.NetworkSettings.Cache.Strategy)
+
+	// The remaining Optional+Computed attributes are write-only: the API
+	// accepts them on PATCH but never returns them, so there is no value to
+	// adopt. Resolve them to null rather than to a fabricated zero value,
+	// which would then be re-sent on every apply.
+	resolveUnknownStringToNull(&plan.Color)
+	resolveUnknownBoolToNull(&plan.UsesVanityDomain)
+	resolveUnknownBoolToNull(&plan.UsesPurgeEdgeCacheOnDeploy)
+	resolveUnknownInt64ToNull(&plan.Timeout)
+	resolveUnknownInt64ToNull(&plan.SleepTimeout)
+	resolveUnknownInt64ToNull(&plan.ShutdownTimeout)
 
 	// If the user specified values that differ from API defaults, attempt
 	// to PATCH the environment so the remote state matches the plan.
@@ -457,15 +463,20 @@ func (r *EnvironmentResource) Delete(ctx context.Context, req resource.DeleteReq
 	// downstream resources (database schema, cluster) can be cleaned up.
 	if !state.DatabaseSchemaID.IsNull() || !state.CacheID.IsNull() {
 		detach := client.UpdateEnvironmentRequest{}
-		empty := ""
 		if !state.DatabaseSchemaID.IsNull() {
-			detach.DatabaseSchemaID = &empty
+			detach.DatabaseSchemaID = client.DetachID()
 		}
 		if !state.CacheID.IsNull() {
-			detach.CacheID = &empty
+			detach.CacheID = client.DetachID()
 		}
-		// Best-effort detach — if it fails we still try to delete.
-		_, _ = r.client.UpdateEnvironment(ctx, envID, detach)
+		// Best-effort detach, but surface a failure as a warning: the
+		// subsequent delete will fail opaquely if the resources stay attached.
+		if _, err := r.client.UpdateEnvironment(ctx, envID, detach); err != nil {
+			resp.Diagnostics.AddWarning(
+				"Could not detach environment resources before delete",
+				"Detaching the database and cache from the environment failed, so deleting it may also fail: "+err.Error(),
+			)
+		}
 	}
 
 	if err := r.client.DeleteEnvironment(ctx, envID); err != nil {
@@ -549,14 +560,27 @@ func buildEnvironmentUpdateFromStateDiff(plan, state EnvironmentResourceModel) *
 		req.ShutdownTimeout = &v
 		hasUpdates = true
 	}
+	if plan.UsesDeployHook.ValueBool() != state.UsesDeployHook.ValueBool() {
+		v := plan.UsesDeployHook.ValueBool()
+		req.UsesDeployHook = &v
+		hasUpdates = true
+	}
+	if plan.UsesVanityDomain.ValueBool() != state.UsesVanityDomain.ValueBool() {
+		v := plan.UsesVanityDomain.ValueBool()
+		req.UsesVanityDomain = &v
+		hasUpdates = true
+	}
+	if plan.UsesPurgeEdgeCacheOnDeploy.ValueBool() != state.UsesPurgeEdgeCacheOnDeploy.ValueBool() {
+		v := plan.UsesPurgeEdgeCacheOnDeploy.ValueBool()
+		req.UsesPurgeEdgeCacheOnDeploy = &v
+		hasUpdates = true
+	}
 	if plan.DatabaseSchemaID.ValueString() != state.DatabaseSchemaID.ValueString() {
-		v := plan.DatabaseSchemaID.ValueString()
-		req.DatabaseSchemaID = &v
+		req.DatabaseSchemaID = attachOrDetach(plan.DatabaseSchemaID)
 		hasUpdates = true
 	}
 	if plan.CacheID.ValueString() != state.CacheID.ValueString() {
-		v := plan.CacheID.ValueString()
-		req.CacheID = &v
+		req.CacheID = attachOrDetach(plan.CacheID)
 		hasUpdates = true
 	}
 
@@ -564,6 +588,15 @@ func buildEnvironmentUpdateFromStateDiff(plan, state EnvironmentResourceModel) *
 		return nil
 	}
 	return &req
+}
+
+// attachOrDetach renders an attachment id for the environment PATCH body:
+// a JSON string when set, JSON null when the id was removed from config.
+func attachOrDetach(v types.String) json.RawMessage {
+	if v.IsNull() || v.IsUnknown() || v.ValueString() == "" {
+		return client.DetachID()
+	}
+	return client.AttachID(v.ValueString())
 }
 
 // buildEnvironmentUpdateFromDiff compares plan values against the freshly-created
@@ -596,7 +629,9 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 		req.NodeVersion = &v
 		hasUpdates = true
 	}
-	if v := plan.Color.ValueString(); !plan.Color.IsNull() && !plan.Color.IsUnknown() && v != env.Attributes.Color {
+	// color is write-only: it is never echoed back, so it cannot be compared
+	// against the response. Send it whenever the user set it.
+	if v := plan.Color.ValueString(); !plan.Color.IsNull() && !plan.Color.IsUnknown() {
 		req.Color = &v
 		hasUpdates = true
 	}
@@ -610,22 +645,22 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 		req.UsesOctane = &v
 		hasUpdates = true
 	}
-	if !plan.Timeout.IsNull() && !plan.Timeout.IsUnknown() && int(plan.Timeout.ValueInt64()) != env.Attributes.Timeout {
+	if !plan.Timeout.IsNull() && !plan.Timeout.IsUnknown() {
 		v := int(plan.Timeout.ValueInt64())
 		req.Timeout = &v
 		hasUpdates = true
 	}
-	if !plan.SleepTimeout.IsNull() && !plan.SleepTimeout.IsUnknown() && int(plan.SleepTimeout.ValueInt64()) != env.Attributes.SleepTimeout {
+	if !plan.SleepTimeout.IsNull() && !plan.SleepTimeout.IsUnknown() {
 		v := int(plan.SleepTimeout.ValueInt64())
 		req.SleepTimeout = &v
 		hasUpdates = true
 	}
-	if !plan.ShutdownTimeout.IsNull() && !plan.ShutdownTimeout.IsUnknown() && int(plan.ShutdownTimeout.ValueInt64()) != env.Attributes.ShutdownTimeout {
+	if !plan.ShutdownTimeout.IsNull() && !plan.ShutdownTimeout.IsUnknown() {
 		v := int(plan.ShutdownTimeout.ValueInt64())
 		req.ShutdownTimeout = &v
 		hasUpdates = true
 	}
-	if v := plan.CacheStrategy.ValueString(); !plan.CacheStrategy.IsNull() && !plan.CacheStrategy.IsUnknown() && v != env.Attributes.CacheStrategy {
+	if v := plan.CacheStrategy.ValueString(); !plan.CacheStrategy.IsNull() && !plan.CacheStrategy.IsUnknown() && v != env.Attributes.NetworkSettings.Cache.Strategy {
 		req.CacheStrategy = &v
 		hasUpdates = true
 	}
@@ -644,13 +679,27 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 		}
 	}
 	if !plan.DatabaseSchemaID.IsNull() {
-		v := plan.DatabaseSchemaID.ValueString()
-		req.DatabaseSchemaID = &v
+		req.DatabaseSchemaID = client.AttachID(plan.DatabaseSchemaID.ValueString())
 		hasUpdates = true
 	}
 	if !plan.CacheID.IsNull() {
-		v := plan.CacheID.ValueString()
-		req.CacheID = &v
+		req.CacheID = client.AttachID(plan.CacheID.ValueString())
+		hasUpdates = true
+	}
+	// These three are write-only, so they are sent whenever configured.
+	if !plan.UsesDeployHook.IsNull() && !plan.UsesDeployHook.IsUnknown() && plan.UsesDeployHook.ValueBool() != env.Attributes.UsesDeployHook {
+		v := plan.UsesDeployHook.ValueBool()
+		req.UsesDeployHook = &v
+		hasUpdates = true
+	}
+	if !plan.UsesVanityDomain.IsNull() && !plan.UsesVanityDomain.IsUnknown() {
+		v := plan.UsesVanityDomain.ValueBool()
+		req.UsesVanityDomain = &v
+		hasUpdates = true
+	}
+	if !plan.UsesPurgeEdgeCacheOnDeploy.IsNull() && !plan.UsesPurgeEdgeCacheOnDeploy.IsUnknown() {
+		v := plan.UsesPurgeEdgeCacheOnDeploy.ValueBool()
+		req.UsesPurgeEdgeCacheOnDeploy = &v
 		hasUpdates = true
 	}
 
@@ -664,7 +713,6 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 	state.Name = types.StringValue(env.Attributes.Name)
 	state.Slug = types.StringValue(env.Attributes.Slug)
 	state.Status = types.StringValue(env.Attributes.Status)
-	state.Color = types.StringValue(env.Attributes.Color)
 	// php_version is not echoed by the API in the form it is sent, so it is
 	// left untouched here to preserve the configured value; the read-only
 	// major version is surfaced via php_major_version instead.
@@ -673,14 +721,40 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 	state.NodeVersion = types.StringValue(env.Attributes.NodeVersion)
 	state.UsesPushToDeploy = types.BoolValue(env.Attributes.UsesPushToDeploy)
 	state.UsesDeployHook = types.BoolValue(env.Attributes.UsesDeployHook)
-	state.UsesVanityDomain = types.BoolValue(env.Attributes.VanityDomain != nil && *env.Attributes.VanityDomain != "")
 	state.UsesOctane = types.BoolValue(env.Attributes.UsesOctane)
-	state.UsesPurgeEdgeCacheOnDeploy = types.BoolValue(env.Attributes.UsesPurgeEdgeCacheOnDeploy)
-	state.Timeout = types.Int64Value(int64(env.Attributes.Timeout))
-	state.SleepTimeout = types.Int64Value(int64(env.Attributes.SleepTimeout))
-	state.ShutdownTimeout = types.Int64Value(int64(env.Attributes.ShutdownTimeout))
-	state.CacheStrategy = types.StringValue(env.Attributes.CacheStrategy)
+	// cache_strategy is readable only from network_settings; there is no
+	// top-level attribute of that name in the response.
+	state.CacheStrategy = types.StringValue(env.Attributes.NetworkSettings.Cache.Strategy)
 	state.CreatedAt = types.StringPointerValue(env.Attributes.CreatedAt)
 	state.BuildCommand = types.StringPointerValue(env.Attributes.BuildCommand)
 	state.DeployCommand = types.StringPointerValue(env.Attributes.DeployCommand)
+
+	// color, timeout, sleep_timeout, shutdown_timeout,
+	// uses_purge_edge_cache_on_deploy and uses_vanity_domain are write-only:
+	// PATCH accepts them but the response never carries them back. Writing a
+	// zero value here would fight the configuration on every refresh, so the
+	// configured values are left in place and drift on them is not detectable.
+}
+
+// The helpers below resolve an unknown value on a write-only Optional+Computed
+// attribute. Terraform requires every Computed attribute to be known once apply
+// finishes, but these attributes are never returned by the API, so null -- "the
+// user did not set this" -- is the only honest resolution.
+
+func resolveUnknownStringToNull(v *types.String) {
+	if v.IsUnknown() {
+		*v = types.StringNull()
+	}
+}
+
+func resolveUnknownBoolToNull(v *types.Bool) {
+	if v.IsUnknown() {
+		*v = types.BoolNull()
+	}
+}
+
+func resolveUnknownInt64ToNull(v *types.Int64) {
+	if v.IsUnknown() {
+		*v = types.Int64Null()
+	}
 }

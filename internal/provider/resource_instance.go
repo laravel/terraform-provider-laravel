@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -16,8 +17,9 @@ import (
 )
 
 var (
-	_ resource.Resource                = &InstanceResource{}
-	_ resource.ResourceWithImportState = &InstanceResource{}
+	_ resource.Resource                   = &InstanceResource{}
+	_ resource.ResourceWithImportState    = &InstanceResource{}
+	_ resource.ResourceWithValidateConfig = &InstanceResource{}
 )
 
 type InstanceResource struct {
@@ -96,12 +98,23 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Description: "Scaling type (none, custom, auto).",
 			},
 			"min_replicas": schema.Int64Attribute{
-				Required:    true,
-				Description: "Minimum number of replicas.",
+				Optional: true,
+				Computed: true,
+				Description: "Minimum number of replicas. Only applicable to the \"custom\" " +
+					"scaling type; the API rejects it for \"auto\", and it does not apply to " +
+					"managed queues, which always scale to zero when idle.",
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
 			},
 			"max_replicas": schema.Int64Attribute{
-				Required:    true,
-				Description: "Maximum number of replicas.",
+				Optional: true,
+				Computed: true,
+				Description: "Maximum number of replicas. Only applicable to the \"custom\" " +
+					"scaling type; the API rejects it for \"auto\".",
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
 			},
 			"uses_scheduler": schema.BoolAttribute{
 				Optional: true,
@@ -127,9 +140,13 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Description: "Queue visibility timeout in seconds (managed_queue).",
 			},
 			"polling_interval": schema.Int64Attribute{
-				Optional:    true,
-				Computed:    true,
-				Description: "Queue polling interval in seconds (managed_queue).",
+				Computed: true,
+				Description: "Queue polling interval in seconds (managed_queue). Read-only: " +
+					"the API reports this value but accepts it in neither the create nor the " +
+					"update request, so it is managed by the platform.",
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
 			},
 			"shutdown_timeout": schema.Int64Attribute{
 				Optional:    true,
@@ -191,8 +208,16 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		Type:        plan.Type.ValueString(),
 		Size:        plan.Size.ValueString(),
 		ScalingType: plan.ScalingType.ValueString(),
-		MinReplicas: int(plan.MinReplicas.ValueInt64()),
-		MaxReplicas: int(plan.MaxReplicas.ValueInt64()),
+	}
+	// min_replicas/max_replicas are rejected outright for the "auto" scaling
+	// type, so they are sent only when the user actually set them.
+	if !plan.MinReplicas.IsNull() && !plan.MinReplicas.IsUnknown() {
+		v := int(plan.MinReplicas.ValueInt64())
+		createReq.MinReplicas = &v
+	}
+	if !plan.MaxReplicas.IsNull() && !plan.MaxReplicas.IsUnknown() {
+		v := int(plan.MaxReplicas.ValueInt64())
+		createReq.MaxReplicas = &v
 	}
 	if !plan.UsesScheduler.IsNull() {
 		v := plan.UsesScheduler.ValueBool()
@@ -213,10 +238,6 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 	if !plan.VisibilityTimeout.IsNull() {
 		v := int(plan.VisibilityTimeout.ValueInt64())
 		createReq.VisibilityTimeout = &v
-	}
-	if !plan.PollingInterval.IsNull() {
-		v := int(plan.PollingInterval.ValueInt64())
-		createReq.PollingInterval = &v
 	}
 	if !plan.ShutdownTimeout.IsNull() {
 		v := int(plan.ShutdownTimeout.ValueInt64())
@@ -299,10 +320,6 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 	if !plan.VisibilityTimeout.Equal(state.VisibilityTimeout) {
 		v := int(plan.VisibilityTimeout.ValueInt64())
 		updateReq.VisibilityTimeout = &v
-	}
-	if !plan.PollingInterval.Equal(state.PollingInterval) {
-		v := int(plan.PollingInterval.ValueInt64())
-		updateReq.PollingInterval = &v
 	}
 	if !plan.ShutdownTimeout.Equal(state.ShutdownTimeout) {
 		v := int(plan.ShutdownTimeout.ValueInt64())
@@ -400,9 +417,57 @@ func mapInstanceToState(inst *client.InstanceData, state *InstanceResourceModel)
 	} else {
 		state.IsDefault = types.BoolNull()
 	}
-	if len(inst.Attributes.QueueStatus) > 0 && string(inst.Attributes.QueueStatus) != "null" {
-		state.QueueStatus = types.StringValue(string(inst.Attributes.QueueStatus))
-	} else {
+	if inst.Attributes.QueueStatus.IsZero() {
 		state.QueueStatus = types.StringNull()
+	} else {
+		state.QueueStatus = types.StringValue(inst.Attributes.QueueStatus.Value)
+	}
+}
+
+// ValidateConfig moves the scaling_type/replica incompatibility from a runtime
+// 422 to a plan-time error. The API documents min_replicas and max_replicas as
+// "only applicable to the custom scaling type, and rejected when used with
+// auto", so a config that sets them alongside auto can never apply.
+func (r *InstanceResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var config InstanceResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// scaling_type may be unknown when it comes from another resource.
+	if config.ScalingType.IsNull() || config.ScalingType.IsUnknown() {
+		return
+	}
+
+	isSet := func(v types.Int64) bool { return !v.IsNull() && !v.IsUnknown() }
+
+	if config.ScalingType.ValueString() == "auto" {
+		if isSet(config.MinReplicas) {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("min_replicas"),
+				"min_replicas cannot be used with automatic scaling",
+				"The Laravel Cloud API rejects min_replicas when scaling_type is \"auto\". "+
+					"Remove min_replicas, or set scaling_type to \"custom\".",
+			)
+		}
+		if isSet(config.MaxReplicas) {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("max_replicas"),
+				"max_replicas cannot be used with automatic scaling",
+				"The Laravel Cloud API rejects max_replicas when scaling_type is \"auto\". "+
+					"Remove max_replicas, or set scaling_type to \"custom\".",
+			)
+		}
+		return
+	}
+
+	// Outside "auto", min_replicas is a required field of the create request.
+	if config.ScalingType.ValueString() == "custom" && !isSet(config.MinReplicas) {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("min_replicas"),
+			"min_replicas is required for custom scaling",
+			"scaling_type is \"custom\", which requires min_replicas to be set.",
+		)
 	}
 }

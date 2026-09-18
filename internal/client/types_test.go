@@ -148,7 +148,7 @@ func TestInstanceAttributes_ManagedQueue(t *testing.T) {
 		"polling_interval": 5,
 		"paused": false,
 		"is_default": true,
-		"queue_status": {"available": 0, "delayed": 2}
+		"queue_status": "available"
 	}`
 
 	var attrs InstanceAttributes
@@ -164,8 +164,35 @@ func TestInstanceAttributes_ManagedQueue(t *testing.T) {
 	if attrs.IsDefault == nil || !*attrs.IsDefault {
 		t.Errorf("IsDefault = %v, want true", attrs.IsDefault)
 	}
-	if len(attrs.QueueStatus) == 0 {
-		t.Error("QueueStatus is empty, want raw JSON object")
+	// The spec types queue_status as a bare string enum. It must land in the
+	// struct unquoted -- storing the raw JSON put literal quotes into state.
+	if attrs.QueueStatus.Value != "available" {
+		t.Errorf("QueueStatus = %q, want available", attrs.QueueStatus.Value)
+	}
+}
+
+// TestInstanceAttributes_QueueStatusNonString pins the defensive path: if the
+// API ever answers with something other than a string, the instance read must
+// still succeed rather than failing to decode entirely.
+func TestInstanceAttributes_QueueStatusNonString(t *testing.T) {
+	var attrs InstanceAttributes
+	body := `{"name":"queue","queue_status":{"available":0,"delayed":2}}`
+	if err := json.Unmarshal([]byte(body), &attrs); err != nil {
+		t.Fatalf("unmarshal must not fail on a non-string queue_status: %v", err)
+	}
+	if attrs.QueueStatus.Value != `{"available":0,"delayed":2}` {
+		t.Errorf("QueueStatus = %q, want the raw JSON preserved", attrs.QueueStatus.Value)
+	}
+}
+
+// TestInstanceAttributes_QueueStatusNull covers a non-queue instance.
+func TestInstanceAttributes_QueueStatusNull(t *testing.T) {
+	var attrs InstanceAttributes
+	if err := json.Unmarshal([]byte(`{"name":"web","queue_status":null}`), &attrs); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !attrs.QueueStatus.IsZero() {
+		t.Errorf("QueueStatus = %q, want zero", attrs.QueueStatus.Value)
 	}
 }
 

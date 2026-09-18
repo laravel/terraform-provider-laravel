@@ -191,13 +191,9 @@ func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 			Name:            req.Name,
 			Slug:            slugify(req.Name),
 			Status:          "active",
-			Color:           "blue",
 			PHPMajorVersion: "8.4",
 			NodeVersion:     "20",
-			Timeout:         30,
-			SleepTimeout:    5,
-			ShutdownTimeout: 10,
-			CacheStrategy:   "default",
+			NetworkSettings: newEnvironmentNetwork("default"),
 		},
 	}
 	f.envs[id] = env
@@ -239,14 +235,13 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 	if req.Slug != nil {
 		a.Slug = *req.Slug
 	}
-	if req.Color != nil {
-		a.Color = *req.Color
-	}
 	if req.NodeVersion != nil {
 		a.NodeVersion = *req.NodeVersion
 	}
+	// cache_strategy is written at the top level but only ever read back from
+	// network_settings.cache.strategy -- mirror that asymmetry faithfully.
 	if req.CacheStrategy != nil {
-		a.CacheStrategy = *req.CacheStrategy
+		a.NetworkSettings = newEnvironmentNetwork(*req.CacheStrategy)
 	}
 	if req.UsesPushToDeploy != nil {
 		a.UsesPushToDeploy = *req.UsesPushToDeploy
@@ -257,18 +252,10 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 	if req.UsesOctane != nil {
 		a.UsesOctane = *req.UsesOctane
 	}
-	if req.UsesPurgeEdgeCacheOnDeploy != nil {
-		a.UsesPurgeEdgeCacheOnDeploy = *req.UsesPurgeEdgeCacheOnDeploy
-	}
-	if req.Timeout != nil {
-		a.Timeout = *req.Timeout
-	}
-	if req.SleepTimeout != nil {
-		a.SleepTimeout = *req.SleepTimeout
-	}
-	if req.ShutdownTimeout != nil {
-		a.ShutdownTimeout = *req.ShutdownTimeout
-	}
+	// color, timeout, sleep_timeout, shutdown_timeout and
+	// uses_purge_edge_cache_on_deploy are accepted here and deliberately
+	// dropped: the real API has no response attribute for any of them, and a
+	// fake that echoed them back would mask a non-converging plan.
 	// php_version is sent as "major:minor"; the API only ever reports the major
 	// version back via php_major_version.
 	if req.PHPVersion != nil {
@@ -323,4 +310,12 @@ func nilIfEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// newEnvironmentNetwork builds the response-side network_settings object with
+// the given cache strategy.
+func newEnvironmentNetwork(strategy string) client.EnvironmentNetwork {
+	var n client.EnvironmentNetwork
+	n.Cache.Strategy = strategy
+	return n
 }

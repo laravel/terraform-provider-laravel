@@ -20,7 +20,7 @@ resource "laravel_cloud_instance" "example" {
   environment_id = laravel_cloud_environment.example.id
   name           = "web"
   size           = "flex.c-1vcpu-256mb"
-  scaling_type   = "none"
+  scaling_type   = "custom"
   min_replicas   = 1
   max_replicas   = 1
 }

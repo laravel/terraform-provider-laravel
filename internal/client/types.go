@@ -82,11 +82,20 @@ type EnvironmentData struct {
 	Attributes EnvironmentAttributes `json:"attributes"`
 }
 
+// EnvironmentAttributes mirrors EnvironmentResource.attributes in the public
+// OpenAPI spec. Only fields the API actually returns belong here.
+//
+// Several environment settings -- color, timeout, sleep_timeout,
+// shutdown_timeout, uses_purge_edge_cache_on_deploy, uses_vanity_domain -- are
+// accepted by PATCH but are *write-only*: they appear nowhere in the response
+// schema. Decoding them here would silently yield the zero value on every read
+// and overwrite the configured value in state, producing a plan that never
+// converges. They are deliberately absent; see mapEnvironmentToState, which
+// leaves the configured values untouched.
 type EnvironmentAttributes struct {
 	Name   string `json:"name"`
 	Slug   string `json:"slug"`
 	Status string `json:"status"`
-	Color  string `json:"color"`
 	// PHPMajorVersion is the read-only major version returned by the API
 	// (e.g. "8.4"). The writable php_version sent on update uses the
 	// "8.4:1" form, so the two are deliberately distinct fields.
@@ -94,21 +103,43 @@ type EnvironmentAttributes struct {
 	NodeVersion      string  `json:"node_version"`
 	UsesPushToDeploy bool    `json:"uses_push_to_deploy"`
 	UsesDeployHook   bool    `json:"uses_deploy_hook"`
-	Timeout          int     `json:"timeout"`
 	BuildCommand     *string `json:"build_command"`
 	DeployCommand    *string `json:"deploy_command"`
 	// VanityDomain is the read-only vanity domain hostname returned by the
 	// API (empty/null when none). There is no uses_vanity_domain response
 	// flag; presence of a vanity domain is derived from this field.
-	VanityDomain               *string `json:"vanity_domain"`
-	UsesOctane                 bool    `json:"uses_octane"`
-	SleepTimeout               int     `json:"sleep_timeout"`
-	ShutdownTimeout            int     `json:"shutdown_timeout"`
-	UsesPurgeEdgeCacheOnDeploy bool    `json:"uses_purge_edge_cache_on_deploy"`
-	CacheStrategy              string  `json:"cache_strategy"`
-	CreatedFromAutomation      bool    `json:"created_from_automation"`
-	CreatedAt                  *string `json:"created_at"`
+	VanityDomain          *string            `json:"vanity_domain"`
+	UsesOctane            bool               `json:"uses_octane"`
+	UsesHibernation       bool               `json:"uses_hibernation"`
+	NetworkSettings       EnvironmentNetwork `json:"network_settings"`
+	CreatedFromAutomation bool               `json:"created_from_automation"`
+	CreatedAt             *string            `json:"created_at"`
 }
+
+// EnvironmentNetwork is the response-side network_settings object. The cache
+// strategy is readable only from here -- there is no top-level cache_strategy
+// attribute, even though PATCH accepts one under that name.
+type EnvironmentNetwork struct {
+	Cache struct {
+		Strategy string `json:"strategy"`
+	} `json:"cache"`
+}
+
+// AttachID renders an id as a JSON string for the nullable attachment fields
+// on UpdateEnvironmentRequest.
+func AttachID(id string) json.RawMessage {
+	b, err := json.Marshal(id)
+	if err != nil {
+		// json.Marshal of a string cannot fail; fall back to detaching
+		// rather than emitting invalid JSON into the request body.
+		return DetachID()
+	}
+	return b
+}
+
+// DetachID renders JSON null, which is how the API is told to detach a
+// database, cache or websocket application from an environment.
+func DetachID() json.RawMessage { return json.RawMessage("null") }
 
 type CreateEnvironmentRequest struct {
 	Branch    string  `json:"branch"`
@@ -117,26 +148,29 @@ type CreateEnvironmentRequest struct {
 }
 
 type UpdateEnvironmentRequest struct {
-	Name                       *string `json:"name,omitempty"`
-	Slug                       *string `json:"slug,omitempty"`
-	Color                      *string `json:"color,omitempty"`
-	Branch                     *string `json:"branch,omitempty"`
-	UsesPushToDeploy           *bool   `json:"uses_push_to_deploy,omitempty"`
-	UsesDeployHook             *bool   `json:"uses_deploy_hook,omitempty"`
-	Timeout                    *int    `json:"timeout,omitempty"`
-	PHPVersion                 *string `json:"php_version,omitempty"`
-	BuildCommand               *string `json:"build_command,omitempty"`
-	NodeVersion                *string `json:"node_version,omitempty"`
-	DeployCommand              *string `json:"deploy_command,omitempty"`
-	UsesVanityDomain           *bool   `json:"uses_vanity_domain,omitempty"`
-	DatabaseSchemaID           *string `json:"database_schema_id,omitempty"`
-	CacheID                    *string `json:"cache_id,omitempty"`
-	WebsocketApplicationID     *string `json:"websocket_application_id,omitempty"`
-	UsesOctane                 *bool   `json:"uses_octane,omitempty"`
-	SleepTimeout               *int    `json:"sleep_timeout,omitempty"`
-	ShutdownTimeout            *int    `json:"shutdown_timeout,omitempty"`
-	UsesPurgeEdgeCacheOnDeploy *bool   `json:"uses_purge_edge_cache_on_deploy,omitempty"`
-	CacheStrategy              *string `json:"cache_strategy,omitempty"`
+	Name             *string `json:"name,omitempty"`
+	Slug             *string `json:"slug,omitempty"`
+	Color            *string `json:"color,omitempty"`
+	Branch           *string `json:"branch,omitempty"`
+	UsesPushToDeploy *bool   `json:"uses_push_to_deploy,omitempty"`
+	UsesDeployHook   *bool   `json:"uses_deploy_hook,omitempty"`
+	Timeout          *int    `json:"timeout,omitempty"`
+	PHPVersion       *string `json:"php_version,omitempty"`
+	BuildCommand     *string `json:"build_command,omitempty"`
+	NodeVersion      *string `json:"node_version,omitempty"`
+	DeployCommand    *string `json:"deploy_command,omitempty"`
+	UsesVanityDomain *bool   `json:"uses_vanity_domain,omitempty"`
+	// These three are nullable in the spec: JSON null detaches the resource
+	// from the environment. An empty string is not null and is rejected, so
+	// they are raw JSON rather than *string -- see AttachID / DetachID.
+	DatabaseSchemaID           json.RawMessage `json:"database_schema_id,omitempty"`
+	CacheID                    json.RawMessage `json:"cache_id,omitempty"`
+	WebsocketApplicationID     json.RawMessage `json:"websocket_application_id,omitempty"`
+	UsesOctane                 *bool           `json:"uses_octane,omitempty"`
+	SleepTimeout               *int            `json:"sleep_timeout,omitempty"`
+	ShutdownTimeout            *int            `json:"shutdown_timeout,omitempty"`
+	UsesPurgeEdgeCacheOnDeploy *bool           `json:"uses_purge_edge_cache_on_deploy,omitempty"`
+	CacheStrategy              *string         `json:"cache_strategy,omitempty"`
 }
 
 // ---------------------------------------------------------------------
@@ -160,30 +194,38 @@ type InstanceAttributes struct {
 	ScalingCPUThresholdPercentage    *int   `json:"scaling_cpu_threshold_percentage"`
 	ScalingMemoryThresholdPercentage *int   `json:"scaling_memory_threshold_percentage"`
 	// Managed-queue fields (type == "managed_queue").
-	SleepWithApp      *bool           `json:"sleep_with_app"`
-	VisibilityTimeout *int            `json:"visibility_timeout"`
-	PollingInterval   *int            `json:"polling_interval"`
-	ShutdownTimeout   *int            `json:"shutdown_timeout"`
-	Paused            *bool           `json:"paused"`
-	IsDefault         *bool           `json:"is_default"`
-	QueueStatus       json.RawMessage `json:"queue_status"`
-	CreatedAt         *string         `json:"created_at"`
+	SleepWithApp      *bool `json:"sleep_with_app"`
+	VisibilityTimeout *int  `json:"visibility_timeout"`
+	PollingInterval   *int  `json:"polling_interval"`
+	ShutdownTimeout   *int  `json:"shutdown_timeout"`
+	Paused            *bool `json:"paused"`
+	IsDefault         *bool `json:"is_default"`
+	// QueueStatus is a string enum per the spec (creating, updating,
+	// available, deleting, deleted, unknown) or null. It is decoded through
+	// QueueStatusValue rather than a plain *string so that a non-string
+	// payload degrades to raw JSON instead of failing the whole decode.
+	QueueStatus QueueStatusValue `json:"queue_status"`
+	CreatedAt   *string          `json:"created_at"`
 }
 
 type CreateInstanceRequest struct {
-	Name                             string `json:"name"`
-	Type                             string `json:"type"`
-	Size                             string `json:"size"`
-	ScalingType                      string `json:"scaling_type"`
-	MinReplicas                      int    `json:"min_replicas"`
-	MaxReplicas                      int    `json:"max_replicas"`
-	UsesScheduler                    *bool  `json:"uses_scheduler,omitempty"`
-	ScalingCPUThresholdPercentage    *int   `json:"scaling_cpu_threshold_percentage,omitempty"`
-	ScalingMemoryThresholdPercentage *int   `json:"scaling_memory_threshold_percentage,omitempty"`
-	SleepWithApp                     *bool  `json:"sleep_with_app,omitempty"`
-	VisibilityTimeout                *int   `json:"visibility_timeout,omitempty"`
-	PollingInterval                  *int   `json:"polling_interval,omitempty"`
-	ShutdownTimeout                  *int   `json:"shutdown_timeout,omitempty"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Size        string `json:"size"`
+	ScalingType string `json:"scaling_type"`
+	// MinReplicas/MaxReplicas are pointers because the API *rejects* them for
+	// the "auto" scaling type ("Only applicable to the custom scaling type,
+	// and rejected when used with auto"). They must be omittable.
+	MinReplicas                      *int  `json:"min_replicas,omitempty"`
+	MaxReplicas                      *int  `json:"max_replicas,omitempty"`
+	UsesScheduler                    *bool `json:"uses_scheduler,omitempty"`
+	ScalingCPUThresholdPercentage    *int  `json:"scaling_cpu_threshold_percentage,omitempty"`
+	ScalingMemoryThresholdPercentage *int  `json:"scaling_memory_threshold_percentage,omitempty"`
+	SleepWithApp                     *bool `json:"sleep_with_app,omitempty"`
+	VisibilityTimeout                *int  `json:"visibility_timeout,omitempty"`
+	ShutdownTimeout                  *int  `json:"shutdown_timeout,omitempty"`
+	// polling_interval is deliberately absent: it appears in neither the
+	// create nor the update request schema. It is read-only.
 }
 
 type UpdateInstanceRequest struct {
@@ -200,8 +242,8 @@ type UpdateInstanceRequest struct {
 	UsesInertiaSSR                   *bool   `json:"uses_inertia_ssr,omitempty"`
 	HibernationTimeout               *int    `json:"hibernation_timeout,omitempty"`
 	VisibilityTimeout                *int    `json:"visibility_timeout,omitempty"`
-	PollingInterval                  *int    `json:"polling_interval,omitempty"`
 	ShutdownTimeout                  *int    `json:"shutdown_timeout,omitempty"`
+	// polling_interval is read-only; see CreateInstanceRequest.
 }
 
 // ---------------------------------------------------------------------
@@ -710,9 +752,13 @@ type DedicatedClusterAttributes struct {
 // Data source response types (non-JSON:API)
 // ---------------------------------------------------------------------
 
+// InstanceSizesResponse is the GET /instances/sizes payload. The spec requires
+// BOTH classes; modelling only "general" silently dropped every managed-queue
+// size from the data source.
 type InstanceSizesResponse struct {
 	Data struct {
-		General []InstanceSizeInfo `json:"general"`
+		General      []InstanceSizeInfo `json:"general"`
+		ManagedQueue []InstanceSizeInfo `json:"managed_queue"`
 	} `json:"data"`
 }
 
@@ -722,8 +768,11 @@ type InstanceSizeInfo struct {
 	Description  string `json:"description"`
 	CPUType      string `json:"cpu_type"`
 	ComputeClass string `json:"compute_class"`
-	CPUCount     int    `json:"cpu_count"`
-	MemoryMiB    int    `json:"memory_mib"`
+	// CPUCount is a float because managed-queue sizes express fractional
+	// vCPUs (the spec types it "integer" for general and "number" for
+	// managed_queue); an int here fails to unmarshal e.g. 0.5.
+	CPUCount  float64 `json:"cpu_count"`
+	MemoryMiB int     `json:"memory_mib"`
 }
 
 type DatabaseTypesResponse struct {
@@ -754,3 +803,38 @@ type CacheSizeInfo struct {
 	Value string `json:"value"`
 	Label string `json:"label"`
 }
+
+// QueueStatusValue holds the managed-queue status. The public spec types it as
+// a string enum, but the value is decoded defensively: a JSON string is
+// unquoted (storing it raw put literal quote characters into Terraform state),
+// while any other shape is preserved verbatim so that an API that returns, say,
+// a status object does not break the entire instance read.
+type QueueStatusValue struct {
+	// Value is the status as a bare string, or the compact JSON encoding of
+	// whatever non-string payload arrived. It is empty when absent or null.
+	Value string
+}
+
+func (q *QueueStatusValue) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 || string(b) == "null" {
+		q.Value = ""
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		q.Value = s
+		return nil
+	}
+	q.Value = string(b)
+	return nil
+}
+
+func (q QueueStatusValue) MarshalJSON() ([]byte, error) {
+	if q.Value == "" {
+		return []byte("null"), nil
+	}
+	return json.Marshal(q.Value)
+}
+
+// IsZero reports whether no queue status was returned.
+func (q QueueStatusValue) IsZero() bool { return q.Value == "" }
