@@ -32,7 +32,8 @@ type DatabaseClusterResourceModel struct {
 	Type       types.String `tfsdk:"type"`
 	Region     types.String `tfsdk:"region"`
 	Status     types.String `tfsdk:"status"`
-	ClusterID  types.Int64  `tfsdk:"cluster_id"`
+	ClusterID  types.String `tfsdk:"cluster_id"`
+	Version    types.String `tfsdk:"version"`
 	Config     types.String `tfsdk:"config"`
 	Connection types.Object `tfsdk:"connection_details"`
 	CreatedAt  types.String `tfsdk:"created_at"`
@@ -110,9 +111,24 @@ func (r *DatabaseClusterResource) Schema(_ context.Context, _ resource.SchemaReq
 				Computed:    true,
 				Description: "Cluster status.",
 			},
-			"cluster_id": schema.Int64Attribute{
-				Optional:    true,
-				Description: "Dedicated cluster ID.",
+			"cluster_id": schema.StringAttribute{
+				Optional: true,
+				Description: "Dedicated cluster ID. Changing this forces a new cluster: " +
+					"the API's update endpoint accepts config and nothing else.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"version": schema.StringAttribute{
+				Optional: true,
+				Description: "Database engine version (see the versions attribute of the " +
+					"laravel_cloud_database_types data source). Required by the API for the " +
+					"current type identifiers such as \"laravel_mysql\"; omit it only when " +
+					"using a retired identifier that bakes the version into the type, " +
+					"such as \"laravel_mysql_84\".",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"config": schema.StringAttribute{
 				Required:    true,
@@ -157,12 +173,13 @@ func (r *DatabaseClusterResource) Create(ctx context.Context, req resource.Creat
 	}
 
 	createReq := client.CreateDatabaseClusterRequest{
-		Type:   plan.Type.ValueString(),
-		Name:   plan.Name.ValueString(),
-		Region: plan.Region.ValueString(),
+		Type:    plan.Type.ValueString(),
+		Version: plan.Version.ValueString(),
+		Name:    plan.Name.ValueString(),
+		Region:  plan.Region.ValueString(),
 	}
 	if !plan.ClusterID.IsNull() {
-		v := int(plan.ClusterID.ValueInt64())
+		v := plan.ClusterID.ValueString()
 		createReq.ClusterID = &v
 	}
 	if !plan.Config.IsNull() {
@@ -206,7 +223,7 @@ func (r *DatabaseClusterResource) Read(ctx context.Context, req resource.ReadReq
 	}
 
 	state.Name = types.StringValue(cluster.Attributes.Name)
-	state.Type = types.StringValue(cluster.Attributes.DBType)
+	state.Type = reconcileDatabaseType(state.Type, cluster.Attributes.DBType)
 	state.Region = types.StringValue(cluster.Attributes.Region)
 	state.Status = types.StringValue(cluster.Attributes.Status)
 	state.Connection = mapDatabaseConnection(cluster.Attributes.Connection)
@@ -282,4 +299,28 @@ func (r *DatabaseClusterResource) Delete(ctx context.Context, req resource.Delet
 
 func (r *DatabaseClusterResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// reconcileDatabaseType keeps the configured database type when the API answers
+// with the equivalent base identifier.
+//
+// The retired type identifiers (laravel_mysql_84, aws_rds_mysql_8,
+// neon_serverless_postgres_18, ...) bake the engine version into the type and
+// are still accepted on create, but the API always reports the *base* type
+// back: DatabaseType is enum ["laravel_mysql", "aws_rds_mysql",
+// "aws_rds_postgres", "neon_serverless_postgres"]. Writing that base value into
+// state made it differ from the configured value on every read, and because
+// type carries RequiresReplace the next plan proposed destroying and recreating
+// a live database cluster.
+//
+// When the configured value is the returned value plus a version suffix, the
+// two denote the same type and the configured spelling is preserved.
+func reconcileDatabaseType(configured types.String, returned string) types.String {
+	if configured.IsNull() || configured.IsUnknown() || returned == "" {
+		return types.StringValue(returned)
+	}
+	if strings.HasPrefix(configured.ValueString(), returned+"_") {
+		return configured
+	}
+	return types.StringValue(returned)
 }

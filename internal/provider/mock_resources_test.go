@@ -3,6 +3,7 @@ package provider
 import (
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // clusterType is the store key for database clusters. database_restore creates
@@ -81,9 +82,26 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 					a["redirect"] = v
 				}
 				a["type"] = "root"
+				a["stage"] = "pre_verification"
 				a["hostname_status"] = "pending"
 				a["ssl_status"] = "pending"
 				a["origin_status"] = "pending"
+				a["action_required"] = "add_txt_records"
+				// dns_records is required in the response and is how an
+				// operator learns which records to create.
+				a["dns_records"] = map[string]any{
+					"ssl": []any{
+						map[string]any{
+							"type":  "TXT",
+							"name":  "_acme-challenge.example.com",
+							"value": "dcv-token",
+						},
+					},
+					"pre_verification": "laravel-cloud-verification=token",
+					"origin":           "origin.laravel.cloud",
+					"origin_cname":     "cname.laravel.cloud",
+					"dcv":              "dcv-token",
+				}
 				return a
 			},
 		},
@@ -196,9 +214,11 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
 				a["type"] = "manual"
-				a["status"] = "available"
+				// Snapshots are created pending, with no size reported yet --
+				// storage_bytes is null until the snapshot completes.
+				a["status"] = "pending"
 				a["pitr_enabled"] = false
-				a["storage_bytes"] = 0
+				a["storage_bytes"] = nil
 				return a
 			},
 		},
@@ -256,6 +276,13 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 func seedCluster(body map[string]any, _ string) map[string]any {
 	a := cloneMap(body)
 	a["status"] = "available"
+	// The API answers with the base DatabaseType enum value, even when the
+	// cluster was created with a retired identifier such as laravel_mysql_84.
+	if t, ok := body["type"].(string); ok {
+		a["type"] = baseDatabaseType(t)
+	}
+	// version is a create-only request field and is not echoed back.
+	delete(a, "version")
 	a["connection"] = map[string]any{
 		"hostname": "db.test.local", "port": 3306, "protocol": "tcp",
 		"driver": "mysql", "username": "forge", "password": "db-secret",
@@ -269,4 +296,20 @@ func cloneMap(m map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// baseDatabaseType maps a retired, version-bearing type identifier
+// (laravel_mysql_84) onto the base type the API reports (laravel_mysql).
+func baseDatabaseType(t string) string {
+	for _, base := range []string{
+		"neon_serverless_postgres",
+		"aws_rds_postgres",
+		"aws_rds_mysql",
+		"laravel_mysql",
+	} {
+		if t == base || strings.HasPrefix(t, base+"_") {
+			return base
+		}
+	}
+	return t
 }

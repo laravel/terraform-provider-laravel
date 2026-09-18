@@ -400,7 +400,10 @@ resource "laravel_cloud_database_snapshot" "snap" {
 		[]plancheck.PlanCheck{create(addr)},
 		[]statecheck.StateCheck{
 			statecheck.ExpectKnownValue(addr, tfjsonpath.New("type"), knownvalue.StringExact("manual")),
-			statecheck.ExpectKnownValue(addr, tfjsonpath.New("status"), knownvalue.StringExact("available")),
+			// A snapshot is created pending; it does not become available
+			// within the create call, and has no size reported until it does.
+			statecheck.ExpectKnownValue(addr, tfjsonpath.New("status"), knownvalue.StringExact("pending")),
+			statecheck.ExpectKnownValue(addr, tfjsonpath.New("storage_bytes"), knownvalue.Null()),
 		},
 	)
 }

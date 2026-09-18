@@ -259,13 +259,39 @@ type DomainData struct {
 type DomainAttributes struct {
 	Name               string  `json:"name"`
 	DomainType         string  `json:"type"`
+	Stage              string  `json:"stage"`
 	HostnameStatus     string  `json:"hostname_status"`
 	SSLStatus          string  `json:"ssl_status"`
 	OriginStatus       string  `json:"origin_status"`
 	Redirect           *string `json:"redirect"`
 	CloudflareStrategy *string `json:"cloudflare_strategy"`
 	Downtime           *bool   `json:"downtime"`
-	CreatedAt          *string `json:"created_at"`
+	WildcardEnabled    bool    `json:"wildcard_enabled"`
+	// ActionRequired reports what the operator still has to do
+	// (add_txt_records, add_dns_records, failed) before the domain verifies.
+	ActionRequired *string `json:"action_required"`
+	LastVerifiedAt *string `json:"last_verified_at"`
+	// DNSRecords carries the records that must exist for the domain to
+	// verify and serve. Without it there is no way to complete the domain
+	// workflow from Terraform.
+	DNSRecords DomainDNSRecords `json:"dns_records"`
+	CreatedAt  *string          `json:"created_at"`
+}
+
+// DomainDNSRecords is the dns_records object on a domain.
+type DomainDNSRecords struct {
+	SSL             []DomainSSLRecord `json:"ssl"`
+	PreVerification string            `json:"pre_verification"`
+	Origin          string            `json:"origin"`
+	OriginCNAME     string            `json:"origin_cname"`
+	DCV             string            `json:"dcv"`
+}
+
+// DomainSSLRecord is one CNAME/TXT record required for SSL issuance.
+type DomainSSLRecord struct {
+	Type  string  `json:"type"`
+	Name  *string `json:"name"`
+	Value *string `json:"value"`
 }
 
 type CreateDomainRequest struct {
@@ -277,6 +303,9 @@ type CreateDomainRequest struct {
 	AllowDowntime      *bool   `json:"allow_downtime,omitempty"`
 }
 
+// UpdateDomainRequest is the entire PATCH /domains/{domain} body: the API
+// accepts verification_method and nothing else, and it is required. Every other
+// domain setting is create-only, which is why they force replacement.
 type UpdateDomainRequest struct {
 	VerificationMethod string `json:"verification_method"`
 }
@@ -311,15 +340,24 @@ type DatabaseConnection struct {
 }
 
 type CreateDatabaseClusterRequest struct {
-	Type      string         `json:"type"`
-	Name      string         `json:"name"`
-	Region    string         `json:"region"`
-	ClusterID *int           `json:"cluster_id,omitempty"`
-	Config    map[string]any `json:"config,omitempty"`
+	Type string `json:"type"`
+	// Version is required by the API for every current database type. The
+	// retired identifiers that baked the version into the type (laravel_mysql_84
+	// and friends) are still accepted for backwards compatibility and carry
+	// their own version, which is why this is omitempty rather than mandatory.
+	Version string `json:"version,omitempty"`
+	Name    string `json:"name"`
+	Region  string `json:"region"`
+	// ClusterID is a string in the spec, not a number.
+	ClusterID *string `json:"cluster_id,omitempty"`
+	// Config is required by the API; it is sent even when empty.
+	Config map[string]any `json:"config"`
 }
 
+// UpdateDatabaseClusterRequest is the entire PATCH body. config is required,
+// so it is sent even when empty rather than dropped by omitempty.
 type UpdateDatabaseClusterRequest struct {
-	Config map[string]any `json:"config,omitempty"`
+	Config map[string]any `json:"config"`
 }
 
 // ---------------------------------------------------------------------
@@ -648,7 +686,11 @@ type DatabaseSnapshotData struct {
 }
 
 type DatabaseSnapshotAttributes struct {
-	Name         string  `json:"name"`
+	// Name is nullable in the spec: snapshots the platform creates on a
+	// schedule have none. A plain string would collapse null to "" and, since
+	// name forces replacement, make an imported scheduled snapshot look like
+	// it needed recreating.
+	Name         *string `json:"name"`
 	Description  *string `json:"description"`
 	SnapshotType string  `json:"type"`
 	Status       string  `json:"status"`
@@ -780,7 +822,11 @@ type DatabaseTypesResponse struct {
 }
 
 type DatabaseTypeInfo struct {
-	Type         string           `json:"type"`
+	Type string `json:"type"`
+	// Versions lists the engine versions accepted alongside this type. It is
+	// required in the response and is what a caller needs to populate the
+	// required `version` field when creating a cluster.
+	Versions     []string         `json:"versions"`
 	Label        string           `json:"label"`
 	Regions      []string         `json:"regions"`
 	ConfigSchema []map[string]any `json:"config_schema"`
