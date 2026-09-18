@@ -87,6 +87,7 @@ provider "laravel" {
 | `laravel_cloud_cache_types` | Available cache types |
 | `laravel_cloud_regions` | Available regions |
 | `laravel_cloud_ip_addresses` | IP addresses for allowlisting |
+| `laravel_cloud_edge_networks` | Edge networks (CDN zones) available to the organization |
 
 ## Development
 
