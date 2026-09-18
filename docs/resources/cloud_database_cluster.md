@@ -46,7 +46,7 @@ resource "laravel_cloud_database_cluster" "example" {
 ### Optional
 
 - `cluster_id` (String) Dedicated cluster ID. Changing this forces a new cluster: the API's update endpoint accepts config and nothing else.
-- `version` (String) Database engine version (see the versions attribute of the laravel_cloud_database_types data source). Required by the API for the current type identifiers such as "laravel_mysql"; omit it only when using a retired identifier that bakes the version into the type, such as "laravel_mysql_84".
+- `version` (String) Database engine version (see the versions attribute of the laravel_cloud_database_types data source). Required by the API for the current type identifiers such as "laravel_mysql"; omit it only when using a retired identifier that bakes the version into the type, such as "laravel_mysql_84". Create-only: the API never reports it back, so an imported cluster leaves it null.
 
 ### Read-Only
 

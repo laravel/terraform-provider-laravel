@@ -31,8 +31,13 @@ func TestAccDatabaseClusterResource_basic(t *testing.T) {
 				ResourceName:      "laravel_cloud_database_cluster.test",
 				ImportState:       true,
 				ImportStateVerify: true,
-				// config JSON ordering may differ
-				ImportStateVerifyIgnore: []string{"config"},
+				// version is a create-only request field: the API accepts it and
+				// never reports it back, so an imported cluster cannot recover
+				// it. config is ignored because an imported cluster has no
+				// configured JSON to preserve, so it takes the API's full
+				// effective configuration including defaults the original
+				// config never set.
+				ImportStateVerifyIgnore: []string{"version", "config"},
 			},
 		},
 	})
