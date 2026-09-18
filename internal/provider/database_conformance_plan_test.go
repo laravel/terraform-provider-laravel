@@ -149,3 +149,39 @@ resource "laravel_cloud_database_snapshot" "snap" {
 }
 `, baseURL)
 }
+
+// TestDatabaseClusterConfigDefaultsPlan guards the config round-trip.
+//
+// config is a Required, user-authored JSON string, but the API echoes back the
+// full effective configuration including keys the caller never set --
+// suspend_seconds and storage_autoscale_max_gb among them. Writing that whole
+// object into state made every plan propose deleting those keys, and the API
+// always added them back, so the diff could never converge. Observed against a
+// live API, where the refresh plan after a clean apply was not empty.
+func TestDatabaseClusterConfigDefaultsPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	config := databaseClusterConfig(baseURL, `type = "laravel_mysql_84"`)
+
+	const addr = "laravel_cloud_database_cluster.db"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				ConfigStateChecks: []statecheck.StateCheck{
+					// The configured JSON survives verbatim; the API's extra
+					// defaults are not merged into the user's attribute.
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("config"),
+						knownvalue.StringExact(`{"size":"mysql-flex-1gb"}`)),
+				},
+			},
+			{
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+		},
+	})
+}

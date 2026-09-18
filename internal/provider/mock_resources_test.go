@@ -289,6 +289,16 @@ func seedCluster(body map[string]any, _ string) map[string]any {
 	}
 	// version is a create-only request field and is not echoed back.
 	delete(a, "version")
+	// The API returns the full effective config, including defaults the caller
+	// never set. Echoing back only what was sent hid a config diff that could
+	// never converge.
+	if cfg, ok := a["config"].(map[string]any); ok {
+		merged := map[string]any{"suspend_seconds": float64(0), "storage_autoscale_max_gb": nil}
+		for k, v := range cfg {
+			merged[k] = v
+		}
+		a["config"] = merged
+	}
 	a["connection"] = map[string]any{
 		"hostname": "db.test.local", "port": 3306, "protocol": "tcp",
 		"driver": "mysql", "username": "forge", "password": "db-secret",

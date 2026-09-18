@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -229,10 +230,7 @@ func (r *DatabaseClusterResource) Read(ctx context.Context, req resource.ReadReq
 	state.Connection = mapDatabaseConnection(cluster.Attributes.Connection)
 	state.CreatedAt = types.StringPointerValue(cluster.Attributes.CreatedAt)
 
-	if cluster.Attributes.Config != nil {
-		cfgBytes, _ := json.Marshal(cluster.Attributes.Config)
-		state.Config = types.StringValue(string(cfgBytes))
-	}
+	state.Config = reconcileDatabaseConfig(state.Config, cluster.Attributes.Config)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -281,20 +279,75 @@ func (r *DatabaseClusterResource) Delete(ctx context.Context, req resource.Delet
 		return
 	}
 
-	// The cluster may still be processing schema deletions. Retry for up
-	// to 5 minutes if the API says schemas are still attached or an
-	// update operation is in progress.
 	id := state.ID.ValueString()
+
+	// A cluster always carries at least the default schema the API creates
+	// alongside it, and the API refuses to delete a cluster while any schema is
+	// attached. Retrying that call alone can never succeed -- nothing else
+	// removes the schema -- so every destroy failed and left a billable
+	// database behind. The schemas have to go first.
+	if diags := deleteClusterSchemas(ctx, r.client, id); diags != nil {
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	// The cluster may still be settling after the schema deletions.
 	err := client.RetryOnConflict(ctx, 30, 10*time.Second, func() error {
 		return r.client.DeleteDatabaseCluster(ctx, id)
 	}, func(err error) bool {
 		msg := err.Error()
 		return strings.Contains(msg, "schemas attached") ||
+			strings.Contains(msg, "operation is already in progress") ||
 			strings.Contains(msg, "update operation is already in progress")
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error deleting database cluster", err.Error())
 	}
+}
+
+// deleteClusterSchemas removes every schema in the cluster so the cluster
+// itself can be deleted. A schema that is already gone is not an error; a
+// cluster that is already gone means there is nothing to do.
+func deleteClusterSchemas(ctx context.Context, c *client.Client, clusterID string) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	schemas, err := c.ListDatabases(ctx, clusterID)
+	if err != nil {
+		if client.IsNotFound(err) {
+			return nil
+		}
+		diags.AddError(
+			"Error listing databases before deleting cluster",
+			"The cluster's databases must be removed before the cluster can be deleted, "+
+				"but listing them failed: "+err.Error(),
+		)
+		return diags
+	}
+
+	for _, schema := range schemas {
+		schemaID := schema.ID
+		err := client.RetryOnConflict(ctx, 30, 10*time.Second, func() error {
+			if err := c.DeleteDatabase(ctx, clusterID, schemaID); err != nil {
+				if client.IsNotFound(err) {
+					return nil
+				}
+				return err
+			}
+			return nil
+		}, func(err error) bool {
+			return strings.Contains(err.Error(), "operation is already in progress")
+		})
+		if err != nil {
+			diags.AddError(
+				"Error deleting database before deleting cluster",
+				fmt.Sprintf("Could not delete database %q in cluster %q: %s", schemaID, clusterID, err),
+			)
+			return diags
+		}
+	}
+	return diags
 }
 
 func (r *DatabaseClusterResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
@@ -323,4 +376,72 @@ func reconcileDatabaseType(configured types.String, returned string) types.Strin
 		return configured
 	}
 	return types.StringValue(returned)
+}
+
+// reconcileDatabaseConfig keeps the configured config JSON when the API has
+// merely added its own defaults to it.
+//
+// config is a Required, user-authored JSON string, but the API echoes back the
+// full effective configuration -- including keys the caller never set
+// (storage_autoscale_max_gb, suspend_seconds and so on). Writing that whole
+// object into state made every subsequent plan propose deleting those keys, a
+// diff that could never converge because the API always adds them back.
+//
+// Only the keys the user actually specified are compared. When all of them
+// still match, the configured string is preserved verbatim; when any has
+// drifted, the drifted values are written back so the change is visible.
+func reconcileDatabaseConfig(configured types.String, apiConfig map[string]any) types.String {
+	if apiConfig == nil {
+		return configured
+	}
+	if configured.IsNull() || configured.IsUnknown() {
+		b, err := json.Marshal(apiConfig)
+		if err != nil {
+			return configured
+		}
+		return types.StringValue(string(b))
+	}
+
+	var want map[string]any
+	if err := json.Unmarshal([]byte(configured.ValueString()), &want); err != nil {
+		// Not an object we can reason about; fall back to the API's view.
+		b, err := json.Marshal(apiConfig)
+		if err != nil {
+			return configured
+		}
+		return types.StringValue(string(b))
+	}
+
+	drifted := false
+	merged := make(map[string]any, len(want))
+	for k, v := range want {
+		actual, present := apiConfig[k]
+		if !present {
+			merged[k] = v
+			continue
+		}
+		merged[k] = actual
+		if !jsonEqual(v, actual) {
+			drifted = true
+		}
+	}
+	if !drifted {
+		return configured
+	}
+	b, err := json.Marshal(merged)
+	if err != nil {
+		return configured
+	}
+	return types.StringValue(string(b))
+}
+
+// jsonEqual compares two decoded JSON values. It exists because numbers decode
+// as float64 on one side and may arrive as int on the other.
+func jsonEqual(a, b any) bool {
+	ab, errA := json.Marshal(a)
+	bb, errB := json.Marshal(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return string(ab) == string(bb)
 }
