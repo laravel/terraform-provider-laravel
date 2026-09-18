@@ -70,6 +70,10 @@ resource "laravel_cloud_environment" "env" {
 
 const clusterStack = `
 resource "laravel_cloud_database_cluster" "cluster" {
+  # The platform creates a database inside every cluster, so a test
+  # fixture has to opt in to sweeping it on destroy.
+  force_destroy = true
+
   name   = "main-db"
   type   = "laravel_mysql_84"
   region = "us-east-1"
@@ -400,7 +404,10 @@ resource "laravel_cloud_database_snapshot" "snap" {
 		[]plancheck.PlanCheck{create(addr)},
 		[]statecheck.StateCheck{
 			statecheck.ExpectKnownValue(addr, tfjsonpath.New("type"), knownvalue.StringExact("manual")),
-			statecheck.ExpectKnownValue(addr, tfjsonpath.New("status"), knownvalue.StringExact("available")),
+			// A snapshot is created pending; it does not become available
+			// within the create call, and has no size reported until it does.
+			statecheck.ExpectKnownValue(addr, tfjsonpath.New("status"), knownvalue.StringExact("pending")),
+			statecheck.ExpectKnownValue(addr, tfjsonpath.New("storage_bytes"), knownvalue.Null()),
 		},
 	)
 }
@@ -523,6 +530,10 @@ resource "laravel_cloud_websocket_application" "wsapp" {
 				ResourceName:      "laravel_cloud_websocket_application.wsapp",
 				ImportState:       true,
 				ImportStateVerify: true,
+				// key and secret are returned only when the application is
+				// created, so an imported application cannot recover them.
+				// They stay null rather than being filled with empty strings.
+				ImportStateVerifyIgnore: []string{"key", "secret"},
 				ImportStateIdFunc: func(s *terraform.State) (string, error) {
 					rs, ok := s.RootModule().Resources["laravel_cloud_websocket_application.wsapp"]
 					if !ok {

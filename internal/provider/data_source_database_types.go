@@ -22,10 +22,11 @@ type DatabaseTypesDataSourceModel struct {
 }
 
 type DatabaseTypeItemModel struct {
-	Type    types.String `tfsdk:"type"`
-	Label   types.String `tfsdk:"label"`
-	Regions types.List   `tfsdk:"regions"`
-	Sizes   types.List   `tfsdk:"sizes"`
+	Type     types.String `tfsdk:"type"`
+	Label    types.String `tfsdk:"label"`
+	Regions  types.List   `tfsdk:"regions"`
+	Sizes    types.List   `tfsdk:"sizes"`
+	Versions types.List   `tfsdk:"versions"`
 }
 
 func NewDatabaseTypesDataSource() datasource.DataSource {
@@ -65,7 +66,13 @@ func (d *DatabaseTypesDataSource) Schema(_ context.Context, _ datasource.SchemaR
 						"sizes": schema.ListAttribute{
 							Computed:    true,
 							ElementType: types.StringType,
-							Description: "Available sizes for this database type (e.g. db-flex.m-1vcpu-1gb). Empty for serverless types.",
+							Description: "Available sizes for this database type (e.g. mysql-flex-1gb, db.m8g.large). Empty for serverless types.",
+						},
+						"versions": schema.ListAttribute{
+							Computed:    true,
+							ElementType: types.StringType,
+							Description: "Engine versions accepted for this type. Pass one of these as the " +
+								"version argument of laravel_cloud_database_cluster.",
 						},
 					},
 				},
@@ -116,11 +123,22 @@ func (d *DatabaseTypesDataSource) Read(ctx context.Context, _ datasource.ReadReq
 			return
 		}
 
+		versionStrings := dt.Versions
+		if versionStrings == nil {
+			versionStrings = []string{}
+		}
+		versions, diags := types.ListValueFrom(ctx, types.StringType, versionStrings)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
 		state.Types = append(state.Types, DatabaseTypeItemModel{
-			Type:    types.StringValue(dt.Type),
-			Label:   types.StringValue(dt.Label),
-			Regions: regions,
-			Sizes:   sizes,
+			Type:     types.StringValue(dt.Type),
+			Label:    types.StringValue(dt.Label),
+			Regions:  regions,
+			Sizes:    sizes,
+			Versions: versions,
 		})
 	}
 

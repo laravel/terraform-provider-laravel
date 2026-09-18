@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -37,6 +38,10 @@ type DomainResourceModel struct {
 	CloudflareStrategy types.String `tfsdk:"cloudflare_strategy"`
 	AllowDowntime      types.Bool   `tfsdk:"allow_downtime"`
 	Downtime           types.Bool   `tfsdk:"downtime"`
+	Stage              types.String `tfsdk:"stage"`
+	ActionRequired     types.String `tfsdk:"action_required"`
+	LastVerifiedAt     types.String `tfsdk:"last_verified_at"`
+	DNSRecords         types.Object `tfsdk:"dns_records"`
 	CreatedAt          types.String `tfsdk:"created_at"`
 }
 
@@ -89,28 +94,99 @@ func (r *DomainResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				Description: "Origin verification status.",
 			},
 			"www_redirect": schema.StringAttribute{
-				Optional:    true,
-				Description: "WWW redirect (root_to_www, www_to_root).",
+				Optional: true,
+				Description: "WWW redirect (root_to_www, www_to_root). Create-time only: " +
+					"the API's update endpoint accepts verification_method and nothing else, " +
+					"so changing this forces a new domain.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"wildcard_enabled": schema.BoolAttribute{
-				Optional:    true,
-				Description: "Enable wildcard subdomain.",
+				Optional: true,
+				Description: "Enable wildcard subdomain. Create-time only; changing this " +
+					"forces a new domain.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.RequiresReplace(),
+				},
 			},
 			"verification_method": schema.StringAttribute{
 				Optional:    true,
 				Description: "Verification method (pre_verification, real_time). Editable in place via the API's update endpoint.",
 			},
 			"cloudflare_strategy": schema.StringAttribute{
-				Optional:    true,
-				Computed:    true,
-				Description: "Cloudflare integration strategy (none, dns, dns_proxy). Set at creation.",
+				Optional: true,
+				Computed: true,
+				Description: "Cloudflare integration strategy (none, dns, dns_proxy). " +
+					"Create-time only; changing this forces a new domain.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+					stringplanmodifier.RequiresReplace(),
 				},
 			},
 			"allow_downtime": schema.BoolAttribute{
-				Optional:    true,
-				Description: "Whether to allow downtime while attaching the domain (create-time only).",
+				Optional: true,
+				Description: "Whether to allow downtime while attaching the domain. " +
+					"Create-time only; changing this forces a new domain.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.RequiresReplace(),
+				},
+			},
+			"stage": schema.StringAttribute{
+				Computed:    true,
+				Description: "Verification stage (pre_verification, origin).",
+			},
+			"action_required": schema.StringAttribute{
+				Computed: true,
+				Description: "What still has to be done before the domain verifies " +
+					"(add_txt_records, add_dns_records, failed), or null when nothing is pending.",
+			},
+			"last_verified_at": schema.StringAttribute{
+				Computed:    true,
+				Description: "When the domain was last successfully verified.",
+			},
+			"dns_records": schema.SingleNestedAttribute{
+				Computed: true,
+				Description: "The DNS records that must exist for this domain to verify and " +
+					"serve traffic. Use these to create the records at your DNS provider.",
+				Attributes: map[string]schema.Attribute{
+					"ssl": schema.ListNestedAttribute{
+						Computed:    true,
+						Description: "Records required for SSL certificate issuance.",
+						NestedObject: schema.NestedAttributeObject{
+							Attributes: map[string]schema.Attribute{
+								"type": schema.StringAttribute{
+									Computed:    true,
+									Description: "Record type (CNAME or TXT).",
+								},
+								"name": schema.StringAttribute{
+									Computed:    true,
+									Description: "Record name.",
+								},
+								"value": schema.StringAttribute{
+									Computed:    true,
+									Description: "Record value.",
+								},
+							},
+						},
+					},
+					"pre_verification": schema.StringAttribute{
+						Computed:    true,
+						Description: "TXT value used for pre-verification.",
+					},
+					"origin": schema.StringAttribute{
+						Computed:    true,
+						Description: "Origin address the domain should point at.",
+					},
+					"origin_cname": schema.StringAttribute{
+						Computed:    true,
+						Description: "Origin CNAME target.",
+					},
+					"dcv": schema.StringAttribute{
+						Computed:    true,
+						Description: "Domain control validation value.",
+					},
+				},
 			},
 			"downtime": schema.BoolAttribute{
 				Computed:    true,
@@ -213,6 +289,34 @@ func (r *DomainResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
+	// verification_method is the entire PATCH body and the API requires it.
+	// Sending "" when the user never configured one is a guaranteed 422, and
+	// since every other attribute forces replacement there is nothing else an
+	// update could be for -- so with no verification method there is no call
+	// to make.
+	if plan.VerificationMethod.IsNull() || plan.VerificationMethod.IsUnknown() {
+		// Carry the plan forward, not the prior state: verification_method is
+		// Optional-only, so removing it from config plans a null, and writing
+		// the old value back would contradict the plan and fail the apply with
+		// "provider produced inconsistent result after apply". The computed
+		// attributes are copied across because there is no fresh response.
+		plan.ID = state.ID
+		plan.EnvironmentID = state.EnvironmentID
+		plan.DomainType = state.DomainType
+		plan.HostnameStatus = state.HostnameStatus
+		plan.SSLStatus = state.SSLStatus
+		plan.OriginStatus = state.OriginStatus
+		plan.CloudflareStrategy = state.CloudflareStrategy
+		plan.Downtime = state.Downtime
+		plan.Stage = state.Stage
+		plan.ActionRequired = state.ActionRequired
+		plan.LastVerifiedAt = state.LastVerifiedAt
+		plan.DNSRecords = state.DNSRecords
+		plan.CreatedAt = state.CreatedAt
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		return
+	}
+
 	updateReq := client.UpdateDomainRequest{
 		VerificationMethod: plan.VerificationMethod.ValueString(),
 	}
@@ -245,6 +349,9 @@ func (r *DomainResource) ImportState(ctx context.Context, req resource.ImportSta
 }
 
 func mapDomainToState(d *client.DomainData, state *DomainResourceModel) {
+	if envID := d.Relationships.Environment.RelatedID(); envID != "" {
+		state.EnvironmentID = types.StringValue(envID)
+	}
 	state.ID = types.StringValue(d.ID)
 	state.Name = types.StringValue(d.Attributes.Name)
 	state.DomainType = types.StringValue(d.Attributes.DomainType)
@@ -253,8 +360,51 @@ func mapDomainToState(d *client.DomainData, state *DomainResourceModel) {
 	state.OriginStatus = types.StringValue(d.Attributes.OriginStatus)
 	state.CloudflareStrategy = types.StringPointerValue(d.Attributes.CloudflareStrategy)
 	state.Downtime = types.BoolPointerValue(d.Attributes.Downtime)
+	state.Stage = types.StringValue(d.Attributes.Stage)
+	state.ActionRequired = types.StringPointerValue(d.Attributes.ActionRequired)
+	state.LastVerifiedAt = types.StringPointerValue(d.Attributes.LastVerifiedAt)
+	state.DNSRecords = domainDNSRecordsObject(d.Attributes.DNSRecords)
 	state.CreatedAt = types.StringPointerValue(d.Attributes.CreatedAt)
 	if d.Attributes.Redirect != nil {
 		state.WWWRedirect = types.StringValue(*d.Attributes.Redirect)
 	}
+}
+
+var domainSSLRecordAttrTypes = map[string]attr.Type{
+	"type":  types.StringType,
+	"name":  types.StringType,
+	"value": types.StringType,
+}
+
+var domainDNSRecordsAttrTypes = map[string]attr.Type{
+	"ssl":              types.ListType{ElemType: types.ObjectType{AttrTypes: domainSSLRecordAttrTypes}},
+	"pre_verification": types.StringType,
+	"origin":           types.StringType,
+	"origin_cname":     types.StringType,
+	"dcv":              types.StringType,
+}
+
+// domainDNSRecordsObject converts the API's dns_records payload into the
+// Terraform object exposed on the resource.
+func domainDNSRecordsObject(r client.DomainDNSRecords) types.Object {
+	ssl := make([]attr.Value, 0, len(r.SSL))
+	for _, rec := range r.SSL {
+		ssl = append(ssl, types.ObjectValueMust(domainSSLRecordAttrTypes, map[string]attr.Value{
+			"type":  types.StringValue(rec.Type),
+			"name":  types.StringPointerValue(rec.Name),
+			"value": types.StringPointerValue(rec.Value),
+		}))
+	}
+	sslList, diags := types.ListValue(types.ObjectType{AttrTypes: domainSSLRecordAttrTypes}, ssl)
+	if diags.HasError() {
+		sslList = types.ListNull(types.ObjectType{AttrTypes: domainSSLRecordAttrTypes})
+	}
+
+	return types.ObjectValueMust(domainDNSRecordsAttrTypes, map[string]attr.Value{
+		"ssl":              sslList,
+		"pre_verification": types.StringValue(r.PreVerification),
+		"origin":           types.StringValue(r.Origin),
+		"origin_cname":     types.StringValue(r.OriginCNAME),
+		"dcv":              types.StringValue(r.DCV),
+	})
 }

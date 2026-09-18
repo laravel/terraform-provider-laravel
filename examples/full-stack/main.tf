@@ -72,41 +72,51 @@ resource "laravel_cloud_domain" "domain" {
   name           = var.domain_name
 }
 
-# --- Database cluster + database -----------------------------------------
-
-resource "laravel_cloud_database_cluster" "cluster" {
-  name   = "${var.prefix}-db"
-  type   = "laravel_mysql_84"
-  region = "us-east-2"
-  # The API requires the full config_schema for laravel_mysql_84:
-  # size (enum), storage (5-1000 GB), is_public, uses_scheduled_snapshots,
-  # retention_days (0-30). Discover via GET /databases/types.
-  #
-  # Every key the API echoes back must be present here, and with the exact
-  # value the API stores. `config` is an opaque JSON string, so Read writes the
-  # server's version straight into state -- any key we omit (or spell
-  # differently) shows up as a diff on the next plan, and the resulting PATCH
-  # fails with "An update operation is already in progress" while the cluster
-  # is still provisioning. Two traps, both hit in practice:
-  #   - size must be a database size from the enum ("mysql-flex-512mb"), NOT an
-  #     instance size like "db-flex.m-1vcpu-512mb". The API accepts the wrong
-  #     value silently and normalizes it, so the mistake only surfaces as a
-  #     permanent diff.
-  #   - suspend_seconds is optional on create but always returned, so pin it.
-  config = jsonencode({
-    size                     = "mysql-flex-512mb"
-    storage                  = 10
-    is_public                = false
-    uses_scheduled_snapshots = false
-    retention_days           = 7
-    suspend_seconds          = 0
-  })
-}
-
-resource "laravel_cloud_database" "db" {
-  cluster_id = laravel_cloud_database_cluster.cluster.id
-  name       = "app_db"
-}
+# --- Database cluster + database (COMMENTED OUT) --------------------------
+#
+# Provisioning a database cluster routinely takes twenty minutes or more, and
+# neither the databases inside it nor the cluster itself can be deleted until
+# it finishes. A plain apply/destroy of this example would therefore block for
+# a long time, or give up and leave a billable database behind.
+#
+# The configuration is kept here as a worked reference -- the config_schema
+# traps below are real and were hit in practice. Uncomment this block, the
+# database_cluster_status output at the end of this file, and the snapshot and
+# restore resources in side-effecting.tf to exercise them.
+#
+# The API requires the full config_schema for laravel_mysql_84: size (enum),
+# storage (5-1000 GB), is_public, uses_scheduled_snapshots, retention_days
+# (0-30). Discover them via GET /databases/types.
+#
+# Every key the API echoes back must be present here, and with the exact value
+# the API stores. `config` is an opaque JSON string, so Read writes the
+# server's version straight into state -- any key omitted (or spelled
+# differently) shows up as a diff on the next plan. Two traps, both hit in
+# practice:
+#   - size must be a database size from the enum ("mysql-flex-512mb"), NOT an
+#     instance size like "db-flex.m-1vcpu-512mb". The API accepts the wrong
+#     value silently and normalizes it, so the mistake only surfaces as a
+#     permanent diff.
+#   - suspend_seconds is optional on create but always returned, so pin it.
+#
+# resource "laravel_cloud_database_cluster" "cluster" {
+#   name   = "${var.prefix}-db"
+#   type   = "laravel_mysql_84"
+#   region = "us-east-2"
+#   config = jsonencode({
+#     size                     = "mysql-flex-512mb"
+#     storage                  = 10
+#     is_public                = false
+#     uses_scheduled_snapshots = false
+#     retention_days           = 7
+#     suspend_seconds          = 0
+#   })
+# }
+#
+# resource "laravel_cloud_database" "db" {
+#   cluster_id = laravel_cloud_database_cluster.cluster.id
+#   name       = "app_db"
+# }
 
 # --- Cache ----------------------------------------------------------------
 
@@ -171,9 +181,9 @@ output "environment_php_major_version" {
   value = laravel_cloud_environment.env.php_major_version
 }
 
-output "database_cluster_status" {
-  value = laravel_cloud_database_cluster.cluster.status
-}
+# output "database_cluster_status" {
+#   value = laravel_cloud_database_cluster.cluster.status
+# }
 
 output "cache_status" {
   value = laravel_cloud_cache.cache.status

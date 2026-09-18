@@ -47,20 +47,21 @@ resource "laravel_cloud_environment" "example" {
 - `cache_id` (String) Cache to attach.
 - `cache_strategy` (String) Cache strategy (default, bypass).
 - `cluster_id` (String) Dedicated cluster ID.
-- `color` (String) Environment color (blue, green, orange, purple, red, yellow, cyan, gray).
+- `color` (String) Environment color (blue, green, orange, purple, red, yellow, cyan, gray). Write-only: the API accepts this but never reports it back, so a change made outside Terraform cannot be detected and state keeps the configured value.
 - `database_schema_id` (String) Database schema to attach.
 - `deploy_command` (String) Custom deploy command (max 2000 chars).
 - `node_version` (String) Node.js version.
 - `php_version` (String) PHP version to run, in the API's "major:minor" form (e.g. "8.4:1"). Read back via the computed php_major_version attribute, which reports the major version only.
-- `shutdown_timeout` (Number) Shutdown timeout (1-600).
-- `sleep_timeout` (Number) Sleep timeout (1-60).
+- `shutdown_timeout` (Number) Shutdown timeout (1-600). Write-only: the API accepts this but never reports it back, so drift cannot be detected.
+- `sleep_timeout` (Number) Sleep timeout (1-60). Write-only: the API accepts this but never reports it back, so drift cannot be detected.
 - `slug` (String)
-- `timeout` (Number) Request timeout (5-60 seconds).
+- `timeout` (Number) Request timeout (5-60 seconds). Write-only: the API accepts this but never reports it back, so drift cannot be detected.
 - `uses_deploy_hook` (Boolean)
 - `uses_octane` (Boolean)
-- `uses_purge_edge_cache_on_deploy` (Boolean)
+- `uses_purge_edge_cache_on_deploy` (Boolean) Whether a deploy purges the edge cache. Write-only: the API accepts this but never reports it back, so drift cannot be detected.
 - `uses_push_to_deploy` (Boolean)
 - `uses_vanity_domain` (Boolean)
+- `vanity_domain` (String) Vanity domain hostname for the environment (3-100 characters). Set through the API's dedicated vanity-domain endpoint rather than the environment update body. Leave unset to keep the assigned default.
 
 ### Read-Only
 
@@ -68,7 +69,6 @@ resource "laravel_cloud_environment" "example" {
 - `id` (String) The ID of this resource.
 - `php_major_version` (String) Major PHP version reported by the API (e.g. "8.4").
 - `status` (String) Current environment status.
-- `vanity_domain` (String) Vanity domain hostname assigned to the environment, if any.
 
 ## Import
 

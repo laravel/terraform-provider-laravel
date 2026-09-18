@@ -35,7 +35,7 @@ resource "laravel_cloud_application" "example" {
 - `cluster_id` (String) Dedicated cluster ID.
 - `slack_channel` (String) Slack channel for application notifications.
 - `slug` (String) URL-friendly slug.
-- `source_control_provider_type` (String) Source control provider type (github, gitlab, or bitbucket). Becomes required by the API on March 9, 2026.
+- `source_control_provider_type` (String) Source control provider type (github, gitlab, gitlab_self_hosted, or bitbucket). Becomes required by the API on March 9, 2026.
 
 ### Read-Only
 

@@ -39,6 +39,9 @@ type fakeCloud struct {
 	// type name -> object ID -> attributes. See mock_generic_test.go.
 	objects  map[string]map[string]map[string]any
 	children map[string][]string // "<parentKey>" -> ordered child object IDs
+	// parents maps "<typeName>" -> child ID -> parent ID, so responses can
+	// carry the JSON:API relationship the real API reports.
+	parents map[string]map[string]string
 }
 
 // newFakeCloud starts an httptest.Server backed by a fresh in-memory store and
@@ -53,6 +56,7 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 		appEnvs:  map[string][]string{},
 		objects:  map[string]map[string]map[string]any{},
 		children: map[string][]string{},
+		parents:  map[string]map[string]string{},
 	}
 
 	mux := http.NewServeMux()
@@ -66,6 +70,7 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	mux.HandleFunc("POST /applications/{id}/environments", f.createEnvironment)
 	mux.HandleFunc("GET /environments/{id}", f.getEnvironment)
 	mux.HandleFunc("PATCH /environments/{id}", f.updateEnvironment)
+	mux.HandleFunc("PUT /environments/{id}/vanity-domain", f.setVanityDomain)
 	mux.HandleFunc("DELETE /environments/{id}", f.deleteEnvironment)
 
 	// All other resources are served by the generic JSON:API engine.
@@ -191,18 +196,37 @@ func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 			Name:            req.Name,
 			Slug:            slugify(req.Name),
 			Status:          "active",
-			Color:           "blue",
 			PHPMajorVersion: "8.4",
 			NodeVersion:     "20",
-			Timeout:         30,
-			SleepTimeout:    5,
-			ShutdownTimeout: 10,
-			CacheStrategy:   "default",
+			NetworkSettings: newEnvironmentNetwork("default"),
 		},
 	}
 	f.envs[id] = env
 	f.appEnvs[appID] = append(f.appEnvs[appID], id)
 	writeJSON(w, http.StatusCreated, client.Document[client.EnvironmentData]{Data: *env})
+}
+
+func (f *fakeCloud) setVanityDomain(w http.ResponseWriter, r *http.Request) {
+	var req client.UpdateVanityDomainRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	env, ok := f.envs[r.PathValue("id")]
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Errorf("environment not found"))
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("name is required"))
+		return
+	}
+	env.Attributes.VanityDomain = &req.Name
+	writeJSON(w, http.StatusOK, client.Document[client.EnvironmentData]{Data: *env})
 }
 
 func (f *fakeCloud) getEnvironment(w http.ResponseWriter, r *http.Request) {
@@ -239,14 +263,13 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 	if req.Slug != nil {
 		a.Slug = *req.Slug
 	}
-	if req.Color != nil {
-		a.Color = *req.Color
-	}
 	if req.NodeVersion != nil {
 		a.NodeVersion = *req.NodeVersion
 	}
+	// cache_strategy is written at the top level but only ever read back from
+	// network_settings.cache.strategy -- mirror that asymmetry faithfully.
 	if req.CacheStrategy != nil {
-		a.CacheStrategy = *req.CacheStrategy
+		a.NetworkSettings = newEnvironmentNetwork(*req.CacheStrategy)
 	}
 	if req.UsesPushToDeploy != nil {
 		a.UsesPushToDeploy = *req.UsesPushToDeploy
@@ -257,18 +280,10 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 	if req.UsesOctane != nil {
 		a.UsesOctane = *req.UsesOctane
 	}
-	if req.UsesPurgeEdgeCacheOnDeploy != nil {
-		a.UsesPurgeEdgeCacheOnDeploy = *req.UsesPurgeEdgeCacheOnDeploy
-	}
-	if req.Timeout != nil {
-		a.Timeout = *req.Timeout
-	}
-	if req.SleepTimeout != nil {
-		a.SleepTimeout = *req.SleepTimeout
-	}
-	if req.ShutdownTimeout != nil {
-		a.ShutdownTimeout = *req.ShutdownTimeout
-	}
+	// color, timeout, sleep_timeout, shutdown_timeout and
+	// uses_purge_edge_cache_on_deploy are accepted here and deliberately
+	// dropped: the real API has no response attribute for any of them, and a
+	// fake that echoed them back would mask a non-converging plan.
 	// php_version is sent as "major:minor"; the API only ever reports the major
 	// version back via php_major_version.
 	if req.PHPVersion != nil {
@@ -323,4 +338,12 @@ func nilIfEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// newEnvironmentNetwork builds the response-side network_settings object with
+// the given cache strategy.
+func newEnvironmentNetwork(strategy string) client.EnvironmentNetwork {
+	var n client.EnvironmentNetwork
+	n.Cache.Strategy = strategy
+	return n
 }

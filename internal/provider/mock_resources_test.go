@@ -3,6 +3,7 @@ package provider
 import (
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // clusterType is the store key for database clusters. database_restore creates
@@ -36,6 +37,21 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			collectionPattern: "/databases/clusters", itemPattern: "/databases/clusters/{id}",
 			patch: true, del: true,
 			seed: seedCluster,
+			// The platform creates a database inside every new cluster. It is
+			// not managed by Terraform, and it is what makes a cluster
+			// impossible to delete without sweeping its databases first.
+			afterCreate: func(f *fakeCloud, clusterID string) {
+				f.seq++
+				id := fmt.Sprintf("db-schema-%d", f.seq)
+				if f.objects["database"] == nil {
+					f.objects["database"] = map[string]map[string]any{}
+				}
+				f.objects["database"][id] = map[string]any{
+					"name": autoCreatedDatabaseName, "status": "available",
+				}
+				key := "database:" + clusterID
+				f.children[key] = append(f.children[key], id)
+			},
 		},
 		{
 			typeName: "storage_bucket", idPrefix: "bucket",
@@ -64,16 +80,30 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			typeName: "instance", idPrefix: "instance", parentWildcard: "eid",
 			collectionPattern: "/environments/{eid}/instances", itemPattern: "/instances/{id}",
 			patch: true, del: true,
+			relationshipName: "environment", relationshipType: "environments",
 			seed: func(body map[string]any, _ string) map[string]any {
 				// Echo the body; managed-queue / status pointer fields are left
 				// absent so they decode to null (not zero values).
 				return cloneMap(body)
+			},
+			// The API does not report replica counts for an automatically
+			// scaled instance -- they are rejected on the way in and absent on
+			// the way out.
+			patchFn: func(attrs, patch map[string]any) {
+				for k, v := range patch {
+					attrs[k] = v
+				}
+				if attrs["scaling_type"] == "auto" {
+					delete(attrs, "min_replicas")
+					delete(attrs, "max_replicas")
+				}
 			},
 		},
 		{
 			typeName: "domain", idPrefix: "domain", parentWildcard: "eid",
 			collectionPattern: "/environments/{eid}/domains", itemPattern: "/domains/{id}",
 			patch: true, del: true,
+			relationshipName: "environment", relationshipType: "environments",
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
 				// The request sends www_redirect; the API echoes it as `redirect`.
@@ -81,9 +111,26 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 					a["redirect"] = v
 				}
 				a["type"] = "root"
+				a["stage"] = "pre_verification"
 				a["hostname_status"] = "pending"
 				a["ssl_status"] = "pending"
 				a["origin_status"] = "pending"
+				a["action_required"] = "add_txt_records"
+				// dns_records is required in the response and is how an
+				// operator learns which records to create.
+				a["dns_records"] = map[string]any{
+					"ssl": []any{
+						map[string]any{
+							"type":  "TXT",
+							"name":  "_acme-challenge.example.com",
+							"value": "dcv-token",
+						},
+					},
+					"pre_verification": "laravel-cloud-verification=token",
+					"origin":           "origin.laravel.cloud",
+					"origin_cname":     "cname.laravel.cloud",
+					"dcv":              "dcv-token",
+				}
 				return a
 			},
 		},
@@ -161,6 +208,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			typeName: "background_process", idPrefix: "bgp", parentWildcard: "iid",
 			collectionPattern: "/instances/{iid}/background-processes", itemPattern: "/background-processes/{id}",
 			patch: true, del: true,
+			relationshipName: "instance", relationshipType: "instances",
 			seed: func(body map[string]any, _ string) map[string]any {
 				return cloneMap(body) // config is ignored on read-back by the provider
 			},
@@ -173,6 +221,9 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			typeName: "websocket_application", idPrefix: "wsa", parentWildcard: "sid",
 			collectionPattern: "/websocket-servers/{sid}/applications", itemPattern: "/websocket-applications/{id}",
 			patch: true, del: true,
+			// key and secret are merged into the create response only; every
+			// later read omits them.
+			createOnlyAttrs: []string{"key", "secret"},
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
 				a["app_id"] = "wsapp-0001"
@@ -196,9 +247,11 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
 				a["type"] = "manual"
-				a["status"] = "available"
+				// Snapshots are created pending, with no size reported yet --
+				// storage_bytes is null until the snapshot completes.
+				a["status"] = "pending"
 				a["pitr_enabled"] = false
-				a["storage_bytes"] = 0
+				a["storage_bytes"] = nil
 				return a
 			},
 		},
@@ -207,6 +260,8 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 	for _, s := range specs {
 		f.registerCRUD(mux, s)
 	}
+
+	registerDataSourceRoutes(mux)
 
 	// -------- bespoke endpoints --------
 
@@ -253,9 +308,32 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 // connection object (with the cluster-only `driver` field) and a stable status.
 // The `config` field is echoed from the request as a map so the provider's
 // Read, which re-marshals it to a JSON string, round-trips cleanly.
+// autoCreatedDatabaseName is the database the platform creates alongside every
+// new cluster. It is what makes a cluster impossible to delete without first
+// removing its databases -- and it is not managed by Terraform, which is why
+// sweeping databases on destroy has to be opt-in.
+const autoCreatedDatabaseName = "production"
+
 func seedCluster(body map[string]any, _ string) map[string]any {
 	a := cloneMap(body)
 	a["status"] = "available"
+	// The API answers with the base DatabaseType enum value, even when the
+	// cluster was created with a retired identifier such as laravel_mysql_84.
+	if t, ok := body["type"].(string); ok {
+		a["type"] = baseDatabaseType(t)
+	}
+	// version is a create-only request field and is not echoed back.
+	delete(a, "version")
+	// The API returns the full effective config, including defaults the caller
+	// never set. Echoing back only what was sent hid a config diff that could
+	// never converge.
+	if cfg, ok := a["config"].(map[string]any); ok {
+		merged := map[string]any{"suspend_seconds": float64(0), "storage_autoscale_max_gb": nil}
+		for k, v := range cfg {
+			merged[k] = v
+		}
+		a["config"] = merged
+	}
 	a["connection"] = map[string]any{
 		"hostname": "db.test.local", "port": 3306, "protocol": "tcp",
 		"driver": "mysql", "username": "forge", "password": "db-secret",
@@ -269,4 +347,20 @@ func cloneMap(m map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// baseDatabaseType maps a retired, version-bearing type identifier
+// (laravel_mysql_84) onto the base type the API reports (laravel_mysql).
+func baseDatabaseType(t string) string {
+	for _, base := range []string{
+		"neon_serverless_postgres",
+		"aws_rds_postgres",
+		"aws_rds_mysql",
+		"laravel_mysql",
+	} {
+		if t == base || strings.HasPrefix(t, base+"_") {
+			return base
+		}
+	}
+	return t
 }

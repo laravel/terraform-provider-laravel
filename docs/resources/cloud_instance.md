@@ -35,7 +35,7 @@ resource "laravel_cloud_instance" "example" {
   environment_id = laravel_cloud_environment.example.id
   name           = "web"
   size           = "flex.c-1vcpu-256mb"
-  scaling_type   = "none"
+  scaling_type   = "custom"
   min_replicas   = 1
   max_replicas   = 1
 }
@@ -47,8 +47,6 @@ resource "laravel_cloud_instance" "example" {
 ### Required
 
 - `environment_id` (String) Parent environment ID.
-- `max_replicas` (Number) Maximum number of replicas.
-- `min_replicas` (Number) Minimum number of replicas.
 - `name` (String) Instance name (3-40 characters).
 - `scaling_type` (String) Scaling type (none, custom, auto).
 - `size` (String) Instance size (e.g. flex.c-1vcpu-256mb).
@@ -56,7 +54,8 @@ resource "laravel_cloud_instance" "example" {
 ### Optional
 
 - `hibernation_timeout` (Number) Hibernation timeout in seconds. Applied on update only.
-- `polling_interval` (Number) Queue polling interval in seconds (managed_queue).
+- `max_replicas` (Number) Maximum number of replicas. Only applicable to the "custom" scaling type; the API rejects it for "auto".
+- `min_replicas` (Number) Minimum number of replicas. Only applicable to the "custom" scaling type; the API rejects it for "auto", and it does not apply to managed queues, which always scale to zero when idle.
 - `scaling_cpu_threshold_percentage` (Number) CPU scaling threshold (50-95).
 - `scaling_memory_threshold_percentage` (Number) Memory scaling threshold (50-95).
 - `shutdown_timeout` (Number) Queue shutdown timeout in seconds (managed_queue).
@@ -73,6 +72,7 @@ resource "laravel_cloud_instance" "example" {
 - `id` (String) The ID of this resource.
 - `is_default` (Boolean) Whether this is the default instance.
 - `paused` (Boolean) Whether the instance is paused.
+- `polling_interval` (Number) Queue polling interval in seconds (managed_queue). Read-only: the API reports this value but accepts it in neither the create nor the update request, so it is managed by the platform.
 - `queue_status` (String) Raw queue status JSON (managed_queue).
 
 ## Import

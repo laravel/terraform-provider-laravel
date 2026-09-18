@@ -9,9 +9,11 @@ func (c *Client) ListDomains(ctx context.Context, environmentID string) ([]Domai
 	return listAll[DomainData](ctx, c, fmt.Sprintf("/environments/%s/domains", environmentID))
 }
 
+// GetDomain fetches a single domain. include=environment is required to get
+// the relationships block; see GetInstance.
 func (c *Client) GetDomain(ctx context.Context, id string) (*DomainData, error) {
 	var doc Document[DomainData]
-	if err := c.do(ctx, "GET", fmt.Sprintf("/domains/%s", id), nil, &doc); err != nil {
+	if err := c.do(ctx, "GET", fmt.Sprintf("/domains/%s?include=environment", id), nil, &doc); err != nil {
 		return nil, err
 	}
 	return &doc.Data, nil

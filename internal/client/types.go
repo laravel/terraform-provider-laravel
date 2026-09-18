@@ -82,11 +82,20 @@ type EnvironmentData struct {
 	Attributes EnvironmentAttributes `json:"attributes"`
 }
 
+// EnvironmentAttributes mirrors EnvironmentResource.attributes in the public
+// OpenAPI spec. Only fields the API actually returns belong here.
+//
+// Several environment settings -- color, timeout, sleep_timeout,
+// shutdown_timeout, uses_purge_edge_cache_on_deploy, uses_vanity_domain -- are
+// accepted by PATCH but are *write-only*: they appear nowhere in the response
+// schema. Decoding them here would silently yield the zero value on every read
+// and overwrite the configured value in state, producing a plan that never
+// converges. They are deliberately absent; see mapEnvironmentToState, which
+// leaves the configured values untouched.
 type EnvironmentAttributes struct {
 	Name   string `json:"name"`
 	Slug   string `json:"slug"`
 	Status string `json:"status"`
-	Color  string `json:"color"`
 	// PHPMajorVersion is the read-only major version returned by the API
 	// (e.g. "8.4"). The writable php_version sent on update uses the
 	// "8.4:1" form, so the two are deliberately distinct fields.
@@ -94,21 +103,43 @@ type EnvironmentAttributes struct {
 	NodeVersion      string  `json:"node_version"`
 	UsesPushToDeploy bool    `json:"uses_push_to_deploy"`
 	UsesDeployHook   bool    `json:"uses_deploy_hook"`
-	Timeout          int     `json:"timeout"`
 	BuildCommand     *string `json:"build_command"`
 	DeployCommand    *string `json:"deploy_command"`
 	// VanityDomain is the read-only vanity domain hostname returned by the
 	// API (empty/null when none). There is no uses_vanity_domain response
 	// flag; presence of a vanity domain is derived from this field.
-	VanityDomain               *string `json:"vanity_domain"`
-	UsesOctane                 bool    `json:"uses_octane"`
-	SleepTimeout               int     `json:"sleep_timeout"`
-	ShutdownTimeout            int     `json:"shutdown_timeout"`
-	UsesPurgeEdgeCacheOnDeploy bool    `json:"uses_purge_edge_cache_on_deploy"`
-	CacheStrategy              string  `json:"cache_strategy"`
-	CreatedFromAutomation      bool    `json:"created_from_automation"`
-	CreatedAt                  *string `json:"created_at"`
+	VanityDomain          *string            `json:"vanity_domain"`
+	UsesOctane            bool               `json:"uses_octane"`
+	UsesHibernation       bool               `json:"uses_hibernation"`
+	NetworkSettings       EnvironmentNetwork `json:"network_settings"`
+	CreatedFromAutomation bool               `json:"created_from_automation"`
+	CreatedAt             *string            `json:"created_at"`
 }
+
+// EnvironmentNetwork is the response-side network_settings object. The cache
+// strategy is readable only from here -- there is no top-level cache_strategy
+// attribute, even though PATCH accepts one under that name.
+type EnvironmentNetwork struct {
+	Cache struct {
+		Strategy string `json:"strategy"`
+	} `json:"cache"`
+}
+
+// AttachID renders an id as a JSON string for the nullable attachment fields
+// on UpdateEnvironmentRequest.
+func AttachID(id string) json.RawMessage {
+	b, err := json.Marshal(id)
+	if err != nil {
+		// json.Marshal of a string cannot fail; fall back to detaching
+		// rather than emitting invalid JSON into the request body.
+		return DetachID()
+	}
+	return b
+}
+
+// DetachID renders JSON null, which is how the API is told to detach a
+// database, cache or websocket application from an environment.
+func DetachID() json.RawMessage { return json.RawMessage("null") }
 
 type CreateEnvironmentRequest struct {
 	Branch    string  `json:"branch"`
@@ -117,26 +148,29 @@ type CreateEnvironmentRequest struct {
 }
 
 type UpdateEnvironmentRequest struct {
-	Name                       *string `json:"name,omitempty"`
-	Slug                       *string `json:"slug,omitempty"`
-	Color                      *string `json:"color,omitempty"`
-	Branch                     *string `json:"branch,omitempty"`
-	UsesPushToDeploy           *bool   `json:"uses_push_to_deploy,omitempty"`
-	UsesDeployHook             *bool   `json:"uses_deploy_hook,omitempty"`
-	Timeout                    *int    `json:"timeout,omitempty"`
-	PHPVersion                 *string `json:"php_version,omitempty"`
-	BuildCommand               *string `json:"build_command,omitempty"`
-	NodeVersion                *string `json:"node_version,omitempty"`
-	DeployCommand              *string `json:"deploy_command,omitempty"`
-	UsesVanityDomain           *bool   `json:"uses_vanity_domain,omitempty"`
-	DatabaseSchemaID           *string `json:"database_schema_id,omitempty"`
-	CacheID                    *string `json:"cache_id,omitempty"`
-	WebsocketApplicationID     *string `json:"websocket_application_id,omitempty"`
-	UsesOctane                 *bool   `json:"uses_octane,omitempty"`
-	SleepTimeout               *int    `json:"sleep_timeout,omitempty"`
-	ShutdownTimeout            *int    `json:"shutdown_timeout,omitempty"`
-	UsesPurgeEdgeCacheOnDeploy *bool   `json:"uses_purge_edge_cache_on_deploy,omitempty"`
-	CacheStrategy              *string `json:"cache_strategy,omitempty"`
+	Name             *string `json:"name,omitempty"`
+	Slug             *string `json:"slug,omitempty"`
+	Color            *string `json:"color,omitempty"`
+	Branch           *string `json:"branch,omitempty"`
+	UsesPushToDeploy *bool   `json:"uses_push_to_deploy,omitempty"`
+	UsesDeployHook   *bool   `json:"uses_deploy_hook,omitempty"`
+	Timeout          *int    `json:"timeout,omitempty"`
+	PHPVersion       *string `json:"php_version,omitempty"`
+	BuildCommand     *string `json:"build_command,omitempty"`
+	NodeVersion      *string `json:"node_version,omitempty"`
+	DeployCommand    *string `json:"deploy_command,omitempty"`
+	UsesVanityDomain *bool   `json:"uses_vanity_domain,omitempty"`
+	// These three are nullable in the spec: JSON null detaches the resource
+	// from the environment. An empty string is not null and is rejected, so
+	// they are raw JSON rather than *string -- see AttachID / DetachID.
+	DatabaseSchemaID           json.RawMessage `json:"database_schema_id,omitempty"`
+	CacheID                    json.RawMessage `json:"cache_id,omitempty"`
+	WebsocketApplicationID     json.RawMessage `json:"websocket_application_id,omitempty"`
+	UsesOctane                 *bool           `json:"uses_octane,omitempty"`
+	SleepTimeout               *int            `json:"sleep_timeout,omitempty"`
+	ShutdownTimeout            *int            `json:"shutdown_timeout,omitempty"`
+	UsesPurgeEdgeCacheOnDeploy *bool           `json:"uses_purge_edge_cache_on_deploy,omitempty"`
+	CacheStrategy              *string         `json:"cache_strategy,omitempty"`
 }
 
 // ---------------------------------------------------------------------
@@ -147,43 +181,56 @@ type InstanceData struct {
 	ID         string             `json:"id"`
 	Type       string             `json:"type"`
 	Attributes InstanceAttributes `json:"attributes"`
+	// Relationships carries the parent link, which is what makes import
+	// work: the import id names this resource only.
+	Relationships InstanceRelationships `json:"relationships"`
 }
 
 type InstanceAttributes struct {
-	Name                             string `json:"name"`
-	InstanceType                     string `json:"type"`
-	Size                             string `json:"size"`
-	ScalingType                      string `json:"scaling_type"`
-	MinReplicas                      int    `json:"min_replicas"`
-	MaxReplicas                      int    `json:"max_replicas"`
+	Name         string `json:"name"`
+	InstanceType string `json:"type"`
+	Size         string `json:"size"`
+	ScalingType  string `json:"scaling_type"`
+	// Nullable: an automatically scaled instance has no replica counts, and a
+	// plain int would report 0 where the value is absent.
+	MinReplicas                      *int64 `json:"min_replicas"`
+	MaxReplicas                      *int64 `json:"max_replicas"`
 	UsesScheduler                    bool   `json:"uses_scheduler"`
 	ScalingCPUThresholdPercentage    *int   `json:"scaling_cpu_threshold_percentage"`
 	ScalingMemoryThresholdPercentage *int   `json:"scaling_memory_threshold_percentage"`
 	// Managed-queue fields (type == "managed_queue").
-	SleepWithApp      *bool           `json:"sleep_with_app"`
-	VisibilityTimeout *int            `json:"visibility_timeout"`
-	PollingInterval   *int            `json:"polling_interval"`
-	ShutdownTimeout   *int            `json:"shutdown_timeout"`
-	Paused            *bool           `json:"paused"`
-	IsDefault         *bool           `json:"is_default"`
-	QueueStatus       json.RawMessage `json:"queue_status"`
-	CreatedAt         *string         `json:"created_at"`
+	SleepWithApp      *bool `json:"sleep_with_app"`
+	VisibilityTimeout *int  `json:"visibility_timeout"`
+	PollingInterval   *int  `json:"polling_interval"`
+	ShutdownTimeout   *int  `json:"shutdown_timeout"`
+	Paused            *bool `json:"paused"`
+	IsDefault         *bool `json:"is_default"`
+	// QueueStatus is a string enum per the spec (creating, updating,
+	// available, deleting, deleted, unknown) or null. It is decoded through
+	// QueueStatusValue rather than a plain *string so that a non-string
+	// payload degrades to raw JSON instead of failing the whole decode.
+	QueueStatus QueueStatusValue `json:"queue_status"`
+	CreatedAt   *string          `json:"created_at"`
 }
 
 type CreateInstanceRequest struct {
-	Name                             string `json:"name"`
-	Type                             string `json:"type"`
-	Size                             string `json:"size"`
-	ScalingType                      string `json:"scaling_type"`
-	MinReplicas                      int    `json:"min_replicas"`
-	MaxReplicas                      int    `json:"max_replicas"`
-	UsesScheduler                    *bool  `json:"uses_scheduler,omitempty"`
-	ScalingCPUThresholdPercentage    *int   `json:"scaling_cpu_threshold_percentage,omitempty"`
-	ScalingMemoryThresholdPercentage *int   `json:"scaling_memory_threshold_percentage,omitempty"`
-	SleepWithApp                     *bool  `json:"sleep_with_app,omitempty"`
-	VisibilityTimeout                *int   `json:"visibility_timeout,omitempty"`
-	PollingInterval                  *int   `json:"polling_interval,omitempty"`
-	ShutdownTimeout                  *int   `json:"shutdown_timeout,omitempty"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Size        string `json:"size"`
+	ScalingType string `json:"scaling_type"`
+	// MinReplicas/MaxReplicas are pointers because the API *rejects* them for
+	// the "auto" scaling type ("Only applicable to the custom scaling type,
+	// and rejected when used with auto"). They must be omittable.
+	MinReplicas                      *int  `json:"min_replicas,omitempty"`
+	MaxReplicas                      *int  `json:"max_replicas,omitempty"`
+	UsesScheduler                    *bool `json:"uses_scheduler,omitempty"`
+	ScalingCPUThresholdPercentage    *int  `json:"scaling_cpu_threshold_percentage,omitempty"`
+	ScalingMemoryThresholdPercentage *int  `json:"scaling_memory_threshold_percentage,omitempty"`
+	SleepWithApp                     *bool `json:"sleep_with_app,omitempty"`
+	VisibilityTimeout                *int  `json:"visibility_timeout,omitempty"`
+	ShutdownTimeout                  *int  `json:"shutdown_timeout,omitempty"`
+	// polling_interval is deliberately absent: it appears in neither the
+	// create nor the update request schema. It is read-only.
 }
 
 type UpdateInstanceRequest struct {
@@ -200,8 +247,8 @@ type UpdateInstanceRequest struct {
 	UsesInertiaSSR                   *bool   `json:"uses_inertia_ssr,omitempty"`
 	HibernationTimeout               *int    `json:"hibernation_timeout,omitempty"`
 	VisibilityTimeout                *int    `json:"visibility_timeout,omitempty"`
-	PollingInterval                  *int    `json:"polling_interval,omitempty"`
 	ShutdownTimeout                  *int    `json:"shutdown_timeout,omitempty"`
+	// polling_interval is read-only; see CreateInstanceRequest.
 }
 
 // ---------------------------------------------------------------------
@@ -212,18 +259,47 @@ type DomainData struct {
 	ID         string           `json:"id"`
 	Type       string           `json:"type"`
 	Attributes DomainAttributes `json:"attributes"`
+	// Relationships carries the parent link, which is what makes import
+	// work: the import id names this resource only.
+	Relationships DomainRelationships `json:"relationships"`
 }
 
 type DomainAttributes struct {
 	Name               string  `json:"name"`
 	DomainType         string  `json:"type"`
+	Stage              string  `json:"stage"`
 	HostnameStatus     string  `json:"hostname_status"`
 	SSLStatus          string  `json:"ssl_status"`
 	OriginStatus       string  `json:"origin_status"`
 	Redirect           *string `json:"redirect"`
 	CloudflareStrategy *string `json:"cloudflare_strategy"`
 	Downtime           *bool   `json:"downtime"`
-	CreatedAt          *string `json:"created_at"`
+	WildcardEnabled    bool    `json:"wildcard_enabled"`
+	// ActionRequired reports what the operator still has to do
+	// (add_txt_records, add_dns_records, failed) before the domain verifies.
+	ActionRequired *string `json:"action_required"`
+	LastVerifiedAt *string `json:"last_verified_at"`
+	// DNSRecords carries the records that must exist for the domain to
+	// verify and serve. Without it there is no way to complete the domain
+	// workflow from Terraform.
+	DNSRecords DomainDNSRecords `json:"dns_records"`
+	CreatedAt  *string          `json:"created_at"`
+}
+
+// DomainDNSRecords is the dns_records object on a domain.
+type DomainDNSRecords struct {
+	SSL             []DomainSSLRecord `json:"ssl"`
+	PreVerification string            `json:"pre_verification"`
+	Origin          string            `json:"origin"`
+	OriginCNAME     string            `json:"origin_cname"`
+	DCV             string            `json:"dcv"`
+}
+
+// DomainSSLRecord is one CNAME/TXT record required for SSL issuance.
+type DomainSSLRecord struct {
+	Type  string  `json:"type"`
+	Name  *string `json:"name"`
+	Value *string `json:"value"`
 }
 
 type CreateDomainRequest struct {
@@ -235,6 +311,9 @@ type CreateDomainRequest struct {
 	AllowDowntime      *bool   `json:"allow_downtime,omitempty"`
 }
 
+// UpdateDomainRequest is the entire PATCH /domains/{domain} body: the API
+// accepts verification_method and nothing else, and it is required. Every other
+// domain setting is create-only, which is why they force replacement.
 type UpdateDomainRequest struct {
 	VerificationMethod string `json:"verification_method"`
 }
@@ -269,15 +348,24 @@ type DatabaseConnection struct {
 }
 
 type CreateDatabaseClusterRequest struct {
-	Type      string         `json:"type"`
-	Name      string         `json:"name"`
-	Region    string         `json:"region"`
-	ClusterID *int           `json:"cluster_id,omitempty"`
-	Config    map[string]any `json:"config,omitempty"`
+	Type string `json:"type"`
+	// Version is required by the API for every current database type. The
+	// retired identifiers that baked the version into the type (laravel_mysql_84
+	// and friends) are still accepted for backwards compatibility and carry
+	// their own version, which is why this is omitempty rather than mandatory.
+	Version string `json:"version,omitempty"`
+	Name    string `json:"name"`
+	Region  string `json:"region"`
+	// ClusterID is a string in the spec, not a number.
+	ClusterID *string `json:"cluster_id,omitempty"`
+	// Config is required by the API; it is sent even when empty.
+	Config map[string]any `json:"config"`
 }
 
+// UpdateDatabaseClusterRequest is the entire PATCH body. config is required,
+// so it is sent even when empty rather than dropped by omitempty.
 type UpdateDatabaseClusterRequest struct {
-	Config map[string]any `json:"config,omitempty"`
+	Config map[string]any `json:"config"`
 }
 
 // ---------------------------------------------------------------------
@@ -322,12 +410,22 @@ type CacheAttributes struct {
 	CreatedAt          *string          `json:"created_at"`
 }
 
+// CacheConnection is the cache's connection block. Every field is nullable:
+// a cache that is still provisioning returns nulls, and the credentials are
+// merged in conditionally. Pointers keep "not reported yet" distinguishable
+// from an empty hostname or a zero port.
 type CacheConnection struct {
-	Hostname string `json:"hostname"`
-	Port     int    `json:"port"`
-	Protocol string `json:"protocol"`
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Hostname *string `json:"hostname"`
+	Port     *int64  `json:"port"`
+	Protocol *string `json:"protocol"`
+	Username *string `json:"username"`
+	Password *string `json:"password"`
+}
+
+// IsReady reports whether the API has populated the connection block. A cache
+// created a moment ago is still provisioning and reports an empty connection.
+func (c *CacheConnection) IsReady() bool {
+	return c != nil && c.Hostname != nil && *c.Hostname != "" && c.Port != nil && *c.Port != 0
 }
 
 type CreateCacheRequest struct {
@@ -427,6 +525,9 @@ type BackgroundProcessData struct {
 	ID         string                      `json:"id"`
 	Type       string                      `json:"type"`
 	Attributes BackgroundProcessAttributes `json:"attributes"`
+	// Relationships carries the parent link, which is what makes import
+	// work: the import id names this resource only.
+	Relationships BackgroundProcessRelationships `json:"relationships"`
 }
 
 type BackgroundProcessAttributes struct {
@@ -519,10 +620,15 @@ type CreateWebsocketApplicationRequest struct {
 }
 
 type UpdateWebsocketApplicationRequest struct {
-	Name            *string  `json:"name,omitempty"`
-	AllowedOrigins  []string `json:"allowed_origins,omitempty"`
-	PingInterval    *int     `json:"ping_interval,omitempty"`
-	ActivityTimeout *int     `json:"activity_timeout,omitempty"`
+	Name *string `json:"name,omitempty"`
+	// AllowedOrigins is a pointer to a slice, not a plain slice, because an
+	// empty array is how origins are cleared. With `[]string` + omitempty an
+	// empty list marshals to nothing, the field is dropped from the body, and
+	// the API keeps the previous origins -- so clearing them was impossible.
+	// A nil pointer omits the field; a pointer to an empty slice sends [].
+	AllowedOrigins  *[]string `json:"allowed_origins,omitempty"`
+	PingInterval    *int      `json:"ping_interval,omitempty"`
+	ActivityTimeout *int      `json:"activity_timeout,omitempty"`
 }
 
 // ---------------------------------------------------------------------
@@ -606,7 +712,11 @@ type DatabaseSnapshotData struct {
 }
 
 type DatabaseSnapshotAttributes struct {
-	Name         string  `json:"name"`
+	// Name is nullable in the spec: snapshots the platform creates on a
+	// schedule have none. A plain string would collapse null to "" and, since
+	// name forces replacement, make an imported scheduled snapshot look like
+	// it needed recreating.
+	Name         *string `json:"name"`
 	Description  *string `json:"description"`
 	SnapshotType string  `json:"type"`
 	Status       string  `json:"status"`
@@ -710,9 +820,13 @@ type DedicatedClusterAttributes struct {
 // Data source response types (non-JSON:API)
 // ---------------------------------------------------------------------
 
+// InstanceSizesResponse is the GET /instances/sizes payload. The spec requires
+// BOTH classes; modelling only "general" silently dropped every managed-queue
+// size from the data source.
 type InstanceSizesResponse struct {
 	Data struct {
-		General []InstanceSizeInfo `json:"general"`
+		General      []InstanceSizeInfo `json:"general"`
+		ManagedQueue []InstanceSizeInfo `json:"managed_queue"`
 	} `json:"data"`
 }
 
@@ -722,8 +836,11 @@ type InstanceSizeInfo struct {
 	Description  string `json:"description"`
 	CPUType      string `json:"cpu_type"`
 	ComputeClass string `json:"compute_class"`
-	CPUCount     int    `json:"cpu_count"`
-	MemoryMiB    int    `json:"memory_mib"`
+	// CPUCount is a float because managed-queue sizes express fractional
+	// vCPUs (the spec types it "integer" for general and "number" for
+	// managed_queue); an int here fails to unmarshal e.g. 0.5.
+	CPUCount  float64 `json:"cpu_count"`
+	MemoryMiB int     `json:"memory_mib"`
 }
 
 type DatabaseTypesResponse struct {
@@ -731,7 +848,11 @@ type DatabaseTypesResponse struct {
 }
 
 type DatabaseTypeInfo struct {
-	Type         string           `json:"type"`
+	Type string `json:"type"`
+	// Versions lists the engine versions accepted alongside this type. It is
+	// required in the response and is what a caller needs to populate the
+	// required `version` field when creating a cluster.
+	Versions     []string         `json:"versions"`
 	Label        string           `json:"label"`
 	Regions      []string         `json:"regions"`
 	ConfigSchema []map[string]any `json:"config_schema"`
@@ -753,4 +874,98 @@ type CacheTypeInfo struct {
 type CacheSizeInfo struct {
 	Value string `json:"value"`
 	Label string `json:"label"`
+}
+
+// QueueStatusValue holds the managed-queue status. The public spec types it as
+// a string enum, but the value is decoded defensively: a JSON string is
+// unquoted (storing it raw put literal quote characters into Terraform state),
+// while any other shape is preserved verbatim so that an API that returns, say,
+// a status object does not break the entire instance read.
+type QueueStatusValue struct {
+	// Value is the status as a bare string, or the compact JSON encoding of
+	// whatever non-string payload arrived. It is empty when absent or null.
+	Value string
+}
+
+func (q *QueueStatusValue) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 || string(b) == "null" {
+		q.Value = ""
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		q.Value = s
+		return nil
+	}
+	q.Value = string(b)
+	return nil
+}
+
+func (q QueueStatusValue) MarshalJSON() ([]byte, error) {
+	if q.Value == "" {
+		return []byte("null"), nil
+	}
+	return json.Marshal(q.Value)
+}
+
+// IsZero reports whether no queue status was returned.
+func (q QueueStatusValue) IsZero() bool { return q.Value == "" }
+
+// ---------------------------------------------------------------------
+// Edge Network
+// ---------------------------------------------------------------------
+
+type EdgeNetworkData struct {
+	ID         string                `json:"id"`
+	Type       string                `json:"type"`
+	Attributes EdgeNetworkAttributes `json:"attributes"`
+}
+
+type EdgeNetworkAttributes struct {
+	Name        string  `json:"name"`
+	Domain      string  `json:"domain"`
+	TenancyType string  `json:"tenancy_type"`
+	Status      string  `json:"status"`
+	CreatedAt   *string `json:"created_at"`
+}
+
+// ---------------------------------------------------------------------
+// JSON:API relationships
+// ---------------------------------------------------------------------
+
+// Relationship is a JSON:API to-one relationship. It is how a resource's
+// parent is discovered on import, where the parent id is not in the import
+// string and cannot be inferred from anything else in state.
+type Relationship struct {
+	Data *ResourceIdentifier `json:"data"`
+}
+
+// ResourceIdentifier is a JSON:API resource identifier object.
+type ResourceIdentifier struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
+// ID returns the related resource's id, or "" when the relationship is absent
+// or explicitly null.
+func (r Relationship) RelatedID() string {
+	if r.Data == nil {
+		return ""
+	}
+	return r.Data.ID
+}
+
+// InstanceRelationships are the relationships on an instance resource object.
+type InstanceRelationships struct {
+	Environment Relationship `json:"environment"`
+}
+
+// DomainRelationships are the relationships on a domain resource object.
+type DomainRelationships struct {
+	Environment Relationship `json:"environment"`
+}
+
+// BackgroundProcessRelationships are the relationships on a background process.
+type BackgroundProcessRelationships struct {
+	Instance Relationship `json:"instance"`
 }

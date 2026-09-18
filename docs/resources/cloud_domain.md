@@ -47,21 +47,45 @@ resource "laravel_cloud_domain" "example" {
 
 ### Optional
 
-- `allow_downtime` (Boolean) Whether to allow downtime while attaching the domain (create-time only).
-- `cloudflare_strategy` (String) Cloudflare integration strategy (none, dns, dns_proxy). Set at creation.
+- `allow_downtime` (Boolean) Whether to allow downtime while attaching the domain. Create-time only; changing this forces a new domain.
+- `cloudflare_strategy` (String) Cloudflare integration strategy (none, dns, dns_proxy). Create-time only; changing this forces a new domain.
 - `verification_method` (String) Verification method (pre_verification, real_time). Editable in place via the API's update endpoint.
-- `wildcard_enabled` (Boolean) Enable wildcard subdomain.
-- `www_redirect` (String) WWW redirect (root_to_www, www_to_root).
+- `wildcard_enabled` (Boolean) Enable wildcard subdomain. Create-time only; changing this forces a new domain.
+- `www_redirect` (String) WWW redirect (root_to_www, www_to_root). Create-time only: the API's update endpoint accepts verification_method and nothing else, so changing this forces a new domain.
 
 ### Read-Only
 
+- `action_required` (String) What still has to be done before the domain verifies (add_txt_records, add_dns_records, failed), or null when nothing is pending.
 - `created_at` (String)
+- `dns_records` (Attributes) The DNS records that must exist for this domain to verify and serve traffic. Use these to create the records at your DNS provider. (see [below for nested schema](#nestedatt--dns_records))
 - `downtime` (Boolean) Whether attaching the domain incurs downtime.
 - `hostname_status` (String) Hostname verification status.
 - `id` (String) The ID of this resource.
+- `last_verified_at` (String) When the domain was last successfully verified.
 - `origin_status` (String) Origin verification status.
 - `ssl_status` (String) SSL certificate status.
+- `stage` (String) Verification stage (pre_verification, origin).
 - `type` (String) Domain type (root, www, wildcard).
+
+<a id="nestedatt--dns_records"></a>
+### Nested Schema for `dns_records`
+
+Read-Only:
+
+- `dcv` (String) Domain control validation value.
+- `origin` (String) Origin address the domain should point at.
+- `origin_cname` (String) Origin CNAME target.
+- `pre_verification` (String) TXT value used for pre-verification.
+- `ssl` (Attributes List) Records required for SSL certificate issuance. (see [below for nested schema](#nestedatt--dns_records--ssl))
+
+<a id="nestedatt--dns_records--ssl"></a>
+### Nested Schema for `dns_records.ssl`
+
+Read-Only:
+
+- `name` (String) Record name.
+- `type` (String) Record type (CNAME or TXT).
+- `value` (String) Record value.
 
 ## Import
 

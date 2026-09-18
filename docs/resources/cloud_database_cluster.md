@@ -45,7 +45,9 @@ resource "laravel_cloud_database_cluster" "example" {
 
 ### Optional
 
-- `cluster_id` (Number) Dedicated cluster ID.
+- `cluster_id` (String) Dedicated cluster ID. Changing this forces a new cluster: the API's update endpoint accepts config and nothing else.
+- `force_destroy` (Boolean) Allow destroying this cluster even though it still contains databases. The API refuses to delete a cluster while any database is attached, and a cluster always carries at least the one the platform creates with it, so destroying is impossible without this. Setting it true DELETES EVERY DATABASE IN THE CLUSTER, including ones Terraform did not create and does not manage. Defaults to false, in which case destroy fails and names the databases that are in the way.
+- `version` (String) Database engine version (see the versions attribute of the laravel_cloud_database_types data source). Required by the API for the current type identifiers such as "laravel_mysql"; omit it only when using a retired identifier that bakes the version into the type, such as "laravel_mysql_84". Create-only: the API never reports it back, so an imported cluster leaves it null.
 
 ### Read-Only
 

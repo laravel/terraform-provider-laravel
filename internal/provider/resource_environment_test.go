@@ -21,7 +21,7 @@ func TestAccEnvironmentResource_basic(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("laravel_cloud_environment.test", "name", "production"),
 					resource.TestCheckResourceAttrSet("laravel_cloud_environment.test", "id"),
-					resource.TestCheckResourceAttr("laravel_cloud_environment.test", "branch", "main"),
+					resource.TestCheckResourceAttr("laravel_cloud_environment.test", "branch", testAccBranch()),
 					resource.TestCheckResourceAttr("laravel_cloud_environment.test", "php_version", "8.4:1"),
 				),
 			},
@@ -30,8 +30,11 @@ func TestAccEnvironmentResource_basic(t *testing.T) {
 				ResourceName:      "laravel_cloud_environment.test",
 				ImportState:       true,
 				ImportStateVerify: true,
-				// application_id is not in the GET response, branch is write-only
-				ImportStateVerifyIgnore: []string{"application_id", "branch"},
+				// application_id is not in the GET response; branch, php_version
+				// and timeout are write-only (the API accepts them but never
+				// reports them back), so an imported environment cannot know
+				// them and leaves them null.
+				ImportStateVerifyIgnore: []string{"application_id", "branch", "php_version", "timeout"},
 			},
 		},
 	})
@@ -68,14 +71,14 @@ func testAccEnvironmentConfig(appName string) string {
 	return fmt.Sprintf(`
 resource "laravel_cloud_application" "test" {
   name       = %[1]q
-  repository = "laravel/laravel"
+  repository = %[2]q
   region     = "us-east-2"
 }
 
 resource "laravel_cloud_environment" "test" {
   application_id = laravel_cloud_application.test.id
   name           = "production"
-  branch         = "main"
+  branch         = %[3]q
   php_version    = "8.4:1"
   node_version   = "22"
 
@@ -83,21 +86,21 @@ resource "laravel_cloud_environment" "test" {
   uses_octane         = true
   timeout             = 30
 }
-`, appName)
+`, appName, testAccRepository(), testAccBranch())
 }
 
 func testAccEnvironmentConfigUpdated(appName string) string {
 	return fmt.Sprintf(`
 resource "laravel_cloud_application" "test" {
   name       = %[1]q
-  repository = "laravel/laravel"
+  repository = %[2]q
   region     = "us-east-2"
 }
 
 resource "laravel_cloud_environment" "test" {
   application_id = laravel_cloud_application.test.id
   name           = "production"
-  branch         = "main"
+  branch         = %[3]q
   php_version    = "8.4:1"
   node_version   = "22"
 
@@ -105,5 +108,5 @@ resource "laravel_cloud_environment" "test" {
   uses_octane         = false
   timeout             = 45
 }
-`, appName)
+`, appName, testAccRepository(), testAccBranch())
 }

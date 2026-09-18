@@ -30,6 +30,24 @@ export LARAVEL_CLOUD_BASE_URL="https://your-api-host/api"
 make testacc
 ```
 
+Acceptance tests build from a real source repository, which defaults to
+`laravel/laravel` on branch `13.x`. Override either if that repository is not
+connected to the account under test:
+
+```sh
+export LARAVEL_CLOUD_TEST_REPOSITORY="your-org/your-repo"
+export LARAVEL_CLOUD_TEST_BRANCH="main"
+```
+
+The database cluster acceptance test is **commented out**. Provisioning a
+cluster routinely takes twenty minutes or more, and neither the databases
+inside it nor the cluster itself can be deleted until it finishes, so a
+create-then-destroy cycle either blocks the run for a long time or leaves a
+billable database behind. Its behaviour is covered by the plan tests below,
+which exercise the same code paths against the in-memory fake in under a
+second. Uncomment it in `internal/provider/resource_database_cluster_test.go`
+to run it against a real API.
+
 ### Running a Specific Test
 
 ```sh

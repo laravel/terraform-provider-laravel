@@ -3,6 +3,8 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -54,11 +56,11 @@ func mapCacheConnection(c *client.CacheConnection) types.Object {
 		return types.ObjectNull(cacheConnectionAttrTypes)
 	}
 	obj, _ := types.ObjectValue(cacheConnectionAttrTypes, map[string]attr.Value{
-		"hostname": types.StringValue(c.Hostname),
-		"port":     types.Int64Value(int64(c.Port)),
-		"protocol": types.StringValue(c.Protocol),
-		"username": types.StringValue(c.Username),
-		"password": types.StringValue(c.Password),
+		"hostname": types.StringPointerValue(c.Hostname),
+		"port":     types.Int64PointerValue(c.Port),
+		"protocol": types.StringPointerValue(c.Protocol),
+		"username": types.StringPointerValue(c.Username),
+		"password": types.StringPointerValue(c.Password),
 	})
 	return obj
 }
@@ -175,6 +177,23 @@ func (r *CacheResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
+	// The create response describes a cache that is still provisioning: its
+	// connection block comes back empty (null hostname, zero port, no
+	// password). Storing that would hand every downstream reference an empty
+	// password with no error, so wait for the API to fill it in.
+	if !cache.Attributes.Connection.IsReady() {
+		if ready := waitForCacheConnection(ctx, r.client, cache.ID); ready != nil {
+			cache = ready
+		} else {
+			resp.Diagnostics.AddWarning(
+				"Cache connection details not available yet",
+				"The cache was created but is still provisioning, so its connection "+
+					"details are not populated. Run 'terraform refresh' or the next "+
+					"'terraform apply' to pick them up.",
+			)
+		}
+	}
+
 	mapCacheToState(cache, &plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -252,7 +271,19 @@ func (r *CacheResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 		return
 	}
 
-	if err := r.client.DeleteCache(ctx, state.ID.ValueString()); err != nil {
+	// A cache that was only just created is still provisioning, and the API
+	// rejects a delete while any operation is in progress ("An operation is
+	// already in progress for this cache, please wait a few seconds"). Without
+	// a retry this fails the destroy and leaves a billable cache behind --
+	// observed against a live API, where the create/destroy cycle of an
+	// acceptance test is fast enough to hit it every time.
+	id := state.ID.ValueString()
+	err := client.RetryOnConflict(ctx, 30, 10*time.Second, func() error {
+		return r.client.DeleteCache(ctx, id)
+	}, func(err error) bool {
+		return strings.Contains(err.Error(), "operation is already in progress")
+	})
+	if err != nil {
 		resp.Diagnostics.AddError("Error deleting cache", err.Error())
 	}
 }
@@ -270,6 +301,46 @@ func mapCacheToState(c *client.CacheData, state *CacheResourceModel) {
 	state.Status = types.StringValue(c.Attributes.Status)
 	state.AutoUpgradeEnabled = types.BoolValue(c.Attributes.AutoUpgradeEnabled)
 	state.IsPublic = types.BoolValue(c.Attributes.IsPublic)
-	state.Connection = mapCacheConnection(c.Attributes.Connection)
 	state.CreatedAt = types.StringPointerValue(c.Attributes.CreatedAt)
+
+	// The API reports an empty connection block whenever an operation is in
+	// progress -- right after create, and again while a resize is applying. If
+	// that were mapped straight through, a refresh or an update would null out
+	// connection_details.password in state, silently, and anything referencing
+	// it would start reading an empty credential. Keep what is already stored
+	// until the API has something real to replace it with.
+	if c.Attributes.Connection.IsReady() || state.Connection.IsNull() || state.Connection.IsUnknown() {
+		state.Connection = mapCacheConnection(c.Attributes.Connection)
+	}
+}
+
+// cacheConnectionPoll bounds how long Create waits for a new cache to report
+// its connection details.
+const (
+	cacheConnectionPollInterval = 5 * time.Second
+	cacheConnectionPollAttempts = 60
+)
+
+// waitForCacheConnection polls the cache until its connection block is
+// populated, returning nil if it never becomes ready within the budget or the
+// context is cancelled. A read error is treated as "not ready yet" rather than
+// fatal: the cache does exist, and the caller falls back to the create
+// response.
+func waitForCacheConnection(ctx context.Context, c *client.Client, id string) *client.CacheData {
+	for attempt := 0; attempt < cacheConnectionPollAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(cacheConnectionPollInterval):
+		}
+
+		cache, err := c.GetCache(ctx, id)
+		if err != nil {
+			continue
+		}
+		if cache.Attributes.Connection.IsReady() {
+			return cache
+		}
+	}
+	return nil
 }

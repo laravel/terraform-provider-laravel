@@ -7,8 +7,9 @@ It's split into two tiers so a normal run stays cheap and safe:
 
 | Tier | Resources | When |
 |------|-----------|------|
-| **1 — core** (`main.tf`) | application, environment, instance, environment_variables, database_cluster, database, cache, storage_bucket, storage_bucket_key, websocket_server, websocket_application | created by default |
-| **2 — side-effecting** (`side-effecting.tf`) | deployment, command, database_snapshot, database_restore | opt-in via `enable_side_effecting=true` |
+| **1 — core** (`main.tf`) | application, environment, instance, environment_variables, cache, storage_bucket, storage_bucket_key, websocket_server, websocket_application | created by default |
+| **2 — side-effecting** (`side-effecting.tf`) | deployment, command | opt-in via `enable_side_effecting=true` |
+| **commented out** | database_cluster, database, database_snapshot, database_restore | uncomment in `main.tf` / `side-effecting.tf` to use |
 | **conditional** (`main.tf`) | background_process, domain | opt-in via `enable_api_blocked=true` |
 
 Tier 2 is gated because those resources run real operations (a deploy, an
@@ -52,6 +53,14 @@ echo 'export LARAVEL_CLOUD_API_TOKEN="<your-api-token>"' > .env.local
   `domain_name`, `enable_api_blocked`, and `enable_side_effecting`. Bump
   `prefix` if a name collides — storage bucket names may need to be globally
   unique.
+- The database cluster, its database, and the snapshot and restore that depend
+  on it are **commented out**. Provisioning a cluster routinely takes twenty
+  minutes or more, and neither the databases inside it nor the cluster itself
+  can be deleted until it finishes, so a plain apply/destroy cycle would either
+  block for a long time or leave a billable database behind. The configuration
+  is kept as a worked reference -- uncomment the block in `main.tf`, the
+  `database_cluster_status` output, and the two resources in
+  `side-effecting.tf` to exercise them.
 - `database_cluster.config` must list **every** key the API echoes back, with
   exactly the value it stores — `size` comes from the enum in
   `GET /databases/types` (`mysql-flex-512mb`, …), not from the instance sizes.

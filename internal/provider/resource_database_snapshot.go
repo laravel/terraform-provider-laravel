@@ -186,7 +186,7 @@ func (r *DatabaseSnapshotResource) ImportState(ctx context.Context, req resource
 
 func mapDatabaseSnapshotToState(s *client.DatabaseSnapshotData, state *DatabaseSnapshotResourceModel) {
 	state.ID = types.StringValue(s.ID)
-	state.Name = types.StringValue(s.Attributes.Name)
+	state.Name = types.StringPointerValue(s.Attributes.Name)
 	state.SnapshotType = types.StringValue(s.Attributes.SnapshotType)
 	state.Status = types.StringValue(s.Attributes.Status)
 	state.CreatedAt = types.StringPointerValue(s.Attributes.CreatedAt)
@@ -196,7 +196,10 @@ func mapDatabaseSnapshotToState(s *client.DatabaseSnapshotData, state *DatabaseS
 	if s.Attributes.Description != nil {
 		state.Description = types.StringValue(*s.Attributes.Description)
 	}
-	if s.Attributes.StorageBytes != nil {
-		state.StorageBytes = types.Int64Value(*s.Attributes.StorageBytes)
-	}
+	// storage_bytes is Computed and nullable, and a freshly created snapshot is
+	// still pending with no size yet. Assigning it only when non-nil left the
+	// attribute unknown after apply, which Terraform rejects outright with
+	// "provider produced inconsistent result after apply" -- so it is always
+	// set, to null when the API has no size to report.
+	state.StorageBytes = types.Int64PointerValue(s.Attributes.StorageBytes)
 }

@@ -44,8 +44,10 @@ func (p *LaravelCloudProvider) Schema(_ context.Context, _ provider.SchemaReques
 				Sensitive:   true,
 			},
 			"base_url": schema.StringAttribute{
-				Description: "Override the Laravel Cloud API base URL. Defaults to https://cloud.laravel.com/api.",
-				Optional:    true,
+				Description: "Override the Laravel Cloud API base URL. Can also be set via the " +
+					"LARAVEL_CLOUD_BASE_URL environment variable. Defaults to " +
+					"https://cloud.laravel.com/api.",
+				Optional: true,
 			},
 		},
 	}
@@ -71,9 +73,18 @@ func (p *LaravelCloudProvider) Configure(ctx context.Context, req provider.Confi
 		return
 	}
 
-	var opts []client.ClientOption
+	// The base URL follows the same precedence as the token: an explicit
+	// provider attribute wins, otherwise the environment variable. Without the
+	// env var there is no way to point acceptance tests at a non-production
+	// host, which is what TESTING.md has always documented.
+	baseURL := os.Getenv("LARAVEL_CLOUD_BASE_URL")
 	if !config.BaseURL.IsNull() && !config.BaseURL.IsUnknown() {
-		opts = append(opts, client.WithBaseURL(config.BaseURL.ValueString()))
+		baseURL = config.BaseURL.ValueString()
+	}
+
+	var opts []client.ClientOption
+	if baseURL != "" {
+		opts = append(opts, client.WithBaseURL(baseURL))
 	}
 
 	c := client.NewClient(token, opts...)
@@ -112,5 +123,6 @@ func (p *LaravelCloudProvider) DataSources(_ context.Context) []func() datasourc
 		NewCacheTypesDataSource,
 		NewRegionsDataSource,
 		NewIPAddressesDataSource,
+		NewEdgeNetworksDataSource,
 	}
 }

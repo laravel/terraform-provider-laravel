@@ -85,9 +85,9 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 			"source_control_provider_type": schema.StringAttribute{
 				Optional:    true,
-				Description: "Source control provider type (github, gitlab, or bitbucket). Becomes required by the API on March 9, 2026.",
+				Description: "Source control provider type (github, gitlab, gitlab_self_hosted, or bitbucket). Becomes required by the API on March 9, 2026.",
 				Validators: []validator.String{
-					stringvalidator.OneOf("github", "gitlab", "bitbucket"),
+					stringvalidator.OneOf("github", "gitlab", "gitlab_self_hosted", "bitbucket"),
 				},
 			},
 			"slack_channel": schema.StringAttribute{
