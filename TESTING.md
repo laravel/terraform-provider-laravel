@@ -39,18 +39,14 @@ export LARAVEL_CLOUD_TEST_REPOSITORY="your-org/your-repo"
 export LARAVEL_CLOUD_TEST_BRANCH="main"
 ```
 
-Tests for slow-provisioning resources are skipped by default. A database
-cluster routinely takes twenty minutes or more to become available, and neither
-its schemas nor the cluster itself can be deleted until it does, so a
+The database cluster acceptance test is **commented out**. Provisioning a
+cluster routinely takes twenty minutes or more, and neither the databases
+inside it nor the cluster itself can be deleted until it finishes, so a
 create-then-destroy cycle either blocks the run for a long time or leaves a
-billable database behind. Opt in explicitly:
-
-```sh
-export LARAVEL_CLOUD_ACC_SLOW=1
-```
-
-Their behaviour is otherwise covered by the plan tests below, which exercise
-the same code paths against the in-memory fake in under a second.
+billable database behind. Its behaviour is covered by the plan tests below,
+which exercise the same code paths against the in-memory fake in under a
+second. Uncomment it in `internal/provider/resource_database_cluster_test.go`
+to run it against a real API.
 
 ### Running a Specific Test
 

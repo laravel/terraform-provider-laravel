@@ -35,18 +35,22 @@ resource "laravel_cloud_command" "command" {
   depends_on = [laravel_cloud_deployment.deploy]
 }
 
-resource "laravel_cloud_database_snapshot" "snap" {
-  count      = var.enable_side_effecting && var.enable_database ? 1 : 0
-  cluster_id = laravel_cloud_database_cluster.cluster[0].id
-  name       = "${var.prefix}-snapshot"
-}
-
-resource "laravel_cloud_database_restore" "restore" {
-  count                = var.enable_side_effecting && var.enable_database ? 1 : 0
-  database_cluster_id  = laravel_cloud_database_cluster.cluster[0].id
-  name                 = "${var.prefix}-restored"
-  database_snapshot_id = laravel_cloud_database_snapshot.snap[0].id
-}
+# Commented out along with the database cluster in main.tf: both of these need
+# a cluster, and provisioning one takes twenty minutes or more. Uncomment them
+# together with that block.
+#
+# resource "laravel_cloud_database_snapshot" "snap" {
+#   count      = var.enable_side_effecting ? 1 : 0
+#   cluster_id = laravel_cloud_database_cluster.cluster.id
+#   name       = "${var.prefix}-snapshot"
+# }
+#
+# resource "laravel_cloud_database_restore" "restore" {
+#   count                = var.enable_side_effecting ? 1 : 0
+#   database_cluster_id  = laravel_cloud_database_cluster.cluster.id
+#   name                 = "${var.prefix}-restored"
+#   database_snapshot_id = laravel_cloud_database_snapshot.snap[0].id
+# }
 
 output "deployment_status" {
   value = var.enable_side_effecting ? laravel_cloud_deployment.deploy[0].status : null

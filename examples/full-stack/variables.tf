@@ -41,13 +41,3 @@ variable "enable_side_effecting" {
   type    = bool
   default = false
 }
-
-# Toggle for the database cluster and the database inside it. Off by default:
-# provisioning a cluster routinely takes twenty minutes or more, and nothing in
-# it can be deleted until it finishes, so a plain apply/destroy cycle would
-# either block for a long time or leave a billable database behind. Enable with:
-#   terraform apply -var enable_database=true
-variable "enable_database" {
-  type    = bool
-  default = false
-}
