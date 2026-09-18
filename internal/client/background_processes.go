@@ -9,9 +9,11 @@ func (c *Client) ListBackgroundProcesses(ctx context.Context, instanceID string)
 	return listAll[BackgroundProcessData](ctx, c, fmt.Sprintf("/instances/%s/background-processes", instanceID))
 }
 
+// GetBackgroundProcess fetches a single background process. include=instance
+// is required to get the relationships block; see GetInstance.
 func (c *Client) GetBackgroundProcess(ctx context.Context, id string) (*BackgroundProcessData, error) {
 	var doc Document[BackgroundProcessData]
-	if err := c.do(ctx, "GET", fmt.Sprintf("/background-processes/%s", id), nil, &doc); err != nil {
+	if err := c.do(ctx, "GET", fmt.Sprintf("/background-processes/%s?include=instance", id), nil, &doc); err != nil {
 		return nil, err
 	}
 	return &doc.Data, nil

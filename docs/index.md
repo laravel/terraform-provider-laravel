@@ -35,5 +35,5 @@ provider "laravel" {
 
 ### Optional
 
-- `base_url` (String) Override the Laravel Cloud API base URL. Defaults to https://cloud.laravel.com/api.
+- `base_url` (String) Override the Laravel Cloud API base URL. Can also be set via the LARAVEL_CLOUD_BASE_URL environment variable. Defaults to https://cloud.laravel.com/api.
 - `token` (String, Sensitive) Laravel Cloud API token. Can also be set via the LARAVEL_CLOUD_API_TOKEN environment variable.
