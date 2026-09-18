@@ -36,14 +36,14 @@ resource "laravel_cloud_command" "command" {
 }
 
 resource "laravel_cloud_database_snapshot" "snap" {
-  count      = var.enable_side_effecting ? 1 : 0
-  cluster_id = laravel_cloud_database_cluster.cluster.id
+  count      = var.enable_side_effecting && var.enable_database ? 1 : 0
+  cluster_id = laravel_cloud_database_cluster.cluster[0].id
   name       = "${var.prefix}-snapshot"
 }
 
 resource "laravel_cloud_database_restore" "restore" {
-  count                = var.enable_side_effecting ? 1 : 0
-  database_cluster_id  = laravel_cloud_database_cluster.cluster.id
+  count                = var.enable_side_effecting && var.enable_database ? 1 : 0
+  database_cluster_id  = laravel_cloud_database_cluster.cluster[0].id
   name                 = "${var.prefix}-restored"
   database_snapshot_id = laravel_cloud_database_snapshot.snap[0].id
 }

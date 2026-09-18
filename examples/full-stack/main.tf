@@ -75,6 +75,7 @@ resource "laravel_cloud_domain" "domain" {
 # --- Database cluster + database -----------------------------------------
 
 resource "laravel_cloud_database_cluster" "cluster" {
+  count  = var.enable_database ? 1 : 0
   name   = "${var.prefix}-db"
   type   = "laravel_mysql_84"
   region = "us-east-2"
@@ -104,7 +105,8 @@ resource "laravel_cloud_database_cluster" "cluster" {
 }
 
 resource "laravel_cloud_database" "db" {
-  cluster_id = laravel_cloud_database_cluster.cluster.id
+  count      = var.enable_database ? 1 : 0
+  cluster_id = laravel_cloud_database_cluster.cluster[0].id
   name       = "app_db"
 }
 
@@ -172,7 +174,7 @@ output "environment_php_major_version" {
 }
 
 output "database_cluster_status" {
-  value = laravel_cloud_database_cluster.cluster.status
+  value = var.enable_database ? laravel_cloud_database_cluster.cluster[0].status : null
 }
 
 output "cache_status" {
