@@ -115,7 +115,7 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Optional:    true,
 				Description: "Dedicated cluster ID.",
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					requiresReplaceUnlessImported(),
 				},
 			},
 			"php_version": schema.StringAttribute{

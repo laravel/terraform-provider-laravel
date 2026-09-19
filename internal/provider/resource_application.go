@@ -83,7 +83,7 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Optional:    true,
 				Description: "Dedicated cluster ID.",
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					requiresReplaceUnlessImported(),
 				},
 			},
 			"source_control_provider_type": schema.StringAttribute{
