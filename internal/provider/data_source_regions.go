@@ -2,18 +2,16 @@ package provider
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
 
 var _ datasource.DataSource = &RegionsDataSource{}
 
 type RegionsDataSource struct {
-	client *client.Client
+	dataSourceWithClient
 }
 
 type RegionsDataSourceModel struct {
@@ -65,18 +63,6 @@ func (d *RegionsDataSource) Schema(_ context.Context, _ datasource.SchemaRequest
 			},
 		},
 	}
-}
-
-func (d *RegionsDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	if req.ProviderData == nil {
-		return
-	}
-	c, ok := req.ProviderData.(*client.Client)
-	if !ok {
-		resp.Diagnostics.AddError("Unexpected Data Source Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
-		return
-	}
-	d.client = c
 }
 
 func (d *RegionsDataSource) Read(ctx context.Context, _ datasource.ReadRequest, resp *datasource.ReadResponse) {

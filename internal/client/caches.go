@@ -10,27 +10,15 @@ func (c *Client) ListCaches(ctx context.Context) ([]CacheData, error) {
 }
 
 func (c *Client) GetCache(ctx context.Context, id string) (*CacheData, error) {
-	var doc Document[CacheData]
-	if err := c.do(ctx, "GET", fmt.Sprintf("/caches/%s", id), nil, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[CacheData](ctx, c, "GET", fmt.Sprintf("/caches/%s", id), nil)
 }
 
 func (c *Client) CreateCache(ctx context.Context, req CreateCacheRequest) (*CacheData, error) {
-	var doc Document[CacheData]
-	if err := c.do(ctx, "POST", "/caches", req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[CacheData](ctx, c, "POST", "/caches", req)
 }
 
 func (c *Client) UpdateCache(ctx context.Context, id string, req UpdateCacheRequest) (*CacheData, error) {
-	var doc Document[CacheData]
-	if err := c.do(ctx, "PATCH", fmt.Sprintf("/caches/%s", id), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[CacheData](ctx, c, "PATCH", fmt.Sprintf("/caches/%s", id), req)
 }
 
 func (c *Client) DeleteCache(ctx context.Context, id string) error {

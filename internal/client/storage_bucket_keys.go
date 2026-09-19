@@ -15,27 +15,15 @@ func (c *Client) ListStorageBucketKeys(ctx context.Context, bucketID string) ([]
 // 302 to the app root. This is the same shape as the websocket application
 // routes below.
 func (c *Client) GetStorageBucketKey(ctx context.Context, id string) (*StorageBucketKeyData, error) {
-	var doc Document[StorageBucketKeyData]
-	if err := c.do(ctx, "GET", fmt.Sprintf("/bucket-keys/%s", id), nil, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[StorageBucketKeyData](ctx, c, "GET", fmt.Sprintf("/bucket-keys/%s", id), nil)
 }
 
 func (c *Client) CreateStorageBucketKey(ctx context.Context, bucketID string, req CreateStorageBucketKeyRequest) (*StorageBucketKeyData, error) {
-	var doc Document[StorageBucketKeyData]
-	if err := c.do(ctx, "POST", fmt.Sprintf("/buckets/%s/keys", bucketID), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[StorageBucketKeyData](ctx, c, "POST", fmt.Sprintf("/buckets/%s/keys", bucketID), req)
 }
 
 func (c *Client) UpdateStorageBucketKey(ctx context.Context, id string, req UpdateStorageBucketKeyRequest) (*StorageBucketKeyData, error) {
-	var doc Document[StorageBucketKeyData]
-	if err := c.do(ctx, "PATCH", fmt.Sprintf("/bucket-keys/%s", id), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[StorageBucketKeyData](ctx, c, "PATCH", fmt.Sprintf("/bucket-keys/%s", id), req)
 }
 
 func (c *Client) DeleteStorageBucketKey(ctx context.Context, id string) error {

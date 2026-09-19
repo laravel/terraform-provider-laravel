@@ -149,6 +149,16 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	return nil
 }
 
+// fetch performs a request whose response is a single JSON:API document and
+// returns the decoded resource.
+func fetch[T any](ctx context.Context, c *Client, method, path string, body any) (*T, error) {
+	var doc Document[T]
+	if err := c.do(ctx, method, path, body, &doc); err != nil {
+		return nil, err
+	}
+	return &doc.Data, nil
+}
+
 // listAll walks every page of a paginated collection route and returns the
 // concatenated items.
 //

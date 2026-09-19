@@ -21,11 +21,7 @@ func (c *Client) GetDatabaseSnapshot(ctx context.Context, id string) (*DatabaseS
 }
 
 func (c *Client) CreateDatabaseSnapshot(ctx context.Context, clusterID string, req CreateDatabaseSnapshotRequest) (*DatabaseSnapshotData, error) {
-	var doc Document[DatabaseSnapshotData]
-	if err := c.do(ctx, "POST", fmt.Sprintf("/databases/clusters/%s/snapshots", clusterID), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[DatabaseSnapshotData](ctx, c, "POST", fmt.Sprintf("/databases/clusters/%s/snapshots", clusterID), req)
 }
 
 func (c *Client) DeleteDatabaseSnapshot(ctx context.Context, id string) error {

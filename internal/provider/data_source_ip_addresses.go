@@ -2,18 +2,16 @@ package provider
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
 
 var _ datasource.DataSource = &IPAddressesDataSource{}
 
 type IPAddressesDataSource struct {
-	client *client.Client
+	dataSourceWithClient
 }
 
 type IPAddressesDataSourceModel struct {
@@ -51,18 +49,6 @@ func (d *IPAddressesDataSource) Schema(_ context.Context, _ datasource.SchemaReq
 			},
 		},
 	}
-}
-
-func (d *IPAddressesDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	if req.ProviderData == nil {
-		return
-	}
-	c, ok := req.ProviderData.(*client.Client)
-	if !ok {
-		resp.Diagnostics.AddError("Unexpected Data Source Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
-		return
-	}
-	d.client = c
 }
 
 func (d *IPAddressesDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {

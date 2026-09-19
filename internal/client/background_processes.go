@@ -12,27 +12,15 @@ func (c *Client) ListBackgroundProcesses(ctx context.Context, instanceID string)
 // GetBackgroundProcess fetches a single background process. include=instance
 // is required to get the relationships block; see GetInstance.
 func (c *Client) GetBackgroundProcess(ctx context.Context, id string) (*BackgroundProcessData, error) {
-	var doc Document[BackgroundProcessData]
-	if err := c.do(ctx, "GET", fmt.Sprintf("/background-processes/%s?include=instance", id), nil, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[BackgroundProcessData](ctx, c, "GET", fmt.Sprintf("/background-processes/%s?include=instance", id), nil)
 }
 
 func (c *Client) CreateBackgroundProcess(ctx context.Context, instanceID string, req CreateBackgroundProcessRequest) (*BackgroundProcessData, error) {
-	var doc Document[BackgroundProcessData]
-	if err := c.do(ctx, "POST", fmt.Sprintf("/instances/%s/background-processes", instanceID), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[BackgroundProcessData](ctx, c, "POST", fmt.Sprintf("/instances/%s/background-processes", instanceID), req)
 }
 
 func (c *Client) UpdateBackgroundProcess(ctx context.Context, id string, req UpdateBackgroundProcessRequest) (*BackgroundProcessData, error) {
-	var doc Document[BackgroundProcessData]
-	if err := c.do(ctx, "PATCH", fmt.Sprintf("/background-processes/%s", id), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[BackgroundProcessData](ctx, c, "PATCH", fmt.Sprintf("/background-processes/%s", id), req)
 }
 
 func (c *Client) DeleteBackgroundProcess(ctx context.Context, id string) error {

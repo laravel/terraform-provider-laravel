@@ -10,27 +10,15 @@ func (c *Client) ListStorageBuckets(ctx context.Context) ([]StorageBucketData, e
 }
 
 func (c *Client) GetStorageBucket(ctx context.Context, id string) (*StorageBucketData, error) {
-	var doc Document[StorageBucketData]
-	if err := c.do(ctx, "GET", fmt.Sprintf("/buckets/%s", id), nil, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[StorageBucketData](ctx, c, "GET", fmt.Sprintf("/buckets/%s", id), nil)
 }
 
 func (c *Client) CreateStorageBucket(ctx context.Context, req CreateStorageBucketRequest) (*StorageBucketData, error) {
-	var doc Document[StorageBucketData]
-	if err := c.do(ctx, "POST", "/buckets", req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[StorageBucketData](ctx, c, "POST", "/buckets", req)
 }
 
 func (c *Client) UpdateStorageBucket(ctx context.Context, id string, req UpdateStorageBucketRequest) (*StorageBucketData, error) {
-	var doc Document[StorageBucketData]
-	if err := c.do(ctx, "PATCH", fmt.Sprintf("/buckets/%s", id), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[StorageBucketData](ctx, c, "PATCH", fmt.Sprintf("/buckets/%s", id), req)
 }
 
 func (c *Client) DeleteStorageBucket(ctx context.Context, id string) error {

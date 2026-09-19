@@ -15,27 +15,15 @@ func (c *Client) ListWebsocketApplications(ctx context.Context, serverID string)
 // root. Taking the id alone also lets `terraform import` work, since an
 // imported application has no server_id in state yet.
 func (c *Client) GetWebsocketApplication(ctx context.Context, id string) (*WebsocketApplicationData, error) {
-	var doc Document[WebsocketApplicationData]
-	if err := c.do(ctx, "GET", fmt.Sprintf("/websocket-applications/%s", id), nil, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[WebsocketApplicationData](ctx, c, "GET", fmt.Sprintf("/websocket-applications/%s", id), nil)
 }
 
 func (c *Client) CreateWebsocketApplication(ctx context.Context, serverID string, req CreateWebsocketApplicationRequest) (*WebsocketApplicationData, error) {
-	var doc Document[WebsocketApplicationData]
-	if err := c.do(ctx, "POST", fmt.Sprintf("/websocket-servers/%s/applications", serverID), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[WebsocketApplicationData](ctx, c, "POST", fmt.Sprintf("/websocket-servers/%s/applications", serverID), req)
 }
 
 func (c *Client) UpdateWebsocketApplication(ctx context.Context, id string, req UpdateWebsocketApplicationRequest) (*WebsocketApplicationData, error) {
-	var doc Document[WebsocketApplicationData]
-	if err := c.do(ctx, "PATCH", fmt.Sprintf("/websocket-applications/%s", id), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[WebsocketApplicationData](ctx, c, "PATCH", fmt.Sprintf("/websocket-applications/%s", id), req)
 }
 
 func (c *Client) DeleteWebsocketApplication(ctx context.Context, id string) error {

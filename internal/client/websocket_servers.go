@@ -10,27 +10,15 @@ func (c *Client) ListWebsocketServers(ctx context.Context) ([]WebsocketServerDat
 }
 
 func (c *Client) GetWebsocketServer(ctx context.Context, id string) (*WebsocketServerData, error) {
-	var doc Document[WebsocketServerData]
-	if err := c.do(ctx, "GET", fmt.Sprintf("/websocket-servers/%s", id), nil, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[WebsocketServerData](ctx, c, "GET", fmt.Sprintf("/websocket-servers/%s", id), nil)
 }
 
 func (c *Client) CreateWebsocketServer(ctx context.Context, req CreateWebsocketServerRequest) (*WebsocketServerData, error) {
-	var doc Document[WebsocketServerData]
-	if err := c.do(ctx, "POST", "/websocket-servers", req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[WebsocketServerData](ctx, c, "POST", "/websocket-servers", req)
 }
 
 func (c *Client) UpdateWebsocketServer(ctx context.Context, id string, req UpdateWebsocketServerRequest) (*WebsocketServerData, error) {
-	var doc Document[WebsocketServerData]
-	if err := c.do(ctx, "PATCH", fmt.Sprintf("/websocket-servers/%s", id), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[WebsocketServerData](ctx, c, "PATCH", fmt.Sprintf("/websocket-servers/%s", id), req)
 }
 
 func (c *Client) DeleteWebsocketServer(ctx context.Context, id string) error {

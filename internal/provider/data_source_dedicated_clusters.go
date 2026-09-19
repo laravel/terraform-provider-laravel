@@ -2,18 +2,16 @@ package provider
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
 
 var _ datasource.DataSource = &DedicatedClustersDataSource{}
 
 type DedicatedClustersDataSource struct {
-	client *client.Client
+	dataSourceWithClient
 }
 
 type DedicatedClustersDataSourceModel struct {
@@ -85,18 +83,6 @@ func (d *DedicatedClustersDataSource) Schema(_ context.Context, _ datasource.Sch
 			},
 		},
 	}
-}
-
-func (d *DedicatedClustersDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	if req.ProviderData == nil {
-		return
-	}
-	c, ok := req.ProviderData.(*client.Client)
-	if !ok {
-		resp.Diagnostics.AddError("Unexpected Data Source Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
-		return
-	}
-	d.client = c
 }
 
 func (d *DedicatedClustersDataSource) Read(ctx context.Context, _ datasource.ReadRequest, resp *datasource.ReadResponse) {

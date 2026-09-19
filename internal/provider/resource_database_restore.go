@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -16,7 +15,7 @@ import (
 var _ resource.Resource = &DatabaseRestoreResource{}
 
 type DatabaseRestoreResource struct {
-	client *client.Client
+	resourceWithClient
 }
 
 type DatabaseRestoreResourceModel struct {
@@ -114,18 +113,6 @@ func (r *DatabaseRestoreResource) Schema(_ context.Context, _ resource.SchemaReq
 			},
 		},
 	}
-}
-
-func (r *DatabaseRestoreResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if req.ProviderData == nil {
-		return
-	}
-	c, ok := req.ProviderData.(*client.Client)
-	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
-		return
-	}
-	r.client = c
 }
 
 func (r *DatabaseRestoreResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

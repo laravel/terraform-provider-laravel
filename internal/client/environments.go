@@ -52,19 +52,11 @@ func resolveIncludedName(included []ResourceObject, typeName, id string) string 
 }
 
 func (c *Client) CreateEnvironment(ctx context.Context, applicationID string, req CreateEnvironmentRequest) (*EnvironmentData, error) {
-	var doc Document[EnvironmentData]
-	if err := c.do(ctx, "POST", fmt.Sprintf("/applications/%s/environments", applicationID), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[EnvironmentData](ctx, c, "POST", fmt.Sprintf("/applications/%s/environments", applicationID), req)
 }
 
 func (c *Client) UpdateEnvironment(ctx context.Context, id string, req UpdateEnvironmentRequest) (*EnvironmentData, error) {
-	var doc Document[EnvironmentData]
-	if err := c.do(ctx, "PATCH", fmt.Sprintf("/environments/%s", id), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[EnvironmentData](ctx, c, "PATCH", fmt.Sprintf("/environments/%s", id), req)
 }
 
 func (c *Client) DeleteEnvironment(ctx context.Context, id string) error {
@@ -81,9 +73,5 @@ type UpdateVanityDomainRequest struct {
 // This is a dedicated PUT route rather than a field on the environment PATCH
 // body, which is why it is a separate call.
 func (c *Client) SetVanityDomain(ctx context.Context, environmentID string, req UpdateVanityDomainRequest) (*EnvironmentData, error) {
-	var doc Document[EnvironmentData]
-	if err := c.do(ctx, "PUT", fmt.Sprintf("/environments/%s/vanity-domain", environmentID), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[EnvironmentData](ctx, c, "PUT", fmt.Sprintf("/environments/%s/vanity-domain", environmentID), req)
 }

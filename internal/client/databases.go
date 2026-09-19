@@ -18,19 +18,11 @@ func (c *Client) ListDatabases(ctx context.Context, clusterID string) ([]Databas
 // therefore 404s correctly. The real per-database route is nested and needs
 // both ids.
 func (c *Client) GetDatabase(ctx context.Context, clusterID, id string) (*DatabaseData, error) {
-	var doc Document[DatabaseData]
-	if err := c.do(ctx, "GET", fmt.Sprintf("/databases/clusters/%s/databases/%s", clusterID, id), nil, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[DatabaseData](ctx, c, "GET", fmt.Sprintf("/databases/clusters/%s/databases/%s", clusterID, id), nil)
 }
 
 func (c *Client) CreateDatabase(ctx context.Context, clusterID string, req CreateDatabaseRequest) (*DatabaseData, error) {
-	var doc Document[DatabaseData]
-	if err := c.do(ctx, "POST", fmt.Sprintf("/databases/clusters/%s/databases", clusterID), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[DatabaseData](ctx, c, "POST", fmt.Sprintf("/databases/clusters/%s/databases", clusterID), req)
 }
 
 func (c *Client) DeleteDatabase(ctx context.Context, clusterID, id string) error {
