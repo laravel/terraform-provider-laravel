@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-09-19
+
+### Fixed
+
+- The release's `SHA256SUMS` now covers the Terraform Registry protocol
+  manifest. The Registry requires a checksum for every asset attached to a
+  release, and `release.extra_files` only uploaded the manifest without
+  listing it in the checksums, so ingest of v1.0.0 failed with "Could not
+  find all required assets for this release yet: missing SHA256 checksum for
+  terraform-provider-laravel_1.0.0_manifest.json". v1.0.0 was published on
+  GitHub but never ingested, so 1.0.1 is the first version installable from
+  the Registry.
+
+
 ## [1.0.0] - 2026-09-19
 
 Initial public release of the Terraform provider for Laravel Cloud. The
