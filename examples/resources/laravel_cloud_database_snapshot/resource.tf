@@ -1,7 +1,8 @@
 resource "laravel_cloud_database_cluster" "example" {
-  name   = "my-db"
-  type   = "laravel_mysql_84"
-  region = "us-east-2"
+  name    = "my-db"
+  type    = "laravel_mysql"
+  version = "8.4"
+  region  = "us-east-2"
 
   # `config` is an opaque JSON document whose shape depends on the database
   # type. Every key the API returns must be present, with exactly the value it

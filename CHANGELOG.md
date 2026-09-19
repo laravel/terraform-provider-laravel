@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-09-19
+
+### Changed
+
+- The database examples and schema descriptions now use the current type
+  identifiers. `laravel_mysql_84` and the other identifiers that bake the
+  engine version into the type are retired -- the API reports them with an
+  empty `versions` list -- so the examples paired the deprecated form with no
+  `version` argument. They now use `type = "laravel_mysql"` with
+  `version = "8.4"`, which is what new clusters should use, and the `type`
+  descriptions on `laravel_cloud_database_cluster` and
+  `laravel_cloud_database_types` name current identifiers and explain how to
+  tell the two apart. Retired identifiers are still accepted; nothing needs
+  changing in existing configurations.
+
+
 ## [1.0.1] - 2026-09-19
 
 ### Fixed

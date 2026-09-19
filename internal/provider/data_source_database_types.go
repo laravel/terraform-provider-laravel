@@ -52,7 +52,7 @@ func (d *DatabaseTypesDataSource) Schema(_ context.Context, _ datasource.SchemaR
 					Attributes: map[string]schema.Attribute{
 						"type": schema.StringAttribute{
 							Computed:    true,
-							Description: "Type identifier (e.g. laravel_mysql_8, aws_rds_mysql_8).",
+							Description: "Type identifier (e.g. laravel_mysql, aws_rds_postgres). A type whose \"versions\" list is empty is a retired identifier that bakes the version into the type, such as laravel_mysql_84.",
 						},
 						"label": schema.StringAttribute{
 							Computed:    true,
