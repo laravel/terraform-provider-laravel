@@ -6,13 +6,13 @@
 # See https://docs.github.com/articles/about-code-owners
 
 # Default owner for everything in the repository.
-*                       @laravel/cloud
+*                       @laravel/cloud-infrastructure
 
 # Release plumbing: signing, the version gate, and the published artifacts.
-/.github/workflows/     @laravel/cloud
-/.goreleaser.yml        @laravel/cloud
-/terraform-registry-manifest.json @laravel/cloud
+/.github/workflows/     @laravel/cloud-infrastructure
+/.goreleaser.yml        @laravel/cloud-infrastructure
+/terraform-registry-manifest.json @laravel/cloud-infrastructure
 
 # Generated provider documentation — regenerate with `make generate` rather
 # than editing by hand.
-/docs/                  @laravel/cloud
+/docs/                  @laravel/cloud-infrastructure
