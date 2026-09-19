@@ -137,6 +137,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 		{
 			typeName: "deployment", idPrefix: "deploy", parentWildcard: "eid",
 			collectionPattern: "/environments/{eid}/deployments", itemPattern: "/deployments/{id}",
+			relationshipName: "environment", relationshipType: "environments",
 			// No PATCH, no DELETE (deployments are immutable and cannot be undone).
 			seed: func(_ map[string]any, _ string) map[string]any {
 				return map[string]any{
@@ -155,6 +156,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 		{
 			typeName: "command", idPrefix: "command", parentWildcard: "eid",
 			collectionPattern: "/environments/{eid}/commands", itemPattern: "/commands/{id}",
+			relationshipName: "environment", relationshipType: "environments",
 			// No PATCH, no DELETE (commands are immutable and cannot be undone).
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body) // echoes `command` back unchanged
@@ -243,6 +245,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 		{
 			typeName: "database_snapshot", idPrefix: "snap", parentWildcard: "cid",
 			collectionPattern: "/databases/clusters/{cid}/snapshots", itemPattern: "/database-snapshots/{id}",
+			relationshipName: "database", relationshipType: "databases",
 			del: true,
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)

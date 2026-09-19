@@ -75,6 +75,9 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Computed:    true,
 				Optional:    true,
 				Description: "URL-friendly slug.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"cluster_id": schema.StringAttribute{
 				Optional:    true,
@@ -206,7 +209,7 @@ func (r *ApplicationResource) Update(ctx context.Context, req resource.UpdateReq
 		v := plan.Name.ValueString()
 		updateReq.Name = &v
 	}
-	if !plan.Slug.Equal(state.Slug) {
+	if !plan.Slug.IsUnknown() && !plan.Slug.Equal(state.Slug) {
 		v := plan.Slug.ValueString()
 		updateReq.Slug = &v
 	}

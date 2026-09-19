@@ -175,6 +175,22 @@ func (f *fakeCloud) listEnvironments(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, client.ListDocument[client.EnvironmentData]{Data: out})
 }
 
+// environmentDoc renders an environment the way the API does for
+// include=application,branch: the branch is a relationship, so its name is
+// only reachable through the document's included section.
+func environmentDoc(env *client.EnvironmentData) client.Document[client.EnvironmentData] {
+	doc := client.Document[client.EnvironmentData]{Data: *env}
+	if id := env.Relationships.Branch.RelatedID(); id != "" {
+		attrs, _ := json.Marshal(map[string]string{"name": env.BranchName})
+		doc.Included = append(doc.Included, client.ResourceObject{
+			ID:         id,
+			Type:       "branches",
+			Attributes: attrs,
+		})
+	}
+	return doc
+}
+
 func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 	var req client.CreateEnvironmentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -200,10 +216,24 @@ func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 			NodeVersion:     "20",
 			NetworkSettings: newEnvironmentNetwork("default"),
 		},
+		// The real API reports the owning application under
+		// relationships.application when include=application is requested.
+		// Import depends on it: the import id names the environment alone.
+		Relationships: client.EnvironmentRelationships{
+			Application: client.Relationship{
+				Data: &client.ResourceIdentifier{Type: "applications", ID: appID},
+			},
+			Branch: client.Relationship{
+				Data: &client.ResourceIdentifier{Type: "branches", ID: "branch-" + id},
+			},
+		},
+		// The API models branch as a relationship, so the name is only
+		// reachable through the document's included section.
+		BranchName: req.Branch,
 	}
 	f.envs[id] = env
 	f.appEnvs[appID] = append(f.appEnvs[appID], id)
-	writeJSON(w, http.StatusCreated, client.Document[client.EnvironmentData]{Data: *env})
+	writeJSON(w, http.StatusCreated, environmentDoc(env))
 }
 
 func (f *fakeCloud) setVanityDomain(w http.ResponseWriter, r *http.Request) {
@@ -226,7 +256,7 @@ func (f *fakeCloud) setVanityDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	env.Attributes.VanityDomain = &req.Name
-	writeJSON(w, http.StatusOK, client.Document[client.EnvironmentData]{Data: *env})
+	writeJSON(w, http.StatusOK, environmentDoc(env))
 }
 
 func (f *fakeCloud) getEnvironment(w http.ResponseWriter, r *http.Request) {
@@ -238,7 +268,7 @@ func (f *fakeCloud) getEnvironment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("environment not found"))
 		return
 	}
-	writeJSON(w, http.StatusOK, client.Document[client.EnvironmentData]{Data: *env})
+	writeJSON(w, http.StatusOK, environmentDoc(env))
 }
 
 func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
@@ -298,7 +328,7 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 	}
 	// Branch is write-only and not part of the API response, so it is accepted
 	// and discarded.
-	writeJSON(w, http.StatusOK, client.Document[client.EnvironmentData]{Data: *env})
+	writeJSON(w, http.StatusOK, environmentDoc(env))
 }
 
 func (f *fakeCloud) deleteEnvironment(w http.ResponseWriter, r *http.Request) {

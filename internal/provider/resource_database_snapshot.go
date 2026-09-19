@@ -185,6 +185,11 @@ func (r *DatabaseSnapshotResource) ImportState(ctx context.Context, req resource
 }
 
 func mapDatabaseSnapshotToState(s *client.DatabaseSnapshotData, state *DatabaseSnapshotResourceModel) {
+	// cluster_id is Required and forces replacement; recover it from the
+	// relationship so an imported snapshot is not destroyed on the next plan.
+	if clusterID := s.Relationships.Database.RelatedID(); clusterID != "" {
+		state.ClusterID = types.StringValue(clusterID)
+	}
 	state.ID = types.StringValue(s.ID)
 	state.Name = types.StringPointerValue(s.Attributes.Name)
 	state.SnapshotType = types.StringValue(s.Attributes.SnapshotType)

@@ -11,7 +11,10 @@ func (c *Client) ListDatabaseSnapshots(ctx context.Context, clusterID string) ([
 
 func (c *Client) GetDatabaseSnapshot(ctx context.Context, id string) (*DatabaseSnapshotData, error) {
 	var doc Document[DatabaseSnapshotData]
-	if err := c.do(ctx, "GET", fmt.Sprintf("/database-snapshots/%s", id), nil, &doc); err != nil {
+	// include=database is required to recover the cluster id on import. The
+	// spec names the relationship "database" because a cluster is the
+	// `databases` resource; see the create route above.
+	if err := c.do(ctx, "GET", fmt.Sprintf("/database-snapshots/%s?include=database", id), nil, &doc); err != nil {
 		return nil, err
 	}
 	return &doc.Data, nil
