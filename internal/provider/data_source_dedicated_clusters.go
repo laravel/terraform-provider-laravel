@@ -108,6 +108,9 @@ func (d *DedicatedClustersDataSource) Read(ctx context.Context, _ datasource.Rea
 
 	state := DedicatedClustersDataSourceModel{
 		ID: types.StringValue("dedicated_clusters"),
+		// An empty result must be an empty list, not a null one: a nil
+		// slice decodes to null and makes length()/for_each error.
+		Clusters: []DedicatedClusterItemModel{},
 	}
 
 	for _, c := range clusters {

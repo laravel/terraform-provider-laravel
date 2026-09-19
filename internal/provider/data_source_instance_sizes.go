@@ -115,6 +115,9 @@ func (d *InstanceSizesDataSource) Read(ctx context.Context, _ datasource.ReadReq
 
 	state := InstanceSizesDataSourceModel{
 		ID: types.StringValue("instance_sizes"),
+		// An empty result must be an empty list, not a null one: a nil
+		// slice decodes to null and makes length()/for_each error.
+		Sizes: []InstanceSizeItemModel{},
 	}
 
 	// The API returns sizes split by instance class. Both are surfaced, tagged

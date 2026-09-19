@@ -88,6 +88,9 @@ func (d *RegionsDataSource) Read(ctx context.Context, _ datasource.ReadRequest, 
 
 	state := RegionsDataSourceModel{
 		ID: types.StringValue("regions"),
+		// An empty result must be an empty list, not a null one: a nil
+		// slice decodes to null and makes length()/for_each error.
+		Regions: []RegionItemModel{},
 	}
 
 	for _, r := range regions {

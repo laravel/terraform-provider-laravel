@@ -104,10 +104,17 @@ func TestCacheTypesDataSourcePlan(t *testing.T) {
 }
 
 // TestDedicatedClustersDataSourcePlan covers the empty-collection case, which
-// must produce an empty list rather than a null one.
+// must produce an empty list rather than a null one. A nil Go slice decodes to
+// a null Terraform list, and length()/for_each over null is a hard error, so
+// the assertion below is the point of the test -- it passed `nil` checks
+// before and could not fail.
 func TestDedicatedClustersDataSourcePlan(t *testing.T) {
 	_, baseURL := newFakeCloud(t)
-	runDataSourcePlan(t, baseURL, `data "laravel_cloud_dedicated_clusters" "all" {}`, nil)
+	runDataSourcePlan(t, baseURL, `data "laravel_cloud_dedicated_clusters" "all" {}`,
+		[]statecheck.StateCheck{
+			statecheck.ExpectKnownValue("data.laravel_cloud_dedicated_clusters.all",
+				tfjsonpath.New("clusters"), knownvalue.ListSizeExact(0)),
+		})
 }
 
 func TestEdgeNetworksDataSourcePlan(t *testing.T) {

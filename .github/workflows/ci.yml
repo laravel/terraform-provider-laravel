@@ -117,9 +117,18 @@ jobs:
 
       - name: Fail if docs are stale
         run: |
-          if ! git diff --exit-code -- docs/; then
-            echo
+          # `git diff` compares the index to the working tree and never sees
+          # untracked files, so a brand-new docs page -- exactly what adding a
+          # resource produces -- slipped through and this required check went
+          # green with the new resource undocumented. `git status --porcelain`
+          # reports untracked files too.
+          CHANGES=$(git status --porcelain -- docs/)
+          if [ -n "$CHANGES" ]; then
             echo "ERROR: docs/ is out of date. Run 'make generate' and commit the result."
+            echo
+            echo "$CHANGES"
+            echo
+            git diff -- docs/
             exit 1
           fi
           echo "docs/ is up to date"

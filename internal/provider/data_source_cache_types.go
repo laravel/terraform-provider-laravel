@@ -116,6 +116,9 @@ func (d *CacheTypesDataSource) Read(ctx context.Context, _ datasource.ReadReques
 
 	state := CacheTypesDataSourceModel{
 		ID: types.StringValue("cache_types"),
+		// An empty result must be an empty list, not a null one: a nil
+		// slice decodes to null and makes length()/for_each error.
+		Types: []CacheTypeItemModel{},
 	}
 
 	for _, ct := range cacheTypes {
@@ -123,6 +126,9 @@ func (d *CacheTypesDataSource) Read(ctx context.Context, _ datasource.ReadReques
 			Type:                types.StringValue(ct.Type),
 			Label:               types.StringValue(ct.Label),
 			SupportsAutoUpgrade: types.BoolValue(ct.SupportsAutoUpgrade),
+			// Empty nested collections must be empty lists, not null ones.
+			Regions: []types.String{},
+			Sizes:   []CacheSizeItemModel{},
 		}
 		for _, region := range ct.Regions {
 			item.Regions = append(item.Regions, types.StringValue(region))
