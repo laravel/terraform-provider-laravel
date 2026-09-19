@@ -50,12 +50,7 @@ func (r *DeploymentResource) Schema(_ context.Context, _ resource.SchemaRequest,
 	resp.Schema = schema.Schema{
 		Description: "Initiates a deployment on a Laravel Cloud environment.",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
+			"id": computedIDAttribute(),
 			"environment_id": schema.StringAttribute{
 				Required:    true,
 				Description: "Environment ID to deploy.",

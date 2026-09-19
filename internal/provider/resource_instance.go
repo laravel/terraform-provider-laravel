@@ -64,12 +64,7 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 	resp.Schema = schema.Schema{
 		Description: "Manages a Laravel Cloud instance (compute workload).",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
+			"id": computedIDAttribute(),
 			"environment_id": schema.StringAttribute{
 				Required:    true,
 				Description: "Parent environment ID.",

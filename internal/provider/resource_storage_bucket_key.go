@@ -45,12 +45,7 @@ func (r *StorageBucketKeyResource) Schema(_ context.Context, _ resource.SchemaRe
 	resp.Schema = schema.Schema{
 		Description: "Manages an access key for a Laravel Cloud storage bucket.",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
+			"id": computedIDAttribute(),
 			"bucket_id": schema.StringAttribute{
 				Required:    true,
 				Description: "Parent storage bucket ID.",

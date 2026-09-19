@@ -46,12 +46,7 @@ func (r *CommandResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 	resp.Schema = schema.Schema{
 		Description: "Runs a command on a Laravel Cloud environment.",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
+			"id": computedIDAttribute(),
 			"environment_id": schema.StringAttribute{
 				Required:    true,
 				Description: "Environment ID to run the command on.",

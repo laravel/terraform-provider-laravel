@@ -46,12 +46,7 @@ func (r *BackgroundProcessResource) Schema(_ context.Context, _ resource.SchemaR
 	resp.Schema = schema.Schema{
 		Description: "Manages a background process (worker or custom daemon) on a Laravel Cloud instance.",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
+			"id": computedIDAttribute(),
 			"instance_id": schema.StringAttribute{
 				Required:    true,
 				Description: "Parent instance ID.",

@@ -45,12 +45,7 @@ func (r *WebsocketServerResource) Schema(_ context.Context, _ resource.SchemaReq
 	resp.Schema = schema.Schema{
 		Description: "Manages a Laravel Cloud WebSocket server (cluster).",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
+			"id": computedIDAttribute(),
 			"name": schema.StringAttribute{
 				Required:    true,
 				Description: "Server name.",

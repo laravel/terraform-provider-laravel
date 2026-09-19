@@ -76,12 +76,7 @@ func (r *CacheResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 	resp.Schema = schema.Schema{
 		Description: "Manages a Laravel Cloud cache (Valkey/Redis).",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
+			"id": computedIDAttribute(),
 			"name": schema.StringAttribute{
 				Required:    true,
 				Description: "Cache name (3-40 characters, lowercase alphanumeric with hyphens/underscores).",

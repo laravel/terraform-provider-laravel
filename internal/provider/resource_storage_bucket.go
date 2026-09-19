@@ -58,12 +58,7 @@ func (r *StorageBucketResource) Schema(_ context.Context, _ resource.SchemaReque
 	resp.Schema = schema.Schema{
 		Description: "Manages a Laravel Cloud object storage bucket.",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
+			"id": computedIDAttribute(),
 			"name": schema.StringAttribute{
 				Required:    true,
 				Description: "Bucket name (3-40 characters, lowercase alphanumeric with hyphens/underscores).",
