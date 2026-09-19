@@ -32,5 +32,5 @@ Read-Only:
 - `label` (String) Human-friendly label.
 - `regions` (List of String) Supported regions.
 - `sizes` (List of String) Available sizes for this database type (e.g. mysql-flex-1gb, db.m8g.large). Empty for serverless types.
-- `type` (String) Type identifier (e.g. laravel_mysql_8, aws_rds_mysql_8).
+- `type` (String) Type identifier (e.g. laravel_mysql, aws_rds_postgres). A type whose "versions" list is empty is a retired identifier that bakes the version into the type, such as laravel_mysql_84.
 - `versions` (List of String) Engine versions accepted for this type. Pass one of these as the version argument of laravel_cloud_database_cluster.

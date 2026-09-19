@@ -97,7 +97,7 @@ func (r *DatabaseClusterResource) Schema(_ context.Context, _ resource.SchemaReq
 			},
 			"type": schema.StringAttribute{
 				Required:    true,
-				Description: "Database type (e.g. laravel_mysql_84, aws_rds_mysql_8, neon_serverless_postgres_18, etc.).",
+				Description: "Database type (e.g. laravel_mysql, aws_rds_mysql, aws_rds_postgres, neon_serverless_postgres). These take a separate \"version\"; the retired identifiers that bake the version into the type, such as laravel_mysql_84, are still accepted but should not be used for new clusters. List the available types with the laravel_cloud_database_types data source.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},

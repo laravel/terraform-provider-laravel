@@ -14,9 +14,10 @@ Manages a Laravel Cloud database cluster.
 
 ```terraform
 resource "laravel_cloud_database_cluster" "example" {
-  name   = "my-db"
-  type   = "laravel_mysql_84"
-  region = "us-east-2"
+  name    = "my-db"
+  type    = "laravel_mysql"
+  version = "8.4"
+  region  = "us-east-2"
 
   # `config` is an opaque JSON document whose shape depends on the database
   # type. Every key the API returns must be present, with exactly the value it
@@ -41,7 +42,7 @@ resource "laravel_cloud_database_cluster" "example" {
 - `config` (String) JSON-encoded configuration specific to the database type (required by the API).
 - `name` (String) Cluster name (3-40 characters, lowercase alphanumeric).
 - `region` (String) Cloud region.
-- `type` (String) Database type (e.g. laravel_mysql_84, aws_rds_mysql_8, neon_serverless_postgres_18, etc.).
+- `type` (String) Database type (e.g. laravel_mysql, aws_rds_mysql, aws_rds_postgres, neon_serverless_postgres). These take a separate "version"; the retired identifiers that bake the version into the type, such as laravel_mysql_84, are still accepted but should not be used for new clusters. List the available types with the laravel_cloud_database_types data source.
 
 ### Optional
 
