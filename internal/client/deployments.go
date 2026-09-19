@@ -11,7 +11,8 @@ func (c *Client) ListDeployments(ctx context.Context, environmentID string) ([]D
 
 func (c *Client) GetDeployment(ctx context.Context, id string) (*DeploymentData, error) {
 	var doc Document[DeploymentData]
-	if err := c.do(ctx, "GET", fmt.Sprintf("/deployments/%s", id), nil, &doc); err != nil {
+	// include=environment is required to recover the parent id on import.
+	if err := c.do(ctx, "GET", fmt.Sprintf("/deployments/%s?include=environment", id), nil, &doc); err != nil {
 		return nil, err
 	}
 	return &doc.Data, nil

@@ -115,7 +115,7 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Optional:    true,
 				Description: "Dedicated cluster ID.",
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					requiresReplaceUnlessImported(),
 				},
 			},
 			"php_version": schema.StringAttribute{
@@ -770,6 +770,20 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 }
 
 func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResourceModel) {
+	// application_id is Required and forces replacement, and the import id
+	// names the environment alone. Without adopting it from the relationship
+	// an imported environment would be proposed for destruction on the very
+	// next plan.
+	if appID := env.Relationships.Application.RelatedID(); appID != "" {
+		state.ApplicationID = types.StringValue(appID)
+	}
+	// branch is Required but is not an attribute on the API side; the name
+	// comes from the included branch object. Only overwrite when the API
+	// reported one, so a response without the include leaves the configured
+	// value intact.
+	if env.BranchName != "" {
+		state.Branch = types.StringValue(env.BranchName)
+	}
 	state.Name = types.StringValue(env.Attributes.Name)
 	state.Slug = types.StringValue(env.Attributes.Slug)
 	state.Status = types.StringValue(env.Attributes.Status)

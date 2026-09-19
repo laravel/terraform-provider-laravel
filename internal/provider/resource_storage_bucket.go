@@ -88,7 +88,7 @@ func (r *StorageBucketResource) Schema(_ context.Context, _ resource.SchemaReque
 				Required:    true,
 				Description: "Name for the initial access key (3-40 characters).",
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					requiresReplaceUnlessImported(),
 				},
 			},
 			"key_permission": schema.StringAttribute{
@@ -97,7 +97,7 @@ func (r *StorageBucketResource) Schema(_ context.Context, _ resource.SchemaReque
 				Description: "Permission for the initial key: 'read_write' or 'read_only'. Defaults to 'read_write'.",
 				Default:     stringdefault.StaticString("read_write"),
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					requiresReplaceUnlessImported(),
 				},
 			},
 			"allowed_origins": schema.ListAttribute{

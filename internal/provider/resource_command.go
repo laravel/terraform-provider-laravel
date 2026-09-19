@@ -171,6 +171,11 @@ func (r *CommandResource) ImportState(ctx context.Context, req resource.ImportSt
 }
 
 func mapCommandToState(c *client.CommandData, state *CommandResourceModel) {
+	// environment_id is Required and forces replacement; recover it from the
+	// relationship so an imported command is not re-run on the next plan.
+	if envID := c.Relationships.Environment.RelatedID(); envID != "" {
+		state.EnvironmentID = types.StringValue(envID)
+	}
 	state.ID = types.StringValue(c.ID)
 	state.Command = types.StringValue(c.Attributes.Command)
 	state.Output = types.StringPointerValue(c.Attributes.Output)

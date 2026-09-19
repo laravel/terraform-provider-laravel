@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -57,6 +58,22 @@ func (p *LaravelCloudProvider) Configure(ctx context.Context, req provider.Confi
 	var config LaravelCloudProviderModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// An unknown token is not the same as an unset one. Treating it as unset
+	// reads ValueString() as "", which both discards a token supplied via the
+	// environment and reports it as missing -- telling the user to set
+	// something they did in fact set. base_url below already made this
+	// distinction; token did not.
+	if config.Token.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("token"),
+			"Unknown API Token",
+			"The Laravel Cloud API token is not known until apply, because it is derived "+
+				"from a resource that has not been created yet. Apply that resource first, "+
+				"or supply the token via the LARAVEL_CLOUD_API_TOKEN environment variable.",
+		)
 		return
 	}
 

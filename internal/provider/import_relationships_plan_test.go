@@ -84,3 +84,64 @@ func runImportRecoversParent(t *testing.T, config, addr string) {
 		},
 	})
 }
+
+// The tests below guard the same defect on the resources the original sweep
+// missed. Each is imported by its own id alone, carries a RequiresReplace
+// attribute that the API does not report back, and so proposed destroying the
+// just-imported resource on the next plan.
+
+func TestEnvironmentImportRecoversApplicationPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	config := providerCfg(baseURL) + appEnvStack
+	runImportRecoversParent(t, config, "laravel_cloud_environment.env")
+}
+
+func TestDatabaseSnapshotImportRecoversClusterPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	config := providerCfg(baseURL) + `
+resource "laravel_cloud_database_cluster" "cluster" {
+  name    = "snap-cluster"
+  type    = "laravel_mysql"
+  version = "8.4"
+  region  = "us-east-2"
+
+  force_destroy = true
+
+  config = jsonencode({
+    size                     = "mysql-flex-512mb"
+    storage                  = 10
+    is_public                = false
+    uses_scheduled_snapshots = false
+    retention_days           = 7
+    suspend_seconds          = 0
+  })
+}
+
+resource "laravel_cloud_database_snapshot" "snap" {
+  cluster_id = laravel_cloud_database_cluster.cluster.id
+  name       = "nightly"
+}
+`
+	runImportRecoversParent(t, config, "laravel_cloud_database_snapshot.snap")
+}
+
+func TestCommandImportRecoversEnvironmentPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	config := providerCfg(baseURL) + appEnvStack + `
+resource "laravel_cloud_command" "cmd" {
+  environment_id = laravel_cloud_environment.env.id
+  command        = "php artisan migrate --force"
+}
+`
+	runImportRecoversParent(t, config, "laravel_cloud_command.cmd")
+}
+
+func TestDeploymentImportRecoversEnvironmentPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	config := providerCfg(baseURL) + appEnvStack + `
+resource "laravel_cloud_deployment" "deploy" {
+  environment_id = laravel_cloud_environment.env.id
+}
+`
+	runImportRecoversParent(t, config, "laravel_cloud_deployment.deploy")
+}

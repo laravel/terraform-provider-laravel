@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
@@ -134,11 +135,17 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Optional:    true,
 				Computed:    true,
 				Description: "Whether the instance sleeps with the app (managed_queue).",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"visibility_timeout": schema.Int64Attribute{
 				Optional:    true,
 				Computed:    true,
 				Description: "Queue visibility timeout in seconds (managed_queue).",
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
 			},
 			"polling_interval": schema.Int64Attribute{
 				Computed: true,
@@ -153,6 +160,9 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Optional:    true,
 				Computed:    true,
 				Description: "Queue shutdown timeout in seconds (managed_queue).",
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
 			},
 			"uses_octane": schema.BoolAttribute{
 				Optional:    true,
@@ -324,15 +334,15 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		v := plan.UsesScheduler.ValueBool()
 		updateReq.UsesScheduler = &v
 	}
-	if !plan.SleepWithApp.Equal(state.SleepWithApp) {
+	if !plan.SleepWithApp.IsUnknown() && !plan.SleepWithApp.Equal(state.SleepWithApp) {
 		v := plan.SleepWithApp.ValueBool()
 		updateReq.SleepWithApp = &v
 	}
-	if !plan.VisibilityTimeout.Equal(state.VisibilityTimeout) {
+	if !plan.VisibilityTimeout.IsUnknown() && !plan.VisibilityTimeout.Equal(state.VisibilityTimeout) {
 		v := int(plan.VisibilityTimeout.ValueInt64())
 		updateReq.VisibilityTimeout = &v
 	}
-	if !plan.ShutdownTimeout.Equal(state.ShutdownTimeout) {
+	if !plan.ShutdownTimeout.IsUnknown() && !plan.ShutdownTimeout.Equal(state.ShutdownTimeout) {
 		v := int(plan.ShutdownTimeout.ValueInt64())
 		updateReq.ShutdownTimeout = &v
 	}

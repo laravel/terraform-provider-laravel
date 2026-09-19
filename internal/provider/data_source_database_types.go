@@ -105,7 +105,13 @@ func (d *DatabaseTypesDataSource) Read(ctx context.Context, _ datasource.ReadReq
 	}
 
 	for _, dt := range dbTypes {
-		regions, diags := types.ListValueFrom(ctx, types.StringType, dt.Regions)
+		// Same reason as sizes/versions below: a nil slice becomes a null
+		// list, which callers cannot iterate.
+		regionStrings := dt.Regions
+		if regionStrings == nil {
+			regionStrings = []string{}
+		}
+		regions, diags := types.ListValueFrom(ctx, types.StringType, regionStrings)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
 			return

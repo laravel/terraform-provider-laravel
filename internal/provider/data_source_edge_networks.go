@@ -109,6 +109,9 @@ func (d *EdgeNetworksDataSource) Read(ctx context.Context, _ datasource.ReadRequ
 
 	state := EdgeNetworksDataSourceModel{
 		ID: types.StringValue("edge_networks"),
+		// An empty result must be an empty list, not a null one: a nil
+		// slice decodes to null and makes length()/for_each error.
+		EdgeNetworks: []EdgeNetworkItemModel{},
 	}
 	for _, n := range networks {
 		state.EdgeNetworks = append(state.EdgeNetworks, EdgeNetworkItemModel{

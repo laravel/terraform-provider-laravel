@@ -11,7 +11,8 @@ func (c *Client) ListCommands(ctx context.Context, environmentID string) ([]Comm
 
 func (c *Client) GetCommand(ctx context.Context, id string) (*CommandData, error) {
 	var doc Document[CommandData]
-	if err := c.do(ctx, "GET", fmt.Sprintf("/commands/%s", id), nil, &doc); err != nil {
+	// include=environment is required to recover the parent id on import.
+	if err := c.do(ctx, "GET", fmt.Sprintf("/commands/%s?include=environment", id), nil, &doc); err != nil {
 		return nil, err
 	}
 	return &doc.Data, nil

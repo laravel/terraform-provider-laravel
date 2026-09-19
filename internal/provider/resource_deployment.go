@@ -184,6 +184,11 @@ func (r *DeploymentResource) ImportState(ctx context.Context, req resource.Impor
 }
 
 func mapDeploymentToState(d *client.DeploymentData, state *DeploymentResourceModel) {
+	// environment_id is Required and forces replacement; recover it from the
+	// relationship so an imported deployment does not trigger a fresh one.
+	if envID := d.Relationships.Environment.RelatedID(); envID != "" {
+		state.EnvironmentID = types.StringValue(envID)
+	}
 	state.ID = types.StringValue(d.ID)
 	state.Status = types.StringValue(d.Attributes.Status)
 	state.BranchName = types.StringValue(d.Attributes.BranchName)

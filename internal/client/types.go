@@ -80,6 +80,14 @@ type EnvironmentData struct {
 	ID         string                `json:"id"`
 	Type       string                `json:"type"`
 	Attributes EnvironmentAttributes `json:"attributes"`
+	// Relationships carries the parent link, which is what makes import
+	// work: the import id names this resource only.
+	Relationships EnvironmentRelationships `json:"relationships"`
+	// BranchName is resolved from the document's `included` section rather
+	// than decoded directly: the API models the branch as a relationship
+	// whose identifier carries only an id, while the provider tracks the
+	// branch name. Empty when the API did not include it.
+	BranchName string `json:"-"`
 }
 
 // EnvironmentAttributes mirrors EnvironmentResource.attributes in the public
@@ -684,6 +692,9 @@ type DeploymentData struct {
 	ID         string               `json:"id"`
 	Type       string               `json:"type"`
 	Attributes DeploymentAttributes `json:"attributes"`
+	// Relationships carries the parent link, which is what makes import
+	// work: the import id names this resource only.
+	Relationships DeploymentRelationships `json:"relationships"`
 }
 
 type DeploymentAttributes struct {
@@ -709,6 +720,9 @@ type DatabaseSnapshotData struct {
 	ID         string                     `json:"id"`
 	Type       string                     `json:"type"`
 	Attributes DatabaseSnapshotAttributes `json:"attributes"`
+	// Relationships carries the parent link, which is what makes import
+	// work: the import id names this resource only.
+	Relationships DatabaseSnapshotRelationships `json:"relationships"`
 }
 
 type DatabaseSnapshotAttributes struct {
@@ -740,6 +754,9 @@ type CommandData struct {
 	ID         string            `json:"id"`
 	Type       string            `json:"type"`
 	Attributes CommandAttributes `json:"attributes"`
+	// Relationships carries the parent link, which is what makes import
+	// work: the import id names this resource only.
+	Relationships CommandRelationships `json:"relationships"`
 }
 
 type CommandAttributes struct {
@@ -957,6 +974,32 @@ func (r Relationship) RelatedID() string {
 
 // InstanceRelationships are the relationships on an instance resource object.
 type InstanceRelationships struct {
+	Environment Relationship `json:"environment"`
+}
+
+// EnvironmentRelationships are the relationships on an environment resource
+// object.
+type EnvironmentRelationships struct {
+	Application Relationship `json:"application"`
+	Branch      Relationship `json:"branch"`
+}
+
+// DatabaseSnapshotRelationships are the relationships on a database snapshot.
+// The spec names this "database": a cluster is the `databases` resource, as
+// the create route /databases/clusters/{database}/snapshots shows, so this
+// carries the cluster id.
+type DatabaseSnapshotRelationships struct {
+	Database Relationship `json:"database"`
+}
+
+// CommandRelationships are the relationships on a command resource object.
+type CommandRelationships struct {
+	Environment Relationship `json:"environment"`
+}
+
+// DeploymentRelationships are the relationships on a deployment resource
+// object.
+type DeploymentRelationships struct {
 	Environment Relationship `json:"environment"`
 }
 

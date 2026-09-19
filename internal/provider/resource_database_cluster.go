@@ -118,7 +118,7 @@ func (r *DatabaseClusterResource) Schema(_ context.Context, _ resource.SchemaReq
 				Description: "Dedicated cluster ID. Changing this forces a new cluster: " +
 					"the API's update endpoint accepts config and nothing else.",
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					requiresReplaceUnlessImported(),
 				},
 			},
 			"version": schema.StringAttribute{
@@ -130,7 +130,7 @@ func (r *DatabaseClusterResource) Schema(_ context.Context, _ resource.SchemaReq
 					"such as \"laravel_mysql_84\". Create-only: the API never reports it " +
 					"back, so an imported cluster leaves it null.",
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					requiresReplaceUnlessImported(),
 				},
 			},
 			"force_destroy": schema.BoolAttribute{
