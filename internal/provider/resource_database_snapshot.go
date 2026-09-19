@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -19,7 +18,7 @@ var (
 )
 
 type DatabaseSnapshotResource struct {
-	client *client.Client
+	resourceWithClient
 }
 
 type DatabaseSnapshotResourceModel struct {
@@ -48,12 +47,7 @@ func (r *DatabaseSnapshotResource) Schema(_ context.Context, _ resource.SchemaRe
 	resp.Schema = schema.Schema{
 		Description: "Manages a snapshot of a Laravel Cloud database cluster.",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
+			"id": computedIDAttribute(),
 			"cluster_id": schema.StringAttribute{
 				Required:    true,
 				Description: "Database cluster ID.",
@@ -104,18 +98,6 @@ func (r *DatabaseSnapshotResource) Schema(_ context.Context, _ resource.SchemaRe
 			},
 		},
 	}
-}
-
-func (r *DatabaseSnapshotResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if req.ProviderData == nil {
-		return
-	}
-	c, ok := req.ProviderData.(*client.Client)
-	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
-		return
-	}
-	r.client = c
 }
 
 func (r *DatabaseSnapshotResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

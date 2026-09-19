@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -21,7 +20,7 @@ var (
 )
 
 type DomainResource struct {
-	client *client.Client
+	resourceWithClient
 }
 
 type DomainResourceModel struct {
@@ -57,12 +56,7 @@ func (r *DomainResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 	resp.Schema = schema.Schema{
 		Description: "Manages a domain attached to a Laravel Cloud environment.",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
+			"id": computedIDAttribute(),
 			"environment_id": schema.StringAttribute{
 				Required:    true,
 				Description: "Parent environment ID.",
@@ -200,18 +194,6 @@ func (r *DomainResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			},
 		},
 	}
-}
-
-func (r *DomainResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if req.ProviderData == nil {
-		return
-	}
-	c, ok := req.ProviderData.(*client.Client)
-	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
-		return
-	}
-	r.client = c
 }
 
 func (r *DomainResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

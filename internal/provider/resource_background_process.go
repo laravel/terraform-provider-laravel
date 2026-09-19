@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -20,7 +19,7 @@ var (
 )
 
 type BackgroundProcessResource struct {
-	client *client.Client
+	resourceWithClient
 }
 
 type BackgroundProcessResourceModel struct {
@@ -47,12 +46,7 @@ func (r *BackgroundProcessResource) Schema(_ context.Context, _ resource.SchemaR
 	resp.Schema = schema.Schema{
 		Description: "Manages a background process (worker or custom daemon) on a Laravel Cloud instance.",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
+			"id": computedIDAttribute(),
 			"instance_id": schema.StringAttribute{
 				Required:    true,
 				Description: "Parent instance ID.",
@@ -92,18 +86,6 @@ func (r *BackgroundProcessResource) Schema(_ context.Context, _ resource.SchemaR
 			},
 		},
 	}
-}
-
-func (r *BackgroundProcessResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if req.ProviderData == nil {
-		return
-	}
-	c, ok := req.ProviderData.(*client.Client)
-	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
-		return
-	}
-	r.client = c
 }
 
 func (r *BackgroundProcessResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

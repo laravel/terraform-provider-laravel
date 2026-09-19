@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -19,7 +18,7 @@ var (
 )
 
 type WebsocketServerResource struct {
-	client *client.Client
+	resourceWithClient
 }
 
 type WebsocketServerResourceModel struct {
@@ -46,12 +45,7 @@ func (r *WebsocketServerResource) Schema(_ context.Context, _ resource.SchemaReq
 	resp.Schema = schema.Schema{
 		Description: "Manages a Laravel Cloud WebSocket server (cluster).",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
+			"id": computedIDAttribute(),
 			"name": schema.StringAttribute{
 				Required:    true,
 				Description: "Server name.",
@@ -91,18 +85,6 @@ func (r *WebsocketServerResource) Schema(_ context.Context, _ resource.SchemaReq
 			},
 		},
 	}
-}
-
-func (r *WebsocketServerResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if req.ProviderData == nil {
-		return
-	}
-	c, ok := req.ProviderData.(*client.Client)
-	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
-		return
-	}
-	r.client = c
 }
 
 func (r *WebsocketServerResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

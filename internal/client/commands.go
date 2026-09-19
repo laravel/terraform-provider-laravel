@@ -19,9 +19,5 @@ func (c *Client) GetCommand(ctx context.Context, id string) (*CommandData, error
 }
 
 func (c *Client) CreateCommand(ctx context.Context, environmentID string, req CreateCommandRequest) (*CommandData, error) {
-	var doc Document[CommandData]
-	if err := c.do(ctx, "POST", fmt.Sprintf("/environments/%s/commands", environmentID), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[CommandData](ctx, c, "POST", fmt.Sprintf("/environments/%s/commands", environmentID), req)
 }

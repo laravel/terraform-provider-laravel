@@ -19,9 +19,5 @@ func (c *Client) GetDeployment(ctx context.Context, id string) (*DeploymentData,
 }
 
 func (c *Client) CreateDeployment(ctx context.Context, environmentID string) (*DeploymentData, error) {
-	var doc Document[DeploymentData]
-	if err := c.do(ctx, "POST", fmt.Sprintf("/environments/%s/deployments", environmentID), nil, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[DeploymentData](ctx, c, "POST", fmt.Sprintf("/environments/%s/deployments", environmentID), nil)
 }

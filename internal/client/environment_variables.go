@@ -6,11 +6,7 @@ import (
 )
 
 func (c *Client) SetEnvironmentVariables(ctx context.Context, environmentID string, req AddEnvironmentVariablesRequest) (*EnvironmentData, error) {
-	var doc Document[EnvironmentData]
-	if err := c.do(ctx, "POST", fmt.Sprintf("/environments/%s/variables", environmentID), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[EnvironmentData](ctx, c, "POST", fmt.Sprintf("/environments/%s/variables", environmentID), req)
 }
 
 type DeleteEnvironmentVariablesRequest struct {

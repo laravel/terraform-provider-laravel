@@ -10,27 +10,15 @@ func (c *Client) ListApplications(ctx context.Context) ([]ApplicationData, error
 }
 
 func (c *Client) GetApplication(ctx context.Context, id string) (*ApplicationData, error) {
-	var doc Document[ApplicationData]
-	if err := c.do(ctx, "GET", fmt.Sprintf("/applications/%s", id), nil, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[ApplicationData](ctx, c, "GET", fmt.Sprintf("/applications/%s", id), nil)
 }
 
 func (c *Client) CreateApplication(ctx context.Context, req CreateApplicationRequest) (*ApplicationData, error) {
-	var doc Document[ApplicationData]
-	if err := c.do(ctx, "POST", "/applications", req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[ApplicationData](ctx, c, "POST", "/applications", req)
 }
 
 func (c *Client) UpdateApplication(ctx context.Context, id string, req UpdateApplicationRequest) (*ApplicationData, error) {
-	var doc Document[ApplicationData]
-	if err := c.do(ctx, "PATCH", fmt.Sprintf("/applications/%s", id), req, &doc); err != nil {
-		return nil, err
-	}
-	return &doc.Data, nil
+	return fetch[ApplicationData](ctx, c, "PATCH", fmt.Sprintf("/applications/%s", id), req)
 }
 
 func (c *Client) DeleteApplication(ctx context.Context, id string) error {
