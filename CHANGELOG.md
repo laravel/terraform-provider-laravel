@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.2] - 2026-09-19
 
+### Fixed
+
+- Importing a `laravel_cloud_environment`, `laravel_cloud_database_snapshot`,
+  `laravel_cloud_command` or `laravel_cloud_deployment` no longer destroys the
+  resource on the next plan. Each is imported by its own id and each carries a
+  required parent attribute that forces replacement, but none of them read the
+  parent back from the API, so the parent stayed null and Terraform proposed
+  replacing what had just been imported -- deleting a live environment or a
+  backup snapshot, or re-running a command. The parent is now requested with
+  `?include=` and read from the relationships block. An imported environment
+  also recovers its `branch`, which the API reports as a relationship rather
+  than an attribute.
+- Importing a `laravel_cloud_storage_bucket` no longer destroys the bucket and
+  its contents. `key_name` and `key_permission` describe the initial access
+  key and are never reported back, so after an import they were null while the
+  configuration (and `key_permission`'s default) supplied a value, which the
+  unconditional force-replacement read as a change. The same applied to
+  `laravel_cloud_database_cluster.version` -- the argument this release
+  recommends -- and to `cluster_id` on the cluster, application and
+  environment resources. These attributes still force replacement whenever
+  they genuinely change; only a missing prior value is exempt.
+- Updating a `laravel_cloud_application` no longer clears its generated
+  `slug`, and updating a `laravel_cloud_instance` no longer resets
+  `sleep_with_app`, `visibility_timeout` and `shutdown_timeout` to zero
+  values. An optional attribute the configuration leaves unset is unknown
+  during an update, and the update request sent that unknown as an empty
+  string or zero. The response was then written to state, so the change was
+  invisible on later plans.
+- List data sources return an empty list rather than a null one when there is
+  nothing to report. `laravel_cloud_dedicated_clusters`,
+  `laravel_cloud_edge_networks`, `laravel_cloud_regions`,
+  `laravel_cloud_instance_sizes` and `laravel_cloud_cache_types` produced null,
+  so `length()` and `for_each` over an empty result failed with "argument must
+  not be null".
+- An unknown `token` in the provider block now reports that it is unknown,
+  instead of reporting the token as missing and discarding one supplied
+  through `LARAVEL_CLOUD_API_TOKEN`.
+
 ### Changed
 
 - The database examples and schema descriptions now use the current type
