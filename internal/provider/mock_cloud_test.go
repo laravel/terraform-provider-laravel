@@ -50,6 +50,11 @@ type fakeCloud struct {
 	// patches records every PATCH body the generic engine received, by type,
 	// so tests can assert on what the provider sent.
 	patches map[string][]map[string]any
+
+	// vars holds environment variables as the API does: environment ID -> key
+	// -> value. Modelled as an upsert store rather than a whole-set replace,
+	// because that is what the separate /variables/delete route implies.
+	vars map[string]map[string]string
 }
 
 // newFakeCloud starts an httptest.Server backed by a fresh in-memory store and
@@ -65,6 +70,7 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 		objects:  map[string]map[string]map[string]any{},
 		children: map[string][]string{},
 		parents:  map[string]map[string]string{},
+		vars:     map[string]map[string]string{},
 	}
 
 	mux := http.NewServeMux()

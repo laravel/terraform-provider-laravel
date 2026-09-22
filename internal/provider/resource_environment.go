@@ -305,14 +305,25 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	var env *client.EnvironmentData
 	adopted := false
 
+	// A failure here is fatal rather than a reason to fall through: creating
+	// blind is exactly the duplicate this listing exists to prevent, and the
+	// extra environment would be live and billing with nothing in state
+	// pointing at it. Erroring leaves the apply retryable instead.
 	existing, err := r.client.ListEnvironments(ctx, appID)
-	if err == nil {
-		for i := range existing {
-			if existing[i].Attributes.Name == wantName {
-				env = &existing[i]
-				adopted = true
-				break
-			}
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error listing existing environments",
+			"Laravel Cloud creates a default environment alongside an application, so the existing "+
+				"environments must be checked before creating one -- otherwise a duplicate is created. "+
+				"Listing them failed: "+err.Error(),
+		)
+		return
+	}
+	for i := range existing {
+		if existing[i].Attributes.Name == wantName {
+			env = &existing[i]
+			adopted = true
+			break
 		}
 	}
 	// If no match was found by name, fall through and create a new one.

@@ -166,15 +166,15 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			},
 			"uses_octane": schema.BoolAttribute{
 				Optional:    true,
-				Description: "Whether the instance uses Laravel Octane. Applied on update only.",
+				Description: "Whether the instance uses Laravel Octane. The create route ignores it, so on create the provider applies it with a follow-up update.",
 			},
 			"uses_inertia_ssr": schema.BoolAttribute{
 				Optional:    true,
-				Description: "Whether the instance uses Inertia SSR. Applied on update only.",
+				Description: "Whether the instance uses Inertia SSR. The create route ignores it, so on create the provider applies it with a follow-up update.",
 			},
 			"hibernation_timeout": schema.Int64Attribute{
 				Optional:    true,
-				Description: "Hibernation timeout in seconds. Applied on update only.",
+				Description: "Hibernation timeout in seconds. The create route ignores it, so on create the provider applies it with a follow-up update.",
 			},
 			"paused": schema.BoolAttribute{
 				Computed:    true,
@@ -267,8 +267,52 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
+	// uses_octane, uses_inertia_ssr and hibernation_timeout are accepted only
+	// by the update route. Writing them straight into state would have claimed
+	// a value that was never sent, and because the API does not report them
+	// back no later refresh could ever notice -- so they are applied here.
+	//
+	// The instance exists by this point, so a failure must not abort Create:
+	// returning early would skip the state write below and strand a live,
+	// billing instance that Terraform cannot destroy. The next apply retries.
+	if updateReq, ok := instanceCreateFollowUp(plan); ok {
+		if updated, err := r.client.UpdateInstance(ctx, inst.ID, updateReq); err != nil {
+			resp.Diagnostics.AddWarning(
+				"Could not apply all settings after creating the instance",
+				"The instance was created, but applying uses_octane, uses_inertia_ssr or "+
+					"hibernation_timeout failed: "+err.Error()+
+					". The configured values are kept in state; run 'terraform apply' again to retry.",
+			)
+		} else {
+			inst = updated
+		}
+	}
+
 	mapInstanceToState(inst, &plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// instanceCreateFollowUp collects the update-only attributes the create route
+// ignores, reporting whether any of them were configured.
+func instanceCreateFollowUp(plan InstanceResourceModel) (client.UpdateInstanceRequest, bool) {
+	var req client.UpdateInstanceRequest
+	set := false
+	if !plan.UsesOctane.IsNull() && !plan.UsesOctane.IsUnknown() {
+		v := plan.UsesOctane.ValueBool()
+		req.UsesOctane = &v
+		set = true
+	}
+	if !plan.UsesInertiaSSR.IsNull() && !plan.UsesInertiaSSR.IsUnknown() {
+		v := plan.UsesInertiaSSR.ValueBool()
+		req.UsesInertiaSSR = &v
+		set = true
+	}
+	if !plan.HibernationTimeout.IsNull() && !plan.HibernationTimeout.IsUnknown() {
+		v := int(plan.HibernationTimeout.ValueInt64())
+		req.HibernationTimeout = &v
+		set = true
+	}
+	return req, set
 }
 
 func (r *InstanceResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {

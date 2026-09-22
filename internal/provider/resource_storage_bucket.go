@@ -104,7 +104,7 @@ func (r *StorageBucketResource) Schema(_ context.Context, _ resource.SchemaReque
 				Optional:           true,
 				Description:        "Allowed CORS origins.",
 				ElementType:        types.StringType,
-				DeprecationMessage: "allowed_origins is removed from the Laravel Cloud API on May 17, 2026 and is superseded by cors_settings. Use cors_settings.allowed_origins instead.",
+				DeprecationMessage: "allowed_origins was removed from the Laravel Cloud API on May 17, 2026 and is superseded by cors_settings. Use cors_settings.allowed_origins instead.",
 			},
 			"cors_settings": schema.SingleNestedAttribute{
 				Optional:    true,
@@ -251,21 +251,30 @@ func (r *StorageBucketResource) Update(ctx context.Context, req resource.UpdateR
 		v := plan.Visibility.ValueString()
 		updateReq.Visibility = &v
 	}
+	// An emptied or removed list is a change like any other, so both of the
+	// CORS fields below distinguish "unchanged" from "cleared". Sending
+	// nothing for a cleared value left the rules live on the bucket while
+	// state recorded them as gone, with no way to ever take them off.
 	if !plan.AllowedOrigins.Equal(state.AllowedOrigins) {
-		var origins []string
-		resp.Diagnostics.Append(plan.AllowedOrigins.ElementsAs(ctx, &origins, false)...)
-		if resp.Diagnostics.HasError() {
-			return
+		origins := []string{}
+		if !plan.AllowedOrigins.IsNull() {
+			resp.Diagnostics.Append(plan.AllowedOrigins.ElementsAs(ctx, &origins, false)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
 		}
-		updateReq.AllowedOrigins = origins //nolint:staticcheck // deprecated attribute kept for backward compatibility until removal
+		updateReq.AllowedOrigins = &origins //nolint:staticcheck // deprecated attribute kept for backward compatibility until removal
 	}
-	if plan.CorsSettings != nil {
+	switch {
+	case plan.CorsSettings != nil:
 		cors, d := buildCorsSettings(ctx, plan.CorsSettings)
 		resp.Diagnostics.Append(d...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
-		updateReq.CorsSettings = cors
+		updateReq.CorsSettings = client.JSONValue(cors)
+	case state.CorsSettings != nil:
+		updateReq.CorsSettings = client.ClearJSON()
 	}
 
 	bucket, err := r.client.UpdateStorageBucket(ctx, state.ID.ValueString(), updateReq)

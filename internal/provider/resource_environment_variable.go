@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -34,7 +35,7 @@ func (r *EnvironmentVariableResource) Metadata(_ context.Context, req resource.M
 
 func (r *EnvironmentVariableResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages environment variables for a Laravel Cloud environment. This resource replaces ALL environment variables on every apply.",
+		Description: "Manages environment variables for a Laravel Cloud environment. Keys in this map are written on every apply, and a key removed from the map is deleted from the environment. Variables set outside Terraform are left alone.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
@@ -54,7 +55,7 @@ func (r *EnvironmentVariableResource) Schema(_ context.Context, _ resource.Schem
 				Required:    true,
 				ElementType: types.StringType,
 				Sensitive:   true,
-				Description: "Map of environment variable key-value pairs. All variables are replaced on each apply.",
+				Description: "Map of environment variable key-value pairs. Removing a key deletes that variable from the environment.",
 			},
 		},
 	}
@@ -115,21 +116,52 @@ func (r *EnvironmentVariableResource) Update(ctx context.Context, req resource.U
 		return
 	}
 
-	vars := buildVariablesList(plan.Variables)
+	var state EnvironmentVariableResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	envID := plan.EnvironmentID.ValueString()
+
+	// A key dropped from the configuration is not mentioned by the "set" call
+	// below, so it has to be deleted by name. The API keeps a separate delete
+	// route precisely because "set" writes the keys it is given rather than
+	// replacing the whole set -- without this, removing a variable took it out
+	// of state while leaving it live in the environment, which is the wrong
+	// direction to be wrong in for something that holds credentials.
+	if removed := removedVariableKeys(plan.Variables, state.Variables); len(removed) > 0 {
+		req := client.DeleteEnvironmentVariablesRequest{Keys: removed}
+		if err := r.client.DeleteEnvironmentVariables(ctx, envID, req); err != nil && !client.IsNotFound(err) {
+			resp.Diagnostics.AddError("Error removing environment variables", err.Error())
+			return
+		}
+	}
 
 	setReq := client.AddEnvironmentVariablesRequest{
 		Method:    "set",
-		Variables: vars,
+		Variables: buildVariablesList(plan.Variables),
 	}
 
-	_, err := r.client.SetEnvironmentVariables(ctx, plan.EnvironmentID.ValueString(), setReq)
-	if err != nil {
+	if _, err := r.client.SetEnvironmentVariables(ctx, envID, setReq); err != nil {
 		resp.Diagnostics.AddError("Error replacing environment variables", err.Error())
 		return
 	}
 
 	plan.ID = plan.EnvironmentID
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// removedVariableKeys returns the keys present in state but no longer in plan.
+func removedVariableKeys(plan, state map[string]types.String) []string {
+	var removed []string
+	for k := range state {
+		if _, ok := plan[k]; !ok {
+			removed = append(removed, k)
+		}
+	}
+	sort.Strings(removed)
+	return removed
 }
 
 func (r *EnvironmentVariableResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {

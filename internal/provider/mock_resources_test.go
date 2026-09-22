@@ -268,12 +268,48 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 
 	// -------- bespoke endpoints --------
 
-	// Environment variables: a single "set" POST replaces the whole set; the
-	// response is discarded by the provider (no GET endpoint exists).
+	// Environment variables. "set" writes the keys it is given and leaves the
+	// rest alone -- the upsert semantics the separate delete route implies --
+	// so a test that drops a key from config only sees it disappear if the
+	// provider deletes it by name. The response is discarded by the provider
+	// (no GET endpoint exists); f.vars is what assertions read.
 	mux.HandleFunc("POST /environments/{id}/variables", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, jsonAPIObject(r.PathValue("id"), "environments", map[string]any{}))
+		id := r.PathValue("id")
+		body := decodeBody(r)
+
+		f.mu.Lock()
+		if f.vars[id] == nil {
+			f.vars[id] = map[string]string{}
+		}
+		if list, ok := body["variables"].([]any); ok {
+			for _, item := range list {
+				v, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				key, _ := v["key"].(string)
+				value, _ := v["value"].(string)
+				f.vars[id][key] = value
+			}
+		}
+		f.mu.Unlock()
+
+		writeJSON(w, http.StatusOK, jsonAPIObject(id, "environments", map[string]any{}))
 	})
 	mux.HandleFunc("POST /environments/{id}/variables/delete", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		body := decodeBody(r)
+
+		f.mu.Lock()
+		if keys, ok := body["keys"].([]any); ok {
+			for _, k := range keys {
+				if key, ok := k.(string); ok {
+					delete(f.vars[id], key)
+				}
+			}
+		}
+		f.mu.Unlock()
+
 		w.WriteHeader(http.StatusNoContent)
 	})
 
