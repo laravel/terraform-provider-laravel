@@ -6,6 +6,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/tfversion"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
 
@@ -193,12 +194,14 @@ resource "laravel_cloud_application" "app" {
 }
 
 // runImportBlockIsNoOp applies the config, then plans an import of the named
-// resource against that same config and requires no changes.
+// resource against that same config and requires no changes. Import blocks
+// need Terraform 1.5.
 func runImportBlockIsNoOp(t *testing.T, config, addr string) {
 	t.Helper()
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		TerraformVersionChecks:   []tfversion.TerraformVersionCheck{tfversion.SkipBelow(tfversion.Version1_5_0)},
 		Steps: []resource.TestStep{
 			{Config: config},
 			{
