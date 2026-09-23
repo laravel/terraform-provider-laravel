@@ -29,8 +29,6 @@ func TestAccApplicationResource_basic(t *testing.T) {
 				ResourceName:      "laravel_cloud_application.test",
 				ImportState:       true,
 				ImportStateVerify: true,
-				// repository is write-only and not returned by the API
-				ImportStateVerifyIgnore: []string{"repository"},
 			},
 		},
 	})
