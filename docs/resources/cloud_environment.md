@@ -48,7 +48,8 @@ resource "laravel_cloud_environment" "example" {
 - `cache_strategy` (String) Cache strategy (default, bypass).
 - `cluster_id` (String) Dedicated cluster ID. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
 - `color` (String) Environment color (blue, green, orange, purple, red, yellow, cyan, gray). Write-only: the API accepts this but never reports it back, so a change made outside Terraform cannot be detected and state keeps the configured value.
-- `database_schema_id` (String) Database schema to attach.
+- `database_id` (String) ID of the database to attach (a laravel_cloud_database, not its cluster). Removing it detaches the database.
+- `database_schema_id` (String, Deprecated) Deprecated alias for database_id.
 - `deploy_command` (String) Custom deploy command (max 2000 chars).
 - `node_version` (String) Node.js version.
 - `php_version` (String) PHP version to run, in the API's "major:minor" form (e.g. "8.4:1"). The API reports only the major version (see php_major_version), so an import derives this from it. A version changed outside Terraform is not detected.

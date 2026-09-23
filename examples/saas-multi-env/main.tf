@@ -102,8 +102,8 @@ resource "laravel_cloud_environment" "production" {
   # Attaching the cache and database here is what injects their connection
   # details into the environment -- you do not repeat the credentials in
   # laravel_cloud_environment_variables.
-  cache_id           = laravel_cloud_cache.production.id
-  database_schema_id = laravel_cloud_database.production.id
+  cache_id    = laravel_cloud_cache.production.id
+  database_id = laravel_cloud_database.production.id
 
   uses_push_to_deploy = true
   uses_octane         = true
@@ -179,7 +179,7 @@ resource "laravel_cloud_environment" "staging" {
   php_version  = "8.4:1"
   node_version = "22"
 
-  database_schema_id = laravel_cloud_database.staging.id
+  database_id = laravel_cloud_database.staging.id
 
   uses_push_to_deploy = true
 

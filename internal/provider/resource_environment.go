@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -12,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
@@ -19,6 +21,7 @@ import (
 var (
 	_ resource.Resource                = &EnvironmentResource{}
 	_ resource.ResourceWithImportState = &EnvironmentResource{}
+	_ resource.ResourceWithModifyPlan  = &EnvironmentResource{}
 )
 
 type EnvironmentResource struct {
@@ -49,6 +52,7 @@ type EnvironmentResourceModel struct {
 	SleepTimeout               types.Int64  `tfsdk:"sleep_timeout"`
 	ShutdownTimeout            types.Int64  `tfsdk:"shutdown_timeout"`
 	CacheStrategy              types.String `tfsdk:"cache_strategy"`
+	DatabaseID                 types.String `tfsdk:"database_id"`
 	DatabaseSchemaID           types.String `tfsdk:"database_schema_id"`
 	CacheID                    types.String `tfsdk:"cache_id"`
 	CreatedAt                  types.String `tfsdk:"created_at"`
@@ -243,9 +247,18 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"database_id": schema.StringAttribute{
+				Optional: true,
+				Description: "ID of the database to attach (a laravel_cloud_database, not its cluster). " +
+					"Removing it detaches the database.",
+				Validators: []validator.String{
+					stringvalidator.ConflictsWith(path.MatchRoot("database_schema_id")),
+				},
+			},
 			"database_schema_id": schema.StringAttribute{
-				Optional:    true,
-				Description: "Database schema to attach.",
+				Optional:           true,
+				Description:        "Deprecated alias for database_id.",
+				DeprecationMessage: "database_schema_id is renamed to database_id. Rename the attribute; the attached database is unchanged.",
 			},
 			"cache_id": schema.StringAttribute{
 				Optional:    true,
@@ -524,9 +537,9 @@ func (r *EnvironmentResource) Delete(ctx context.Context, req resource.DeleteReq
 
 	// Detach database and cache from the environment before deleting so
 	// downstream resources (database schema, cluster) can be cleaned up.
-	if !state.DatabaseSchemaID.IsNull() || !state.CacheID.IsNull() {
+	if !databaseID(state).IsNull() || !state.CacheID.IsNull() {
 		detach := client.UpdateEnvironmentRequest{}
-		if !state.DatabaseSchemaID.IsNull() {
+		if !databaseID(state).IsNull() {
 			detach.DatabaseSchemaID = client.DetachID()
 		}
 		if !state.CacheID.IsNull() {
@@ -661,8 +674,8 @@ func buildEnvironmentUpdateFromStateDiff(plan, state EnvironmentResourceModel) *
 		req.UsesPurgeEdgeCacheOnDeploy = &v
 		hasUpdates = true
 	}
-	if !plan.DatabaseSchemaID.Equal(state.DatabaseSchemaID) {
-		req.DatabaseSchemaID = attachOrDetach(plan.DatabaseSchemaID)
+	if !databaseID(plan).Equal(databaseID(state)) {
+		req.DatabaseSchemaID = attachOrDetach(databaseID(plan))
 		hasUpdates = true
 	}
 	if !plan.CacheID.Equal(state.CacheID) {
@@ -674,6 +687,48 @@ func buildEnvironmentUpdateFromStateDiff(plan, state EnvironmentResourceModel) *
 		return nil
 	}
 	return &req
+}
+
+// ModifyPlan rejects a plan that sets both database_id and its deprecated
+// alias database_schema_id. Validation already rejects both in config, so this
+// only fires when lifecycle.ignore_changes on database_schema_id carries the
+// old value into the plan next to database_id. Accepting that would store
+// both, and removing database_id later would fall back to the stale alias and
+// re-attach the old database instead of detaching.
+func (r *EnvironmentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	// Nothing to do when the resource is being destroyed.
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var dbID, schemaID types.String
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("database_id"), &dbID)...)
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("database_schema_id"), &schemaID)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// An unknown value may still resolve to null, so leave that case to the
+	// ConflictsWith validator, which runs again once values are known.
+	if dbID.IsNull() || dbID.IsUnknown() || schemaID.IsNull() || schemaID.IsUnknown() {
+		return
+	}
+	resp.Diagnostics.AddAttributeError(
+		path.Root("database_schema_id"),
+		"Conflicting database attributes",
+		"database_id and its deprecated alias database_schema_id are both set in the plan, "+
+			"most likely because database_schema_id is listed in lifecycle.ignore_changes. "+
+			"Remove it from ignore_changes (or list database_id there instead).",
+	)
+}
+
+// databaseID returns the attached database from database_id, falling back to
+// its deprecated alias database_schema_id. Comparing this rather than either
+// attribute means renaming one to the other sends nothing to the API.
+func databaseID(m EnvironmentResourceModel) types.String {
+	if !m.DatabaseID.IsNull() {
+		return m.DatabaseID
+	}
+	return m.DatabaseSchemaID
 }
 
 // attachOrDetach renders an attachment id for the environment PATCH body:
@@ -769,8 +824,8 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 			hasUpdates = true
 		}
 	}
-	if !plan.DatabaseSchemaID.IsNull() && !plan.DatabaseSchemaID.IsUnknown() {
-		req.DatabaseSchemaID = client.AttachID(plan.DatabaseSchemaID.ValueString())
+	if dbID := databaseID(plan); !dbID.IsNull() && !dbID.IsUnknown() {
+		req.DatabaseSchemaID = client.AttachID(dbID.ValueString())
 		hasUpdates = true
 	}
 	if !plan.CacheID.IsNull() && !plan.CacheID.IsUnknown() {
