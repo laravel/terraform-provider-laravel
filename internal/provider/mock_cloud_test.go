@@ -36,6 +36,8 @@ type fakeCloud struct {
 	// appUpdates records every PATCH /applications body, in order, so tests
 	// can assert on what the provider sent rather than only on its result.
 	appUpdates []client.UpdateApplicationRequest
+	// envUpdates does the same for PATCH /environments.
+	envUpdates []client.UpdateEnvironmentRequest
 
 	// Generic JSON:API store used by every resource other than applications
 	// and environments (which have bespoke handlers above). Keyed by
@@ -294,6 +296,7 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("environment not found"))
 		return
 	}
+	f.envUpdates = append(f.envUpdates, req)
 	a := &env.Attributes
 	if req.Name != nil {
 		a.Name = *req.Name

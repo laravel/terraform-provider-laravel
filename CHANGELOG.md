@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+
+- `laravel_cloud_environment.database_schema_id` is renamed to `database_id`,
+  which takes the `id` of a `laravel_cloud_database`. The old name still works
+  and warns; setting both is an error. Renaming it in a configuration shows as
+  an update, but applying that plan only rewrites state and leaves the
+  database attached. If `database_schema_id` is listed in
+  `lifecycle.ignore_changes`, remove it from there when renaming; a plan that
+  carries both attributes is rejected.
+
 ### Fixed
 
 - The first plan after importing a `laravel_cloud_application` or

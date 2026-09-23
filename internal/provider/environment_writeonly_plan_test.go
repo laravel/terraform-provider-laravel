@@ -2,12 +2,15 @@ package provider
 
 import (
 	"fmt"
+	"regexp"
+	"slices"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 )
 
@@ -211,4 +214,143 @@ resource "laravel_cloud_environment" "vanity" {
   vanity_domain  = %[2]q
 }
 `, baseURL, vanity)
+}
+
+// TestEnvironmentDatabaseIDRenamePlan covers database_id and its deprecated
+// alias database_schema_id. Both send database_schema_id to the API, so moving
+// a configuration from the old name to the new one must not detach and
+// re-attach the database, and setting both is rejected.
+func TestEnvironmentDatabaseIDRenamePlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+
+	const envAddr = "laravel_cloud_environment.db"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: environmentDatabaseConfig(baseURL, `database_schema_id = "db-1"`),
+				Check:  expectDatabaseUpdates(f, `"db-1"`),
+			},
+			// The rename shows in the plan, but applying it only rewrites
+			// state: the database is already attached.
+			{
+				Config: environmentDatabaseConfig(baseURL, `database_id = "db-1"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(envAddr, plancheck.ResourceActionUpdate),
+					},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(envAddr, tfjsonpath.New("database_id"), knownvalue.StringExact("db-1")),
+					statecheck.ExpectKnownValue(envAddr, tfjsonpath.New("database_schema_id"), knownvalue.Null()),
+				},
+				Check: expectDatabaseUpdates(f, `"db-1"`),
+			},
+			{
+				Config: environmentDatabaseConfig(baseURL, `database_id = "db-1"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			{
+				Config: environmentDatabaseConfig(baseURL, `
+  database_id        = "db-1"
+  database_schema_id = "db-1"`),
+				ExpectError: regexp.MustCompile(`Invalid Attribute Combination`),
+			},
+			// Dropping the attribute detaches the database.
+			{
+				Config: environmentDatabaseConfig(baseURL, ""),
+				Check:  expectDatabaseUpdates(f, `"db-1"`, "null"),
+			},
+		},
+	})
+}
+
+// TestEnvironmentDatabaseIDCreateDestroyPlan covers database_id on the Create
+// path and the detach sent before an environment with a database is deleted.
+func TestEnvironmentDatabaseIDCreateDestroyPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             expectDatabaseUpdates(f, `"db-1"`, "null"),
+		Steps: []resource.TestStep{
+			{
+				Config: environmentDatabaseConfig(baseURL, `database_id = "db-1"`),
+				Check:  expectDatabaseUpdates(f, `"db-1"`),
+			},
+		},
+	})
+}
+
+// TestEnvironmentDatabaseIDIgnoreChangesPlan covers ignore_changes on the
+// deprecated alias surviving a rename. Terraform then keeps the old value in
+// the plan next to database_id, which validation cannot see; the plan must be
+// rejected rather than leave a stale value that removing database_id would
+// later fall back to and re-attach.
+func TestEnvironmentDatabaseIDIgnoreChangesPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+
+	const ignoreAlias = `
+  lifecycle {
+    ignore_changes = [database_schema_id]
+  }`
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: environmentDatabaseConfig(baseURL, `database_schema_id = "db-1"`+ignoreAlias),
+				Check:  expectDatabaseUpdates(f, `"db-1"`),
+			},
+			{
+				Config:      environmentDatabaseConfig(baseURL, `database_id = "db-1"`+ignoreAlias),
+				ExpectError: regexp.MustCompile(`Conflicting database attributes`),
+			},
+			// Dropping ignore_changes lets the rename through, still without
+			// touching the attachment.
+			{
+				Config: environmentDatabaseConfig(baseURL, `database_id = "db-1"`),
+				Check:  expectDatabaseUpdates(f, `"db-1"`),
+			},
+		},
+	})
+}
+
+func environmentDatabaseConfig(baseURL, attrs string) string {
+	return providerCfg(baseURL) + `
+resource "laravel_cloud_application" "example" {
+  name       = "db-app"
+  repository = "laravel/laravel"
+  region     = "us-east-2"
+}
+
+resource "laravel_cloud_environment" "db" {
+  application_id = laravel_cloud_application.example.id
+  name           = "production"
+  branch         = "main"
+  ` + attrs + `
+}
+`
+}
+
+// expectDatabaseUpdates checks the database_schema_id of every environment
+// PATCH that carried one, in order, since the fake cloud was created.
+func expectDatabaseUpdates(f *fakeCloud, want ...string) resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		var got []string
+		for _, u := range f.envUpdates {
+			if u.DatabaseSchemaID != nil {
+				got = append(got, string(u.DatabaseSchemaID))
+			}
+		}
+		if !slices.Equal(got, want) {
+			return fmt.Errorf("database_schema_id updates = %q, want %q", got, want)
+		}
+		return nil
+	}
 }
