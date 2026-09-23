@@ -42,6 +42,9 @@ type fakeCloud struct {
 	// parents maps "<typeName>" -> child ID -> parent ID, so responses can
 	// carry the JSON:API relationship the real API reports.
 	parents map[string]map[string]string
+	// patches records every PATCH body the generic engine received, by type,
+	// so tests can assert on what the provider sent.
+	patches map[string][]map[string]any
 }
 
 // newFakeCloud starts an httptest.Server backed by a fresh in-memory store and
