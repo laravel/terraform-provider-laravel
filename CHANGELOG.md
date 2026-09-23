@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The first plan after importing a `laravel_cloud_application` or
+  `laravel_cloud_environment` no longer proposes adding `repository` or
+  `php_version` when they already match the platform. Neither was read back:
+  the API reports the repository as an object and the PHP version only as its
+  major version, so an import left both null. An import now seeds both from
+  the API -- `php_version` derived from `php_major_version` -- and a refresh
+  still never rewrites either. `php_version` is now computed, so an imported
+  value does not show as a change when the configuration leaves it unset.
+- `cluster_id` and `source_control_provider_type` are still not reported by
+  the API, so they still show as added on the first plan after an import. That
+  plan now carries a warning explaining that, when nothing else changes,
+  applying it only records the value and leaves the resource as it is.
 - The first plan after importing a `laravel_cloud_database_cluster` no longer
   proposes changing `config`, and applying it no longer sends a config update
   to the cluster. An import records the API's full effective config, defaults

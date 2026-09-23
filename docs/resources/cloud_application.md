@@ -28,14 +28,14 @@ resource "laravel_cloud_application" "example" {
 
 - `name` (String) Application name (3-40 characters).
 - `region` (String) Cloud region (e.g. us-east-1).
-- `repository` (String) Source code repository (e.g. laravel/laravel).
+- `repository` (String) Source code repository (e.g. laravel/laravel). Use the owner/name form the platform reports: after an import, a URL or different casing shows as a change, and applying it updates the application's repository.
 
 ### Optional
 
-- `cluster_id` (String) Dedicated cluster ID.
+- `cluster_id` (String) Dedicated cluster ID. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
 - `slack_channel` (String) Slack channel for application notifications.
 - `slug` (String) URL-friendly slug.
-- `source_control_provider_type` (String) Source control provider type (github, gitlab, gitlab_self_hosted, or bitbucket). Becomes required by the API on March 9, 2026.
+- `source_control_provider_type` (String) Source control provider type (github, gitlab, gitlab_self_hosted, or bitbucket). Becomes required by the API on March 9, 2026. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
 
 ### Read-Only
 
