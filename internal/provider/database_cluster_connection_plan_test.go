@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
+	"github.com/hashicorp/terraform-plugin-testing/tfversion"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
 
@@ -29,6 +30,14 @@ import (
 const clusterAddr = "laravel_cloud_database_cluster.main"
 
 var clusterPasswordPath = tfjsonpath.New("connection_details").AtMapKey("password")
+
+// Terraform 1.0 does not record the sensitive mark of a nested attribute in its
+// JSON plan, so ExpectSensitiveValue cannot find the password there; import
+// blocks need 1.5.
+var (
+	skipBelowNestedSensitivity = tfversion.SkipBelow(tfversion.Version1_1_0)
+	skipBelowImportBlocks      = tfversion.SkipBelow(tfversion.Version1_5_0)
+)
 
 func connectionCluster(baseURL, storage, extra string) string {
 	return providerCfg(baseURL) + `
@@ -57,6 +66,7 @@ func TestDatabaseClusterImportKeepsPasswordSensitivePlan(t *testing.T) {
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		TerraformVersionChecks:   []tfversion.TerraformVersionCheck{skipBelowImportBlocks},
 		Steps: []resource.TestStep{
 			{Config: config},
 			{
@@ -84,6 +94,7 @@ func TestDatabaseClusterConnectionKeptWithoutConfigChangePlan(t *testing.T) {
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		TerraformVersionChecks:   []tfversion.TerraformVersionCheck{skipBelowNestedSensitivity},
 		Steps: []resource.TestStep{
 			{Config: connectionCluster(baseURL, "10", "")},
 			{
@@ -110,6 +121,7 @@ func TestDatabaseClusterConfigChangeKeepsPasswordSensitivePlan(t *testing.T) {
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		TerraformVersionChecks:   []tfversion.TerraformVersionCheck{skipBelowNestedSensitivity},
 		Steps: []resource.TestStep{
 			{Config: connectionCluster(baseURL, "10", "force_destroy = true")},
 			{
