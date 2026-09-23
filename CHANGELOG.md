@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Planning an in-place update of a `laravel_cloud_database_cluster` -- which
+  every plan after an import is, since `version` and `force_destroy` are never
+  reported -- no longer prints "this attribute value will no longer be marked
+  as sensitive" above `connection_details.password`. The whole object was
+  planned as unknown, which cannot carry the nested sensitive mark. The
+  recorded details are now kept unless `config` changes, and a config change
+  plans each detail as unknown while keeping the password sensitive.
+
 ## [1.0.2] - 2026-09-19
 
 ### Fixed

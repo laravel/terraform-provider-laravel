@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
 
@@ -150,6 +151,9 @@ func (r *DatabaseClusterResource) Schema(_ context.Context, _ resource.SchemaReq
 			"connection_details": schema.SingleNestedAttribute{
 				Computed:    true,
 				Description: "Read-only connection details for the cluster.",
+				PlanModifiers: []planmodifier.Object{
+					keepConnectionUnlessConfigChanges{},
+				},
 				Attributes: map[string]schema.Attribute{
 					"hostname": schema.StringAttribute{Computed: true},
 					"port":     schema.Int64Attribute{Computed: true},
@@ -278,7 +282,11 @@ func (r *DatabaseClusterResource) Update(ctx context.Context, req resource.Updat
 
 	plan.ID = state.ID
 	plan.Status = types.StringValue(cluster.Attributes.Status)
-	plan.Connection = mapDatabaseConnection(cluster.Attributes.Connection)
+	// Details kept from state because config did not change stay as planned;
+	// anything planned unknown comes from the response.
+	if !objectFullyKnown(plan.Connection) {
+		plan.Connection = mapDatabaseConnection(cluster.Attributes.Connection)
+	}
 	plan.CreatedAt = types.StringPointerValue(cluster.Attributes.CreatedAt)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
@@ -387,6 +395,73 @@ func deleteClusterSchemas(ctx context.Context, c *client.Client, clusterID strin
 		}
 	}
 	return diags
+}
+
+// keepConnectionUnlessConfigChanges plans connection_details for an update.
+//
+// The attribute is Computed, so by default any in-place update planned the
+// whole object as unknown. An unknown object cannot carry the sensitive mark on
+// its nested password, and Terraform printed "this attribute value will no
+// longer be marked as sensitive" above it -- on every plan after an import,
+// which always records version and force_destroy, and on any other update.
+//
+// Only a config change can move the connection (is_public changes the
+// hostname), so otherwise the recorded details are kept. When config does
+// change, each detail is planned unknown inside a known object, which keeps
+// the password marked sensitive.
+type keepConnectionUnlessConfigChanges struct{}
+
+func (keepConnectionUnlessConfigChanges) Description(context.Context) string {
+	return "Keeps the recorded connection details unless config changes."
+}
+
+func (m keepConnectionUnlessConfigChanges) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (keepConnectionUnlessConfigChanges) PlanModifyObject(ctx context.Context, req planmodifier.ObjectRequest, resp *planmodifier.ObjectResponse) {
+	// Create, destroy, nothing recorded yet, or already decided.
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() || req.StateValue.IsNull() || !req.PlanValue.IsUnknown() {
+		return
+	}
+
+	var planConfig, stateConfig types.String
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("config"), &planConfig)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("config"), &stateConfig)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if planConfig.Equal(stateConfig) {
+		resp.PlanValue = req.StateValue
+		return
+	}
+
+	unknown := make(map[string]attr.Value, len(databaseConnectionAttrTypes))
+	for name, t := range databaseConnectionAttrTypes {
+		v, err := t.ValueFromTerraform(ctx, tftypes.NewValue(t.TerraformType(ctx), tftypes.UnknownValue))
+		if err != nil {
+			resp.Diagnostics.AddError("Error planning connection details", err.Error())
+			return
+		}
+		unknown[name] = v
+	}
+	obj, diags := types.ObjectValue(databaseConnectionAttrTypes, unknown)
+	resp.Diagnostics.Append(diags...)
+	resp.PlanValue = obj
+}
+
+// objectFullyKnown reports whether an object and every attribute in it are
+// known.
+func objectFullyKnown(o types.Object) bool {
+	if o.IsUnknown() {
+		return false
+	}
+	for _, v := range o.Attributes() {
+		if v.IsUnknown() {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *DatabaseClusterResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
