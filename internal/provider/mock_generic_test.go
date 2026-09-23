@@ -186,6 +186,10 @@ func (f *fakeCloud) genPatch(s crudSpec) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, fmt.Errorf("%s not found", s.typeName))
 			return
 		}
+		if f.patches == nil {
+			f.patches = map[string][]map[string]any{}
+		}
+		f.patches[s.typeName] = append(f.patches[s.typeName], patch)
 		if s.patchFn != nil {
 			s.patchFn(attrs, patch)
 		} else {

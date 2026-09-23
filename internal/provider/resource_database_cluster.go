@@ -14,7 +14,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
 
@@ -112,6 +114,9 @@ func (r *DatabaseClusterResource) Schema(_ context.Context, _ resource.SchemaReq
 			"status": schema.StringAttribute{
 				Computed:    true,
 				Description: "Cluster status.",
+				PlanModifiers: []planmodifier.String{
+					keepStatusUnlessConfigChanges{},
+				},
 			},
 			"cluster_id": schema.StringAttribute{
 				Optional: true,
@@ -146,10 +151,16 @@ func (r *DatabaseClusterResource) Schema(_ context.Context, _ resource.SchemaReq
 			"config": schema.StringAttribute{
 				Required:    true,
 				Description: "JSON-encoded configuration specific to the database type (required by the API).",
+				PlanModifiers: []planmodifier.String{
+					keepEquivalentConfig{},
+				},
 			},
 			"connection_details": schema.SingleNestedAttribute{
 				Computed:    true,
 				Description: "Read-only connection details for the cluster.",
+				PlanModifiers: []planmodifier.Object{
+					keepConnectionUnlessConfigChanges{},
+				},
 				Attributes: map[string]schema.Attribute{
 					"hostname": schema.StringAttribute{Computed: true},
 					"port":     schema.Int64Attribute{Computed: true},
@@ -161,6 +172,9 @@ func (r *DatabaseClusterResource) Schema(_ context.Context, _ resource.SchemaReq
 			},
 			"created_at": schema.StringAttribute{
 				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 	}
@@ -260,6 +274,19 @@ func (r *DatabaseClusterResource) Update(ctx context.Context, req resource.Updat
 		return
 	}
 
+	// config is the only thing the API accepts on update. When it asks for
+	// nothing new -- the change is to force_destroy, or to version or
+	// cluster_id being recorded after an import -- there is nothing to send,
+	// and the computed values were planned from state.
+	if plan.Config.Equal(state.Config) {
+		plan.ID = state.ID
+		plan.Status = state.Status
+		plan.Connection = state.Connection
+		plan.CreatedAt = state.CreatedAt
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		return
+	}
+
 	updateReq := client.UpdateDatabaseClusterRequest{}
 	if !plan.Config.IsNull() {
 		var cfg map[string]any
@@ -278,8 +305,14 @@ func (r *DatabaseClusterResource) Update(ctx context.Context, req resource.Updat
 
 	plan.ID = state.ID
 	plan.Status = types.StringValue(cluster.Attributes.Status)
-	plan.Connection = mapDatabaseConnection(cluster.Attributes.Connection)
-	plan.CreatedAt = types.StringPointerValue(cluster.Attributes.CreatedAt)
+	// Details kept from state because config did not change stay as planned;
+	// anything planned unknown comes from the response.
+	if !objectFullyKnown(plan.Connection) {
+		plan.Connection = mapDatabaseConnection(cluster.Attributes.Connection)
+	}
+	if plan.CreatedAt.IsUnknown() {
+		plan.CreatedAt = types.StringPointerValue(cluster.Attributes.CreatedAt)
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -387,6 +420,159 @@ func deleteClusterSchemas(ctx context.Context, c *client.Client, clusterID strin
 		}
 	}
 	return diags
+}
+
+// keepConnectionUnlessConfigChanges plans connection_details for an update.
+//
+// The attribute is Computed, so by default any in-place update planned the
+// whole object as unknown. An unknown object cannot carry the sensitive mark on
+// its nested password, and Terraform printed "this attribute value will no
+// longer be marked as sensitive" above it -- on every plan after an import,
+// which always records version and force_destroy, and on any other update.
+//
+// Only a config change can move the connection (is_public changes the
+// hostname), so otherwise the recorded details are kept -- see configUnchanged.
+// When config does change, each detail is planned unknown inside a known
+// object, which keeps the password marked sensitive.
+type keepConnectionUnlessConfigChanges struct{}
+
+func (keepConnectionUnlessConfigChanges) Description(context.Context) string {
+	return "Keeps the recorded connection details unless config changes."
+}
+
+func (m keepConnectionUnlessConfigChanges) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (keepConnectionUnlessConfigChanges) PlanModifyObject(ctx context.Context, req planmodifier.ObjectRequest, resp *planmodifier.ObjectResponse) {
+	// Create, destroy, nothing recorded yet, or already decided.
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() || req.StateValue.IsNull() || !req.PlanValue.IsUnknown() {
+		return
+	}
+
+	unchanged, diags := configUnchanged(ctx, req.Plan, req.State)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if unchanged {
+		resp.PlanValue = req.StateValue
+		return
+	}
+
+	unknown := make(map[string]attr.Value, len(databaseConnectionAttrTypes))
+	for name, t := range databaseConnectionAttrTypes {
+		v, err := t.ValueFromTerraform(ctx, tftypes.NewValue(t.TerraformType(ctx), tftypes.UnknownValue))
+		if err != nil {
+			resp.Diagnostics.AddError("Error planning connection details", err.Error())
+			return
+		}
+		unknown[name] = v
+	}
+	obj, diags := types.ObjectValue(databaseConnectionAttrTypes, unknown)
+	resp.Diagnostics.Append(diags...)
+	resp.PlanValue = obj
+}
+
+// keepStatusUnlessConfigChanges keeps the recorded status on an update that
+// sends nothing to the API, which is any update that leaves config alone.
+type keepStatusUnlessConfigChanges struct{}
+
+func (keepStatusUnlessConfigChanges) Description(context.Context) string {
+	return "Keeps the recorded status unless config changes."
+}
+
+func (m keepStatusUnlessConfigChanges) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (keepStatusUnlessConfigChanges) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() || req.StateValue.IsNull() || !req.PlanValue.IsUnknown() {
+		return
+	}
+	unchanged, diags := configUnchanged(ctx, req.Plan, req.State)
+	resp.Diagnostics.Append(diags...)
+	if unchanged {
+		resp.PlanValue = req.StateValue
+	}
+}
+
+// keepEquivalentConfig plans the recorded config when the configured one asks
+// for nothing it does not already hold.
+//
+// An import records the API's full effective config, including defaults the
+// configuration never sets (storage_autoscale_max_gb, suspend_seconds, ...),
+// so the first plan after an import proposed removing them, and applying it
+// sent a config PATCH to a cluster nothing had changed on. Planning the prior
+// value is how a provider tells Terraform two values are equivalent.
+type keepEquivalentConfig struct{}
+
+func (keepEquivalentConfig) Description(context.Context) string {
+	return "Keeps the recorded config when every configured key already has the same value."
+}
+
+func (m keepEquivalentConfig) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (keepEquivalentConfig) PlanModifyString(_ context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() || req.PlanValue.Equal(req.StateValue) {
+		return
+	}
+	if configEquivalent(req.PlanValue, req.StateValue) {
+		resp.PlanValue = req.StateValue
+	}
+}
+
+// configUnchanged reports whether an update leaves config as recorded. Plan
+// modifiers all see the plan as it was before any of them ran, so this cannot
+// rely on keepEquivalentConfig having already replaced the planned value.
+func configUnchanged(ctx context.Context, plan tfsdk.Plan, state tfsdk.State) (bool, diag.Diagnostics) {
+	var planConfig, stateConfig types.String
+	diags := plan.GetAttribute(ctx, path.Root("config"), &planConfig)
+	diags.Append(state.GetAttribute(ctx, path.Root("config"), &stateConfig)...)
+	if diags.HasError() {
+		return false, diags
+	}
+	return configEquivalent(planConfig, stateConfig), diags
+}
+
+// configEquivalent reports whether a planned config asks for nothing the
+// recorded one does not already hold: every key it sets has the same value in
+// the recorded config, which may carry more.
+func configEquivalent(planned, recorded types.String) bool {
+	if planned.Equal(recorded) {
+		return true
+	}
+	if planned.IsNull() || planned.IsUnknown() || recorded.IsNull() || recorded.IsUnknown() {
+		return false
+	}
+	var want, have map[string]any
+	if json.Unmarshal([]byte(planned.ValueString()), &want) != nil ||
+		json.Unmarshal([]byte(recorded.ValueString()), &have) != nil {
+		return false
+	}
+	for k, v := range want {
+		actual, ok := have[k]
+		if !ok || !jsonEqual(v, actual) {
+			return false
+		}
+	}
+	return true
+}
+
+// objectFullyKnown reports whether an object and every attribute in it are
+// known.
+func objectFullyKnown(o types.Object) bool {
+	if o.IsUnknown() {
+		return false
+	}
+	for _, v := range o.Attributes() {
+		if v.IsUnknown() {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *DatabaseClusterResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {

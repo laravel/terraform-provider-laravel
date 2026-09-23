@@ -31,6 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the API, so they still show as added on the first plan after an import. That
   plan now carries a warning explaining that, when nothing else changes,
   applying it only records the value and leaves the resource as it is.
+- The first plan after importing a `laravel_cloud_database_cluster` no longer
+  proposes changing `config`, and applying it no longer sends a config update
+  to the cluster. An import records the API's full effective config, defaults
+  the configuration never sets included, and the plan proposed removing them.
+  `config` is now compared by content: when every configured key already has
+  the same value, nothing is planned, and an update that leaves `config` alone
+  sends nothing to the API.
+- Planning an in-place update of a `laravel_cloud_database_cluster` -- which
+  every plan after an import is, since `version` and `force_destroy` are never
+  reported -- no longer prints "this attribute value will no longer be marked
+  as sensitive" above `connection_details.password`. The whole object was
+  planned as unknown, which cannot carry the nested sensitive mark. The
+  recorded details, `status` and `created_at` are now kept unless `config`
+  changes, and a config change plans each connection detail as unknown while
+  keeping the password sensitive.
 
 ## [1.0.2] - 2026-09-19
 
