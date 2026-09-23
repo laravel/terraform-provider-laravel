@@ -61,8 +61,9 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Description: "Application name (3-40 characters).",
 			},
 			"repository": schema.StringAttribute{
-				Required:    true,
-				Description: "Source code repository (e.g. laravel/laravel).",
+				Required: true,
+				Description: "Source code repository (e.g. laravel/laravel). " +
+					"Use the owner/name form the platform reports: after an import, a URL or different casing shows as a change, and applying it updates the application's repository.",
 			},
 			"region": schema.StringAttribute{
 				Required:    true,
@@ -80,17 +81,23 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"cluster_id": schema.StringAttribute{
-				Optional:    true,
-				Description: "Dedicated cluster ID.",
+				Optional: true,
+				Description: "Dedicated cluster ID. " +
+					"The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.",
 				PlanModifiers: []planmodifier.String{
 					requiresReplaceUnlessImported(),
+					warnIfNotReported(),
 				},
 			},
 			"source_control_provider_type": schema.StringAttribute{
-				Optional:    true,
-				Description: "Source control provider type (github, gitlab, gitlab_self_hosted, or bitbucket). Becomes required by the API on March 9, 2026.",
+				Optional: true,
+				Description: "Source control provider type (github, gitlab, gitlab_self_hosted, or bitbucket). " +
+					"Becomes required by the API on March 9, 2026. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.",
 				Validators: []validator.String{
 					stringvalidator.OneOf("github", "gitlab", "gitlab_self_hosted", "bitbucket"),
+				},
+				PlanModifiers: []planmodifier.String{
+					warnIfNotReported(),
 				},
 			},
 			"slack_channel": schema.StringAttribute{
@@ -111,6 +118,9 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"created_at": schema.StringAttribute{
 				Computed:    true,
 				Description: "Creation timestamp.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 	}
@@ -221,7 +231,10 @@ func (r *ApplicationResource) Update(ctx context.Context, req resource.UpdateReq
 		v := plan.SlackChannel.ValueString()
 		updateReq.SlackChannel = &v
 	}
-	if !plan.SourceControlProviderType.IsNull() {
+	// The API reads source_control_provider_type only to resolve a repository
+	// being changed and discards it otherwise, so it goes out only alongside
+	// one. Adding it on its own then changes nothing, as its plan warning says.
+	if updateReq.Repository != nil && !plan.SourceControlProviderType.IsNull() {
 		v := plan.SourceControlProviderType.ValueString()
 		updateReq.SourceControlProviderType = &v
 	}
@@ -255,4 +268,22 @@ func (r *ApplicationResource) Delete(ctx context.Context, req resource.DeleteReq
 
 func (r *ApplicationResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Read never rewrites repository, so an import would leave it null and the
+	// first plan would propose adding it. It is seeded here instead. The API
+	// reports it as an object, not the "owner/name" string sent on create.
+	app, err := r.client.GetApplication(ctx, req.ID)
+	if err != nil {
+		if client.IsNotFound(err) {
+			return // Read reports the missing application.
+		}
+		resp.Diagnostics.AddError("Error importing application", err.Error())
+		return
+	}
+	if repo := app.Attributes.Repository; repo != nil && repo.FullName != "" {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("repository"), repo.FullName)...)
+	}
 }

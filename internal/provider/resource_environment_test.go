@@ -30,11 +30,11 @@ func TestAccEnvironmentResource_basic(t *testing.T) {
 				ResourceName:      "laravel_cloud_environment.test",
 				ImportState:       true,
 				ImportStateVerify: true,
-				// application_id is not in the GET response; branch, php_version
-				// and timeout are write-only (the API accepts them but never
-				// reports them back), so an imported environment cannot know
-				// them and leaves them null.
-				ImportStateVerifyIgnore: []string{"application_id", "branch", "php_version", "timeout"},
+				// application_id is not in the GET response; branch and timeout
+				// are write-only (the API accepts them but never reports them
+				// back), so an imported environment cannot know them and leaves
+				// them null.
+				ImportStateVerifyIgnore: []string{"application_id", "branch", "timeout"},
 			},
 		},
 	})

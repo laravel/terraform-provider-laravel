@@ -67,8 +67,9 @@ resource "laravel_cloud_background_process" "worker" {
 
 // runImportRecoversParent applies the config, then imports the named resource
 // by its bare id and requires the resulting state to match -- which it only can
-// if the parent id was read back from the relationship.
-func runImportRecoversParent(t *testing.T, config, addr string) {
+// if the parent id was read back from the relationship. ignore names attributes
+// an import legitimately records differently from a create.
+func runImportRecoversParent(t *testing.T, config, addr string, ignore ...string) {
 	t.Helper()
 
 	resource.Test(t, resource.TestCase{
@@ -76,10 +77,11 @@ func runImportRecoversParent(t *testing.T, config, addr string) {
 		Steps: []resource.TestStep{
 			{Config: config},
 			{
-				Config:            config,
-				ResourceName:      addr,
-				ImportState:       true,
-				ImportStateVerify: true,
+				Config:                  config,
+				ResourceName:            addr,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: ignore,
 			},
 		},
 	})
@@ -93,7 +95,9 @@ func runImportRecoversParent(t *testing.T, config, addr string) {
 func TestEnvironmentImportRecoversApplicationPlan(t *testing.T) {
 	_, baseURL := newFakeCloud(t)
 	config := providerCfg(baseURL) + appEnvStack
-	runImportRecoversParent(t, config, "laravel_cloud_environment.env")
+	// appEnvStack leaves php_version unset, which a create records as null
+	// while an import seeds it from the platform.
+	runImportRecoversParent(t, config, "laravel_cloud_environment.env", "php_version")
 }
 
 func TestDatabaseSnapshotImportRecoversClusterPlan(t *testing.T) {

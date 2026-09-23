@@ -112,16 +112,23 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"cluster_id": schema.StringAttribute{
-				Optional:    true,
-				Description: "Dedicated cluster ID.",
+				Optional: true,
+				Description: "Dedicated cluster ID. " +
+					"The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.",
 				PlanModifiers: []planmodifier.String{
 					requiresReplaceUnlessImported(),
+					warnIfNotReported(),
 				},
 			},
 			"php_version": schema.StringAttribute{
 				Optional: true,
+				Computed: true,
 				Description: "PHP version to run, in the API's \"major:minor\" form (e.g. \"8.4:1\"). " +
-					"Read back via the computed php_major_version attribute, which reports the major version only.",
+					"The API reports only the major version (see php_major_version), so an import " +
+					"derives this from it. A version changed outside Terraform is not detected.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"php_major_version": schema.StringAttribute{
 				Computed:    true,
@@ -405,6 +412,13 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		// cause "inconsistent result after apply".
 	}
 
+	// An unset php_version stays null rather than recording the platform's
+	// version: the API reports only the major version and Read never rewrites
+	// php_version, so a value recorded here would go stale on the first change
+	// made outside Terraform, and pinning that same version later would plan
+	// nothing. A configured one was sent in the PATCH above and stays as planned.
+	resolveUnknownStringToNull(&plan.PHPVersion)
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -535,6 +549,23 @@ func (r *EnvironmentResource) Delete(ctx context.Context, req resource.DeleteReq
 
 func (r *EnvironmentResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Read never touches php_version, so an import would leave it null and the
+	// first plan would propose adding the configured value even when the
+	// platform already runs it. Import is the one point where nothing is
+	// recorded, so it is seeded here from the major version the API reports.
+	env, err := r.client.GetEnvironment(ctx, req.ID)
+	if err != nil {
+		if client.IsNotFound(err) {
+			return // Read reports the missing environment.
+		}
+		resp.Diagnostics.AddError("Error importing environment", err.Error())
+		return
+	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("php_version"), phpVersionFromMajor(env.Attributes.PHPMajorVersion))...)
 }
 
 // buildEnvironmentUpdateFromStateDiff compares the plan against the current
@@ -789,7 +820,8 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 	state.Status = types.StringValue(env.Attributes.Status)
 	// php_version is not echoed by the API in the form it is sent, so it is
 	// left untouched here to preserve the configured value; the read-only
-	// major version is surfaced via php_major_version instead.
+	// major version is surfaced via php_major_version instead. An import
+	// seeds it, see ImportState.
 	state.PHPMajorVersion = types.StringValue(env.Attributes.PHPMajorVersion)
 	state.VanityDomain = types.StringPointerValue(env.Attributes.VanityDomain)
 	state.NodeVersion = types.StringValue(env.Attributes.NodeVersion)
@@ -808,6 +840,16 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 	// PATCH accepts them but the response never carries them back. Writing a
 	// zero value here would fight the configuration on every refresh, so the
 	// configured values are left in place and drift on them is not detectable.
+}
+
+// phpVersionFromMajor rebuilds php_version from the major version the API
+// reports: php_version is written as "8.4:1" but read back only as "8.4", and
+// every PHP version the API accepts is of the form "<major>:1".
+func phpVersionFromMajor(major string) types.String {
+	if major == "" {
+		return types.StringNull()
+	}
+	return types.StringValue(major + ":1")
 }
 
 // The helpers below resolve an unknown value on a write-only Optional+Computed

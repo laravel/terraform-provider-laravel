@@ -53,6 +53,15 @@ type ApplicationAttributes struct {
 	SlackChannel *string `json:"slack_channel"`
 	AvatarURL    *string `json:"avatar_url"`
 	CreatedAt    *string `json:"created_at"`
+	// Repository is reported as an object, not the "owner/name" string that
+	// create and update accept. Null when the application has no repository.
+	Repository *ApplicationRepository `json:"repository"`
+}
+
+// ApplicationRepository is the response-side repository object on an
+// application.
+type ApplicationRepository struct {
+	FullName string `json:"full_name"`
 }
 
 type CreateApplicationRequest struct {

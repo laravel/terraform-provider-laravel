@@ -33,6 +33,9 @@ type fakeCloud struct {
 	apps    map[string]*client.ApplicationData
 	envs    map[string]*client.EnvironmentData
 	appEnvs map[string][]string // application ID -> environment IDs
+	// appUpdates records every PATCH /applications body, in order, so tests
+	// can assert on what the provider sent rather than only on its result.
+	appUpdates []client.UpdateApplicationRequest
 
 	// Generic JSON:API store used by every resource other than applications
 	// and environments (which have bespoke handlers above). Keyed by
@@ -101,9 +104,10 @@ func (f *fakeCloud) createApplication(w http.ResponseWriter, r *http.Request) {
 		ID:   id,
 		Type: "applications",
 		Attributes: client.ApplicationAttributes{
-			Name:   req.Name,
-			Slug:   slugify(req.Name),
-			Region: req.Region,
+			Name:       req.Name,
+			Slug:       slugify(req.Name),
+			Region:     req.Region,
+			Repository: &client.ApplicationRepository{FullName: req.Repository},
 		},
 	}
 	f.apps[id] = app
@@ -137,6 +141,7 @@ func (f *fakeCloud) updateApplication(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("application not found"))
 		return
 	}
+	f.appUpdates = append(f.appUpdates, req)
 	if req.Name != nil {
 		app.Attributes.Name = *req.Name
 	}
@@ -145,6 +150,9 @@ func (f *fakeCloud) updateApplication(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.SlackChannel != nil {
 		app.Attributes.SlackChannel = req.SlackChannel
+	}
+	if req.Repository != nil {
+		app.Attributes.Repository = &client.ApplicationRepository{FullName: *req.Repository}
 	}
 	writeJSON(w, http.StatusOK, client.Document[client.ApplicationData]{Data: *app})
 }
