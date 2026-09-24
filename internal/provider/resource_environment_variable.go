@@ -35,7 +35,7 @@ func (r *EnvironmentVariableResource) Metadata(_ context.Context, req resource.M
 
 func (r *EnvironmentVariableResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages environment variables for a Laravel Cloud environment. Keys in this map are written on every apply, and a key removed from the map is deleted from the environment. Variables set outside Terraform are left alone.",
+		Description: "Manages environment variables for a Laravel Cloud environment. Keys in this map are written on every apply, and a key removed from the map is deleted from the environment. Variables set outside Terraform are left alone: they are neither read into state nor removed.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
@@ -104,8 +104,41 @@ func (r *EnvironmentVariableResource) Read(ctx context.Context, req resource.Rea
 		return
 	}
 
-	// The Laravel Cloud API does not expose a GET endpoint for environment variables.
-	// We trust that state is correct; Terraform detects drift via the plan diff.
+	// GET /environments/{id}/variables answers 405 -- that route takes POST
+	// only -- but the environment payload carries the variables, keys and
+	// values both, so drift is detectable after all.
+	env, err := r.client.GetEnvironment(ctx, state.EnvironmentID.ValueString())
+	if err != nil {
+		if client.IsNotFound(err) {
+			// The environment is gone, and with it the variables.
+			resp.State.RemoveResource(ctx)
+			return
+		}
+		resp.Diagnostics.AddError("Error reading environment variables", err.Error())
+		return
+	}
+
+	remote := make(map[string]string, len(env.Attributes.EnvironmentVariables))
+	for _, v := range env.Attributes.EnvironmentVariables {
+		remote[v.Key] = v.Value
+	}
+
+	// Only the keys already in state are refreshed. The environment also holds
+	// variables this resource never set -- from the dashboard, another tool, or
+	// the platform itself -- and adopting those would be actively destructive:
+	// they would enter state, the next plan would see them missing from the
+	// configuration, and Update would delete them. Reading is not a licence to
+	// take ownership of things Terraform did not create.
+	refreshed := make(map[string]types.String, len(state.Variables))
+	for key := range state.Variables {
+		if value, ok := remote[key]; ok {
+			refreshed[key] = types.StringValue(value)
+		}
+		// A key that is no longer there is dropped, which is what makes an
+		// external deletion show up as a diff that puts it back.
+	}
+	state.Variables = refreshed
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 

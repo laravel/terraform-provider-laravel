@@ -131,6 +131,12 @@ type EnvironmentAttributes struct {
 	NetworkSettings       EnvironmentNetwork `json:"network_settings"`
 	CreatedFromAutomation bool               `json:"created_from_automation"`
 	CreatedAt             *string            `json:"created_at"`
+	// EnvironmentVariables is the environment's variables, keys and plaintext
+	// values both. There is no GET on /environments/{id}/variables -- that
+	// route answers 405 and accepts POST only -- so this is the only way to
+	// read them back, and the reason laravel_cloud_environment_variables can
+	// detect drift at all.
+	EnvironmentVariables []EnvironmentVariable `json:"environment_variables"`
 }
 
 // EnvironmentNetwork is the response-side network_settings object. The cache

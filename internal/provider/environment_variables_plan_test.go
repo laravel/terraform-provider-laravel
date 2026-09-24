@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
@@ -82,4 +83,103 @@ resource "laravel_cloud_environment_variables" "vars" {
   variables = {%[2]s}
 }
 `, baseURL, vars)
+}
+
+// TestEnvironmentVariablesDriftPlan covers reading variables back.
+//
+// Read used to be a no-op on the belief that the API exposes no way to read
+// them: GET /environments/{id}/variables does answer 405, but the environment
+// payload carries them, keys and values both. Without that, a variable changed
+// or deleted outside Terraform was invisible forever and every plan came back
+// clean while the environment said otherwise.
+func TestEnvironmentVariablesDriftPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	config := environmentVariablesConfig(baseURL, `
+    API_KEY = "secret"
+`)
+
+	mutate := func(fn func(vars map[string]string)) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, vars := range f.vars {
+			fn(vars)
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config},
+			{
+				// Someone edits the value in the dashboard. The refresh must
+				// notice and plan to put the configured value back.
+				PreConfig: func() { mutate(func(v map[string]string) { v["API_KEY"] = "changed-elsewhere" }) },
+				Config:    config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("laravel_cloud_environment_variables.vars", plancheck.ResourceActionUpdate),
+					},
+				},
+			},
+			{
+				// Someone deletes it entirely. Same story.
+				PreConfig: func() { mutate(func(v map[string]string) { delete(v, "API_KEY") }) },
+				Config:    config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("laravel_cloud_environment_variables.vars", plancheck.ResourceActionUpdate),
+					},
+				},
+			},
+		},
+	})
+}
+
+// TestEnvironmentVariablesIgnoresUnmanagedPlan is the safety property that
+// makes reading variables back survivable.
+//
+// The environment also holds variables this resource never set. Adopting them
+// on refresh would put them in state, the next plan would see them missing from
+// the configuration, and Update -- which now deletes removed keys by name --
+// would delete them. Reading has to stay strictly narrower than owning, or
+// adding drift detection would quietly turn into deleting other people's
+// variables on the next apply.
+func TestEnvironmentVariablesIgnoresUnmanagedPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	config := environmentVariablesConfig(baseURL, `
+    API_KEY = "secret"
+`)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config},
+			{
+				// A variable arrives from outside Terraform.
+				PreConfig: func() {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					for _, vars := range f.vars {
+						vars["SET_IN_DASHBOARD"] = "keep me"
+					}
+				},
+				Config: config,
+				// It is not ours, so it must not produce a diff...
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				// ...and must still be on the environment afterwards.
+				Check: func(*terraform.State) error {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					for envID, vars := range f.vars {
+						if _, ok := vars["SET_IN_DASHBOARD"]; !ok {
+							return fmt.Errorf("environment %s lost the unmanaged variable: %v", envID, vars)
+						}
+					}
+					return nil
+				},
+			},
+		},
+	})
 }
