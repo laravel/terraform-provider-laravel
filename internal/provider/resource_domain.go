@@ -386,25 +386,38 @@ var domainDNSRecordsAttrTypes = map[string]attr.Type{
 
 // domainDNSRecordsObject converts the API's dns_records payload into the
 // Terraform object exposed on the resource.
+// The Must-free construction is deliberate: these values are built from an API
+// response, and a provider that panics on an unexpected payload takes the whole
+// Terraform run down with a stack trace instead of reporting drift.
 func domainDNSRecordsObject(r client.DomainDNSRecords) types.Object {
+	sslType := types.ObjectType{AttrTypes: domainSSLRecordAttrTypes}
+
 	ssl := make([]attr.Value, 0, len(r.SSL))
 	for _, rec := range r.SSL {
-		ssl = append(ssl, types.ObjectValueMust(domainSSLRecordAttrTypes, map[string]attr.Value{
+		obj, diags := types.ObjectValue(domainSSLRecordAttrTypes, map[string]attr.Value{
 			"type":  types.StringValue(rec.Type),
 			"name":  types.StringPointerValue(rec.Name),
 			"value": types.StringPointerValue(rec.Value),
-		}))
+		})
+		if diags.HasError() {
+			obj = types.ObjectNull(domainSSLRecordAttrTypes)
+		}
+		ssl = append(ssl, obj)
 	}
-	sslList, diags := types.ListValue(types.ObjectType{AttrTypes: domainSSLRecordAttrTypes}, ssl)
+	sslList, diags := types.ListValue(sslType, ssl)
 	if diags.HasError() {
-		sslList = types.ListNull(types.ObjectType{AttrTypes: domainSSLRecordAttrTypes})
+		sslList = types.ListNull(sslType)
 	}
 
-	return types.ObjectValueMust(domainDNSRecordsAttrTypes, map[string]attr.Value{
+	records, diags := types.ObjectValue(domainDNSRecordsAttrTypes, map[string]attr.Value{
 		"ssl":              sslList,
 		"pre_verification": types.StringValue(r.PreVerification),
 		"origin":           types.StringValue(r.Origin),
 		"origin_cname":     types.StringValue(r.OriginCNAME),
 		"dcv":              types.StringValue(r.DCV),
 	})
+	if diags.HasError() {
+		return types.ObjectNull(domainDNSRecordsAttrTypes)
+	}
+	return records
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -106,9 +107,14 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
+	// Read one byte past the cap so a truncated body is reported as such
+	// rather than as the JSON syntax error truncation would otherwise cause.
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
 	if err != nil {
 		return fmt.Errorf("reading response body: %w", err)
+	}
+	if len(respBody) > maxResponseSize {
+		return fmt.Errorf("response from %s %s exceeds the %d byte limit", method, u, maxResponseSize)
 	}
 
 	// A redirect means the request never reached the API handler it was aimed
@@ -198,29 +204,30 @@ func (e *APIError) Error() string {
 
 // IsNotFound returns true if the error is a 404.
 func IsNotFound(err error) bool {
-	if apiErr, ok := err.(*APIError); ok {
-		return apiErr.StatusCode == 404
-	}
-	return false
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == 404
 }
 
 // RetryOnConflict retries operation up to maxAttempts when isRetryable returns
 // true for the error. It respects context cancellation between attempts.
+//
+// An error isRetryable rejects is returned immediately. Falling through to the
+// next attempt instead would re-run the operation with no delay until the
+// attempt budget ran out -- turning one rejected create into 30 identical POSTs
+// in a few microseconds, each able to leave behind a resource of its own.
 func RetryOnConflict(ctx context.Context, maxAttempts int, interval time.Duration, operation func() error, isRetryable func(error) bool) error {
-	var err error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		err = operation()
+	for attempt := 1; ; attempt++ {
+		err := operation()
 		if err == nil {
 			return nil
 		}
-		if attempt < maxAttempts && isRetryable(err) {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(interval):
-				continue
-			}
+		if attempt >= maxAttempts || !isRetryable(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
 		}
 	}
-	return err
 }

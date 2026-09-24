@@ -5,6 +5,97 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-09-24
+
+### Upgrade notes
+
+Every change below is a bug fix, but five of them alter what an existing
+configuration does, so this is a minor rather than a patch release.
+
+- A `laravel_cloud_instance.hibernation_timeout` outside 1-60 now fails at
+  plan. Such a configuration planned and applied cleanly before, because the
+  value was never sent anywhere; the API has always rejected it.
+- An empty `cors_settings.allowed_methods` now fails at plan, for the same
+  reason.
+- Removing a key from `laravel_cloud_environment_variables.variables` now
+  deletes that variable from the environment instead of doing nothing. Check
+  for keys dropped from a configuration while the old behaviour was in force:
+  they are still live, and the next apply will remove them.
+- Removing the `cors_settings` block from a `laravel_cloud_storage_bucket` now
+  empties its `allowed_origins` instead of doing nothing.
+- `laravel_cloud_environment_variables` now refreshes, so the first plan after
+  upgrading may show a change for a variable that was edited outside Terraform
+  while drift was undetectable. Variables this resource never set are not
+  adopted and not deleted.
+
+### Fixed
+
+- A create or delete the API rejects for a reason that is not a conflict is no
+  longer retried 30 times in a row with no delay between attempts.
+  `RetryOnConflict` returned to the top of its loop instead of returning the
+  error, and only the retrying branch waits, so a single rejected request was
+  re-sent 30 times in a few microseconds. On `laravel_cloud_database` creation
+  that is the shape that leaves duplicate schemas behind.
+- Emptying or removing `cors_settings` on a `laravel_cloud_storage_bucket` now
+  reaches the bucket. Every list inside it was dropped from the request exactly
+  when it was emptied, and the API merges this object into the bucket's current
+  rules rather than replacing it, so sending nothing meant "leave it alone":
+  Terraform recorded the origins as gone while the bucket went on serving them,
+  and no refresh could notice because `cors_settings` is deliberately not read
+  back. Clearing `expose_headers` and `allowed_headers` was silently ignored
+  for the same reason.
+- Applying a `laravel_cloud_storage_bucket` that sets `cors_settings` no longer
+  fails with "Provider produced inconsistent result after apply". The
+  deprecated `allowed_origins` is an alias the API reports populated even for a
+  configuration that never set it, and the provider wrote that value into an
+  attribute the plan said was null. It is now refreshed only for
+  configurations that use the deprecated attribute.
+- Removing a key from `laravel_cloud_environment_variables.variables` now
+  deletes that variable from the environment. The API's `set` call writes the
+  keys it is given rather than replacing the whole set -- which is why it keeps
+  a separate delete route -- so a removed variable stayed live while Terraform
+  reported it gone. For a resource that holds credentials, taking a secret out
+  of a configuration looked like it worked and changed nothing.
+- `laravel_cloud_environment_variables` now detects drift. Its read was a no-op
+  on the belief that the API exposes no way to read variables back:
+  `GET /environments/{id}/variables` does answer 405, but the environment
+  payload carries them, keys and values both. A variable changed or deleted
+  outside Terraform was invisible and every plan came back clean. Only the keys
+  already in state are refreshed -- variables this resource never set are
+  neither adopted nor deleted.
+- Creating a `laravel_cloud_environment` no longer creates a duplicate when the
+  API is briefly unavailable. Laravel Cloud makes a default environment
+  alongside an application, so the provider lists the existing ones and adopts
+  a name match; that listing's error was discarded and the fallthrough created
+  exactly the duplicate it was there to prevent -- live, billing, and absent
+  from the state file that had just been written. It is now an error, and the
+  apply can be retried.
+- `laravel_cloud_instance` now applies `uses_octane`, `uses_inertia_ssr` and
+  `hibernation_timeout` when they are set on create. The create route ignores
+  all three and the API never reports them back, so state claimed settings the
+  platform had never been told about and no later refresh could catch it. They
+  are applied with a follow-up update.
+- A 404 wrapped in another error is recognised again, a response larger than
+  the 1 MB cap reports its size instead of surfacing as a JSON syntax error,
+  and a `laravel_cloud_domain` whose DNS records arrive in an unexpected shape
+  no longer panics the provider.
+
+### Changed
+
+- Removing the `cors_settings` block from a `laravel_cloud_storage_bucket` now
+  empties `allowed_origins`. CORS cannot be taken off a bucket: the API ignores
+  both `cors_settings: null` and `{}`, and rejects an empty `allowed_methods`
+  with "At least one method must be provided", so no origins is the only state
+  it accepts that means "allow nothing".
+- `cors_settings.allowed_methods` is rejected at plan time when empty, and
+  `laravel_cloud_instance.hibernation_timeout` is rejected at plan time outside
+  1-60, both of which the API refuses at apply. A configuration that carries an
+  out-of-range `hibernation_timeout` planned cleanly before, because the value
+  was never sent anywhere.
+- `laravel_cloud_storage_bucket.allowed_origins` is documented as a live alias
+  of `cors_settings.allowed_origins` -- writing either updates both. It was
+  announced for removal from the API on May 17, 2026 but is still served.
+
 ## [1.0.3] - 2026-09-23
 
 ### Deprecated

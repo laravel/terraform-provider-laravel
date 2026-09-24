@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -50,6 +51,11 @@ type fakeCloud struct {
 	// patches records every PATCH body the generic engine received, by type,
 	// so tests can assert on what the provider sent.
 	patches map[string][]map[string]any
+
+	// vars holds environment variables as the API does: environment ID -> key
+	// -> value. Modelled as an upsert store rather than a whole-set replace,
+	// because that is what the separate /variables/delete route implies.
+	vars map[string]map[string]string
 }
 
 // newFakeCloud starts an httptest.Server backed by a fresh in-memory store and
@@ -65,6 +71,7 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 		objects:  map[string]map[string]map[string]any{},
 		children: map[string][]string{},
 		parents:  map[string]map[string]string{},
+		vars:     map[string]map[string]string{},
 	}
 
 	mux := http.NewServeMux()
@@ -276,10 +283,24 @@ func (f *fakeCloud) getEnvironment(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	env, ok := f.envs[r.PathValue("id")]
+	id := r.PathValue("id")
+	env, ok := f.envs[id]
 	if !ok {
 		writeError(w, http.StatusNotFound, fmt.Errorf("environment not found"))
 		return
+	}
+	// The real API reports the environment's variables here -- there is no GET
+	// on /environments/{id}/variables, that route answers 405 -- so this is
+	// where the variables resource reads them back from.
+	keys := make([]string, 0, len(f.vars[id]))
+	for k := range f.vars[id] {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	env.Attributes.EnvironmentVariables = nil
+	for _, k := range keys {
+		env.Attributes.EnvironmentVariables = append(env.Attributes.EnvironmentVariables,
+			client.EnvironmentVariable{Key: k, Value: f.vars[id][k]})
 	}
 	writeJSON(w, http.StatusOK, environmentDoc(env))
 }

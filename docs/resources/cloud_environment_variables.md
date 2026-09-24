@@ -3,12 +3,12 @@
 page_title: "laravel_cloud_environment_variables Resource - Laravel Cloud"
 subcategory: ""
 description: |-
-  Manages environment variables for a Laravel Cloud environment. This resource replaces ALL environment variables on every apply.
+  Manages environment variables for a Laravel Cloud environment. Keys in this map are written on every apply, and a key removed from the map is deleted from the environment. Variables set outside Terraform are left alone: they are neither read into state nor removed.
 ---
 
 # laravel_cloud_environment_variables (Resource)
 
-Manages environment variables for a Laravel Cloud environment. This resource replaces ALL environment variables on every apply.
+Manages environment variables for a Laravel Cloud environment. Keys in this map are written on every apply, and a key removed from the map is deleted from the environment. Variables set outside Terraform are left alone: they are neither read into state nor removed.
 
 ## Example Usage
 
@@ -49,7 +49,7 @@ resource "laravel_cloud_environment_variables" "example" {
 ### Required
 
 - `environment_id` (String) Environment ID.
-- `variables` (Map of String, Sensitive) Map of environment variable key-value pairs. All variables are replaced on each apply.
+- `variables` (Map of String, Sensitive) Map of environment variable key-value pairs. Removing a key deletes that variable from the environment.
 
 ### Read-Only
 

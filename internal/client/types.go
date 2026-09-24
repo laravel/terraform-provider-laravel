@@ -131,6 +131,12 @@ type EnvironmentAttributes struct {
 	NetworkSettings       EnvironmentNetwork `json:"network_settings"`
 	CreatedFromAutomation bool               `json:"created_from_automation"`
 	CreatedAt             *string            `json:"created_at"`
+	// EnvironmentVariables is the environment's variables, keys and plaintext
+	// values both. There is no GET on /environments/{id}/variables -- that
+	// route answers 405 and accepts POST only -- so this is the only way to
+	// read them back, and the reason laravel_cloud_environment_variables can
+	// detect drift at all.
+	EnvironmentVariables []EnvironmentVariable `json:"environment_variables"`
 }
 
 // EnvironmentNetwork is the response-side network_settings object. The cache
@@ -492,20 +498,30 @@ type StorageBucketAttributes struct {
 
 // CorsSettings is the modern CORS configuration object accepted on bucket
 // create/update, superseding the deprecated top-level allowed_origins field.
+// The list fields are pointers, not plain slices, because the API merges a
+// cors_settings body into what the bucket already has: a field that is absent
+// is left alone, so an emptied list has to arrive as an explicit [] rather than
+// being dropped by omitempty. With plain slices, clearing allowed_origins or
+// expose_headers sent nothing and the old values stayed on the bucket.
 type CorsSettings struct {
-	AllowedOrigins []string `json:"allowed_origins,omitempty"`
-	AllowedMethods []string `json:"allowed_methods,omitempty"`
-	AllowedHeaders []string `json:"allowed_headers,omitempty"`
-	ExposeHeaders  []string `json:"expose_headers,omitempty"`
-	MaxAgeSeconds  *int     `json:"max_age_seconds,omitempty"`
+	AllowedOrigins *[]string `json:"allowed_origins,omitempty"`
+	AllowedMethods *[]string `json:"allowed_methods,omitempty"`
+	AllowedHeaders *[]string `json:"allowed_headers,omitempty"`
+	ExposeHeaders  *[]string `json:"expose_headers,omitempty"`
+	MaxAgeSeconds  *int      `json:"max_age_seconds,omitempty"`
 }
 
 type UpdateStorageBucketRequest struct {
 	Name         *string       `json:"name,omitempty"`
 	Visibility   *string       `json:"visibility,omitempty"`
 	CorsSettings *CorsSettings `json:"cors_settings,omitempty"`
-	// Deprecated: use CorsSettings. Removed from the API May 17, 2026.
-	AllowedOrigins []string `json:"allowed_origins,omitempty"`
+	// Deprecated: use CorsSettings. This is a live alias for
+	// cors_settings.allowed_origins -- writing either updates both -- despite
+	// having been announced for removal on May 17, 2026.
+	//
+	// A pointer for the same reason as the websocket application's
+	// allowed_origins: an explicitly empty list is how the list is cleared.
+	AllowedOrigins *[]string `json:"allowed_origins,omitempty"`
 }
 
 type CreateStorageBucketRequest struct {

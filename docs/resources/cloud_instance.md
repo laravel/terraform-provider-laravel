@@ -53,7 +53,7 @@ resource "laravel_cloud_instance" "example" {
 
 ### Optional
 
-- `hibernation_timeout` (Number) Hibernation timeout in seconds. Applied on update only.
+- `hibernation_timeout` (Number) Hibernation timeout in seconds (1-60). The create route ignores it, so on create the provider applies it with a follow-up update.
 - `max_replicas` (Number) Maximum number of replicas. Only applicable to the "custom" scaling type; the API rejects it for "auto".
 - `min_replicas` (Number) Minimum number of replicas. Only applicable to the "custom" scaling type; the API rejects it for "auto", and it does not apply to managed queues, which always scale to zero when idle.
 - `scaling_cpu_threshold_percentage` (Number) CPU scaling threshold (50-95).
@@ -61,8 +61,8 @@ resource "laravel_cloud_instance" "example" {
 - `shutdown_timeout` (Number) Queue shutdown timeout in seconds (managed_queue).
 - `sleep_with_app` (Boolean) Whether the instance sleeps with the app (managed_queue).
 - `type` (String) Instance type (service or managed_queue). Defaults to service when not set.
-- `uses_inertia_ssr` (Boolean) Whether the instance uses Inertia SSR. Applied on update only.
-- `uses_octane` (Boolean) Whether the instance uses Laravel Octane. Applied on update only.
+- `uses_inertia_ssr` (Boolean) Whether the instance uses Inertia SSR. The create route ignores it, so on create the provider applies it with a follow-up update.
+- `uses_octane` (Boolean) Whether the instance uses Laravel Octane. The create route ignores it, so on create the provider applies it with a follow-up update.
 - `uses_scheduler` (Boolean)
 - `visibility_timeout` (Number) Queue visibility timeout in seconds (managed_queue).
 
