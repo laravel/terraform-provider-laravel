@@ -5,7 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-09-24
+
+### Upgrade notes
+
+Every change below is a bug fix, but five of them alter what an existing
+configuration does, so this is a minor rather than a patch release.
+
+- A `laravel_cloud_instance.hibernation_timeout` outside 1-60 now fails at
+  plan. Such a configuration planned and applied cleanly before, because the
+  value was never sent anywhere; the API has always rejected it.
+- An empty `cors_settings.allowed_methods` now fails at plan, for the same
+  reason.
+- Removing a key from `laravel_cloud_environment_variables.variables` now
+  deletes that variable from the environment instead of doing nothing. Check
+  for keys dropped from a configuration while the old behaviour was in force:
+  they are still live, and the next apply will remove them.
+- Removing the `cors_settings` block from a `laravel_cloud_storage_bucket` now
+  empties its `allowed_origins` instead of doing nothing.
+- `laravel_cloud_environment_variables` now refreshes, so the first plan after
+  upgrading may show a change for a variable that was edited outside Terraform
+  while drift was undetectable. Variables this resource never set are not
+  adopted and not deleted.
 
 ### Fixed
 
