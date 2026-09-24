@@ -5,44 +5,57 @@ import (
 	"testing"
 )
 
-// TestUpdateStorageBucketRequestCORSStates pins the three things a bucket PATCH
-// body has to be able to say about CORS.
+// TestUpdateStorageBucketRequestCORSStates pins the bucket PATCH body against
+// what the live API actually honours, which is narrower than it looks:
 //
-// The field used to be a *CorsSettings with omitempty, which can only express
-// "absent" and "an object". Removing the cors_settings block from a
-// configuration therefore sent nothing at all: Terraform recorded the rules as
-// gone while the bucket kept serving them, and no later apply could take them
-// off, because a cleared value always marshalled to the same empty body.
+//   - cors_settings is MERGED into the bucket's current rules, so a field that
+//     is absent is left alone and an emptied list only takes effect when it
+//     arrives as an explicit [].
+//   - cors_settings: null and cors_settings: {} are both accepted with 200 and
+//     silently ignored, so neither can be used to clear anything.
+//   - allowed_methods: [] is rejected with 422 "At least one method must be
+//     provided", so CORS can never be removed outright.
+//
+// The plain-slice fields this struct used to carry were dropped by omitempty
+// exactly when they were emptied, which is why clearing origins did nothing.
 func TestUpdateStorageBucketRequestCORSStates(t *testing.T) {
-	origins := []string{"https://example.com"}
-
 	tests := []struct {
 		name string
 		req  UpdateStorageBucketRequest
 		want string
 	}{
 		{
-			name: "unchanged omits both CORS fields",
+			name: "unchanged omits the CORS fields entirely",
 			req:  UpdateStorageBucketRequest{Name: strPtr("bucket")},
 			want: `{"name":"bucket"}`,
 		},
 		{
-			name: "cleared sends an explicit null",
-			req:  UpdateStorageBucketRequest{CorsSettings: ClearJSON()},
-			want: `{"cors_settings":null}`,
+			name: "emptied origins survive omitempty as an explicit []",
+			req:  UpdateStorageBucketRequest{CorsSettings: &CorsSettings{AllowedOrigins: &[]string{}}},
+			want: `{"cors_settings":{"allowed_origins":[]}}`,
 		},
 		{
-			name: "set sends the object",
-			req:  UpdateStorageBucketRequest{CorsSettings: JSONValue(&CorsSettings{AllowedOrigins: origins})},
+			name: "an unset sub-field stays absent so the merge leaves it alone",
+			req: UpdateStorageBucketRequest{CorsSettings: &CorsSettings{
+				AllowedOrigins: &[]string{"https://example.com"},
+			}},
 			want: `{"cors_settings":{"allowed_origins":["https://example.com"]}}`,
 		},
 		{
-			name: "emptied allowed_origins sends an empty list, not nothing",
+			name: "emptied expose_headers is sent, not dropped",
+			req: UpdateStorageBucketRequest{CorsSettings: &CorsSettings{
+				AllowedMethods: &[]string{"GET"},
+				ExposeHeaders:  &[]string{},
+			}},
+			want: `{"cors_settings":{"allowed_methods":["GET"],"expose_headers":[]}}`,
+		},
+		{
+			name: "emptied deprecated allowed_origins alias is sent as []",
 			req:  UpdateStorageBucketRequest{AllowedOrigins: &[]string{}},
 			want: `{"allowed_origins":[]}`,
 		},
 		{
-			name: "untouched allowed_origins is omitted",
+			name: "untouched allowed_origins alias is omitted",
 			req:  UpdateStorageBucketRequest{AllowedOrigins: nil},
 			want: `{}`,
 		},

@@ -62,6 +62,43 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 				a["status"] = "available"
 				return a
 			},
+			// The real API MERGES a cors_settings body into the bucket's
+			// current rules rather than replacing it: an absent sub-field is
+			// left alone, so only an explicit [] empties a list. It also keeps
+			// the deprecated top-level allowed_origins as a live alias of
+			// cors_settings.allowed_origins -- writing either updates both.
+			patchFn: func(attrs, patch map[string]any) {
+				for k, v := range patch {
+					if k != "cors_settings" {
+						attrs[k] = v
+						continue
+					}
+					incoming, ok := v.(map[string]any)
+					if !ok {
+						continue // null and {} are ignored by the API
+					}
+					cors, _ := attrs["cors_settings"].(map[string]any)
+					if cors == nil {
+						cors = map[string]any{}
+					} else {
+						cors = cloneMap(cors)
+					}
+					for ck, cv := range incoming {
+						cors[ck] = cv
+					}
+					attrs["cors_settings"] = cors
+				}
+				if origins, ok := patch["allowed_origins"]; ok {
+					if cors, ok := attrs["cors_settings"].(map[string]any); ok {
+						cors["allowed_origins"] = origins
+					}
+				}
+				if cors, ok := attrs["cors_settings"].(map[string]any); ok {
+					if origins, ok := cors["allowed_origins"]; ok {
+						attrs["allowed_origins"] = origins
+					}
+				}
+			},
 		},
 		{
 			typeName: "websocket_server", idPrefix: "wss",

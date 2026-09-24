@@ -156,21 +156,7 @@ func AttachID(id string) json.RawMessage {
 
 // DetachID renders JSON null, which is how the API is told to detach a
 // database, cache or websocket application from an environment.
-func DetachID() json.RawMessage { return ClearJSON() }
-
-// ClearJSON renders JSON null: on a field that is otherwise omitted when
-// absent, it is the difference between "leave this alone" and "clear it".
-func ClearJSON() json.RawMessage { return json.RawMessage("null") }
-
-// JSONValue marshals v for a raw-JSON request field, returning null when it
-// cannot be encoded rather than emitting invalid JSON into the body.
-func JSONValue(v any) json.RawMessage {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return ClearJSON()
-	}
-	return b
-}
+func DetachID() json.RawMessage { return json.RawMessage("null") }
 
 type CreateEnvironmentRequest struct {
 	Branch    string  `json:"branch"`
@@ -506,24 +492,27 @@ type StorageBucketAttributes struct {
 
 // CorsSettings is the modern CORS configuration object accepted on bucket
 // create/update, superseding the deprecated top-level allowed_origins field.
+// The list fields are pointers, not plain slices, because the API merges a
+// cors_settings body into what the bucket already has: a field that is absent
+// is left alone, so an emptied list has to arrive as an explicit [] rather than
+// being dropped by omitempty. With plain slices, clearing allowed_origins or
+// expose_headers sent nothing and the old values stayed on the bucket.
 type CorsSettings struct {
-	AllowedOrigins []string `json:"allowed_origins,omitempty"`
-	AllowedMethods []string `json:"allowed_methods,omitempty"`
-	AllowedHeaders []string `json:"allowed_headers,omitempty"`
-	ExposeHeaders  []string `json:"expose_headers,omitempty"`
-	MaxAgeSeconds  *int     `json:"max_age_seconds,omitempty"`
+	AllowedOrigins *[]string `json:"allowed_origins,omitempty"`
+	AllowedMethods *[]string `json:"allowed_methods,omitempty"`
+	AllowedHeaders *[]string `json:"allowed_headers,omitempty"`
+	ExposeHeaders  *[]string `json:"expose_headers,omitempty"`
+	MaxAgeSeconds  *int      `json:"max_age_seconds,omitempty"`
 }
 
 type UpdateStorageBucketRequest struct {
-	Name       *string `json:"name,omitempty"`
-	Visibility *string `json:"visibility,omitempty"`
-	// CorsSettings is raw JSON so the body can say three different things:
-	// absent (leave the bucket's CORS alone), null (clear it), or an object
-	// (replace it). A *CorsSettings could only ever say the first and third,
-	// so removing the cors_settings block from a configuration sent nothing
-	// and the rules stayed on the bucket for good. See ClearJSON.
-	CorsSettings json.RawMessage `json:"cors_settings,omitempty"`
-	// Deprecated: use CorsSettings. Removed from the API May 17, 2026.
+	Name         *string       `json:"name,omitempty"`
+	Visibility   *string       `json:"visibility,omitempty"`
+	CorsSettings *CorsSettings `json:"cors_settings,omitempty"`
+	// Deprecated: use CorsSettings. This is a live alias for
+	// cors_settings.allowed_origins -- writing either updates both -- despite
+	// having been announced for removal on May 17, 2026.
+	//
 	// A pointer for the same reason as the websocket application's
 	// allowed_origins: an explicitly empty list is how the list is cleared.
 	AllowedOrigins *[]string `json:"allowed_origins,omitempty"`

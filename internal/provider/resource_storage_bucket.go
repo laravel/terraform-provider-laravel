@@ -16,8 +16,9 @@ import (
 )
 
 var (
-	_ resource.Resource                = &StorageBucketResource{}
-	_ resource.ResourceWithImportState = &StorageBucketResource{}
+	_ resource.Resource                   = &StorageBucketResource{}
+	_ resource.ResourceWithImportState    = &StorageBucketResource{}
+	_ resource.ResourceWithValidateConfig = &StorageBucketResource{}
 )
 
 type StorageBucketResource struct {
@@ -104,7 +105,7 @@ func (r *StorageBucketResource) Schema(_ context.Context, _ resource.SchemaReque
 				Optional:           true,
 				Description:        "Allowed CORS origins.",
 				ElementType:        types.StringType,
-				DeprecationMessage: "allowed_origins was removed from the Laravel Cloud API on May 17, 2026 and is superseded by cors_settings. Use cors_settings.allowed_origins instead.",
+				DeprecationMessage: "allowed_origins is an alias for cors_settings.allowed_origins -- writing either updates both. It was announced for removal from the Laravel Cloud API on May 17, 2026 but is still served; use cors_settings.allowed_origins instead.",
 			},
 			"cors_settings": schema.SingleNestedAttribute{
 				Optional:    true,
@@ -272,9 +273,14 @@ func (r *StorageBucketResource) Update(ctx context.Context, req resource.UpdateR
 		if resp.Diagnostics.HasError() {
 			return
 		}
-		updateReq.CorsSettings = client.JSONValue(cors)
+		updateReq.CorsSettings = cors
 	case state.CorsSettings != nil:
-		updateReq.CorsSettings = client.ClearJSON()
+		// The block was removed. There is no way to take CORS off a bucket
+		// outright: the API ignores both cors_settings: null and {}, and
+		// rejects an empty allowed_methods with "At least one method must be
+		// provided". Emptying the origin list is the one state it accepts that
+		// means "allow nothing", so that is what removing the block does.
+		updateReq.CorsSettings = &client.CorsSettings{AllowedOrigins: &[]string{}}
 	}
 
 	bucket, err := r.client.UpdateStorageBucket(ctx, state.ID.ValueString(), updateReq)
@@ -312,7 +318,7 @@ func buildCorsSettings(ctx context.Context, m *CorsSettingsModel) (*client.CorsS
 
 	for _, f := range []struct {
 		list types.List
-		dst  *[]string
+		dst  **[]string
 	}{
 		{m.AllowedOrigins, &cors.AllowedOrigins},
 		{m.AllowedMethods, &cors.AllowedMethods},
@@ -322,9 +328,11 @@ func buildCorsSettings(ctx context.Context, m *CorsSettingsModel) (*client.CorsS
 		if f.list.IsNull() || f.list.IsUnknown() {
 			continue
 		}
-		var values []string
+		// Non-nil even when empty: the API merges this body into the bucket's
+		// current rules, so an emptied list only takes effect as an explicit [].
+		values := []string{}
 		diags.Append(f.list.ElementsAs(ctx, &values, false)...)
-		*f.dst = values
+		*f.dst = &values
 	}
 
 	if !m.MaxAgeSeconds.IsNull() && !m.MaxAgeSeconds.IsUnknown() {
@@ -344,7 +352,14 @@ func mapStorageBucketToState(ctx context.Context, b *client.StorageBucketData, s
 	state.URL = types.StringPointerValue(b.Attributes.URL)
 	state.Status = types.StringValue(b.Attributes.Status)
 	state.CreatedAt = types.StringPointerValue(b.Attributes.CreatedAt)
-	if b.Attributes.AllowedOrigins != nil {
+	// allowed_origins is Optional but not Computed, and the API reports it as a
+	// live alias of cors_settings.allowed_origins -- it comes back populated
+	// even for a configuration that only ever set cors_settings. Adopting it
+	// unconditionally then wrote a value into an attribute the plan said was
+	// null, which Terraform rejects outright as "Provider produced inconsistent
+	// result after apply". It is refreshed only for configurations that
+	// actually use the deprecated attribute.
+	if b.Attributes.AllowedOrigins != nil && !state.AllowedOrigins.IsNull() {
 		list, d := types.ListValueFrom(ctx, types.StringType, b.Attributes.AllowedOrigins)
 		diags.Append(d...)
 		state.AllowedOrigins = list
@@ -355,4 +370,30 @@ func mapStorageBucketToState(ctx context.Context, b *client.StorageBucketData, s
 	// is json.RawMessage), so round-tripping it into the typed nested object would
 	// risk spurious diffs. We instead preserve the configured value as-is,
 	// mirroring how this provider handles other write-mostly fields.
+}
+
+// ValidateConfig moves the API's one CORS invariant from a runtime 422 to a
+// plan-time error: cors_settings.allowed_methods must name at least one method,
+// so an explicitly empty list can never apply.
+//
+// Emptying allowed_origins is the supported way to turn CORS off; emptying the
+// method list is simply rejected.
+func (r *StorageBucketResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var config StorageBucketResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() || config.CorsSettings == nil {
+		return
+	}
+
+	methods := config.CorsSettings.AllowedMethods
+	if methods.IsNull() || methods.IsUnknown() || len(methods.Elements()) > 0 {
+		return
+	}
+	resp.Diagnostics.AddAttributeError(
+		path.Root("cors_settings").AtName("allowed_methods"),
+		"cors_settings.allowed_methods cannot be empty",
+		"The Laravel Cloud API rejects an empty allowed_methods with \"At least one method "+
+			"must be provided\". Remove the attribute to leave the bucket's methods unchanged, "+
+			"or set allowed_origins = [] to stop the bucket accepting any cross-origin request.",
+	)
 }
