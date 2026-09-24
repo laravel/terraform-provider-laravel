@@ -53,7 +53,7 @@ resource "laravel_cloud_instance" "example" {
 
 ### Optional
 
-- `hibernation_timeout` (Number) Hibernation timeout in seconds. The create route ignores it, so on create the provider applies it with a follow-up update.
+- `hibernation_timeout` (Number) Hibernation timeout in seconds (1-60). The create route ignores it, so on create the provider applies it with a follow-up update.
 - `max_replicas` (Number) Maximum number of replicas. Only applicable to the "custom" scaling type; the API rejects it for "auto".
 - `min_replicas` (Number) Minimum number of replicas. Only applicable to the "custom" scaling type; the API rejects it for "auto", and it does not apply to managed queues, which always scale to zero when idle.
 - `scaling_cpu_threshold_percentage` (Number) CPU scaling threshold (50-95).
