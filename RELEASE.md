@@ -4,7 +4,8 @@
 
 1. A GPG key for signing releases, registered on the Terraform Registry under
    the `laravel` namespace
-2. Repository secrets configured:
+2. Repository secrets configured (and the release token, see
+   [Release token](#release-token)):
    - `GPG_PRIVATE_KEY` — ASCII-armored GPG private key
    - `GPG_PASSPHRASE` — only required if the signing key carries a passphrase.
      The current release key (rsa4096 `B8F24FC7CA47EF85`,
@@ -39,22 +40,69 @@ GitHub org and the provider name is the repository suffix. This is what
 
 ## Creating a Release
 
-1. Ensure all changes are merged to `main`
-2. Update `CHANGELOG.md` with the new version's entries
-3. Create and push a version tag:
+Releases are cut by [release-please](https://github.com/googleapis/release-please)
+(`.github/workflows/release-please.yml`). There is no changelog to edit and no
+tag to push.
 
-```sh
-git tag v1.0.0
-git push origin v1.0.0
-```
+1. Merge pull requests into `main` with a
+   [conventional-commit](https://www.conventionalcommits.org/) title. The
+   `PR Title` check enforces this, and the squash-merged title is what
+   release-please reads:
 
-Pushing a `v*` tag triggers `.github/workflows/release.yml`, which will:
+   | Title                                   | Changelog section | Bump  |
+   | --------------------------------------- | ----------------- | ----- |
+   | `feat(environment): add foo`            | Features          | minor |
+   | `fix(import): stop false diffs`         | Bug Fixes         | patch |
+   | `perf: …`, `revert: …`, `deps: …`       | own section       | patch |
+   | `docs:`, `refactor:`, `test:`, `ci:`, `build:`, `chore:` | hidden | none |
+   | `feat!: …` or a `BREAKING CHANGE:` footer | flagged as breaking | major |
 
-- Build binaries for all supported platforms via GoReleaser
-- Create SHA256 checksums
-- Sign the checksums with GPG
-- Attach `terraform-registry-manifest.json` as `<project>_<version>_manifest.json`
-- Publish a GitHub release
+   Write the title for provider users: it becomes the changelog line. Put
+   upgrade notes a user must act on in a `BREAKING CHANGE:` footer in the
+   squash commit body, which release-please copies into the changelog.
+
+2. release-please keeps a `chore(main): release X.Y.Z` pull request open and
+   updates it on every push to `main`, with the next version and the
+   `CHANGELOG.md` entry. Review the entry there. release-please regenerates
+   both the PR body (which becomes the release notes) and `CHANGELOG.md` on
+   that branch on every push to `main`, so hand edits only survive if they
+   are made right before merging the release PR.
+
+3. Merge the release PR. release-please then creates the `vX.Y.Z` tag and a
+   **draft** GitHub release with the notes. The tag push runs
+   `.github/workflows/release.yml`, which:
+
+   - Validates the tag is semver and not lower than the latest tag
+   - Builds binaries for all supported platforms via GoReleaser
+   - Creates SHA256 checksums and signs them with GPG
+   - Attaches `terraform-registry-manifest.json` as `<project>_<version>_manifest.json`
+   - Uploads everything into the draft and then publishes it
+
+   The release stays a draft until every asset is uploaded, because the
+   Registry ingests a version as soon as its release is published.
+
+To force a specific version, add a `Release-As: 2.0.0` footer to a commit on
+`main`.
+
+### Release token
+
+GitHub does not start workflows for events caused by the built-in
+`GITHUB_TOKEN`, so release-please authenticates as a GitHub App. Otherwise
+the release PR would never run the required CI checks, and the tag would
+never start `release.yml`.
+
+- The App needs **Contents: read & write** and **Pull requests: read & write**
+  on this repository.
+- Store its App ID as the repository **variable** `RELEASE_APP_ID` and its
+  private key as the repository **secret** `RELEASE_APP_PRIVATE_KEY`.
+
+### Manual fallback
+
+Pushing a `v*` tag by hand still runs `release.yml`. With no release-please
+draft to reuse, GoReleaser creates the release itself and generates notes
+from the commit log. Add the matching `CHANGELOG.md` entry and bump
+`.release-please-manifest.json` in a follow-up PR, or release-please will
+propose the same version again.
 
 ## Terraform Registry
 

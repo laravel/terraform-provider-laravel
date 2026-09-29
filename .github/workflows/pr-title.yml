@@ -1,0 +1,36 @@
+name: PR Title
+
+# PRs are squash-merged with the PR title as the commit subject, and
+# release-please derives both the version bump and the CHANGELOG.md entry from
+# those subjects. A title that is not a conventional commit is silently left
+# out of the changelog and does not bump the version, so it fails here instead.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  conventional-title:
+    name: Conventional PR Title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            revert
+            deps
+            docs
+            refactor
+            test
+            build
+            ci
+            chore

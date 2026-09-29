@@ -58,6 +58,12 @@ signs:
 
 release:
   draft: false
+  # release-please creates the release as a draft named after the tag and
+  # writes its notes (see .github/workflows/release-please.yml). Reuse that
+  # draft -- keeping its notes, the default `mode: keep-existing` -- instead of
+  # creating a second release, and publish it only after the upload. A tag
+  # pushed by hand has no draft, so GoReleaser creates the release as before.
+  use_existing_draft: true
   # The Terraform Registry ingests the protocol manifest from the release
   # assets, so it must be uploaded alongside the archives.
   extra_files:

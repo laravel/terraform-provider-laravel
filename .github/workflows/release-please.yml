@@ -1,0 +1,45 @@
+name: Release Please
+
+# Keeps a release PR open against main that bumps the version and prepends the
+# CHANGELOG.md entry, both derived from the conventional-commit subjects merged
+# since the last release. Merging that PR creates the vX.Y.Z tag and a *draft*
+# GitHub release holding the notes; the tag push then runs release.yml, whose
+# GoReleaser step uploads the signed assets into that draft and publishes it.
+#
+# The draft matters: the Terraform Registry ingests a version when its release
+# is published, and a published release without SHA256SUMS, its signature and
+# the manifest fails ingest. GoReleaser only undrafts once every asset is up.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # A GitHub App token instead of GITHUB_TOKEN, because GitHub does not
+      # start workflows for events caused by GITHUB_TOKEN. With it, the release
+      # PR would never run CI -- and the ruleset requires those checks -- and
+      # the tag it pushes would never run release.yml.
+      - name: Generate release token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
