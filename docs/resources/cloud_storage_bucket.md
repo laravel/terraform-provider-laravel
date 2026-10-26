@@ -33,6 +33,7 @@ resource "laravel_cloud_storage_bucket" "example" {
 - `cors_settings` (Attributes) CORS configuration for the bucket. (see [below for nested schema](#nestedatt--cors_settings))
 - `jurisdiction` (String) Bucket jurisdiction: 'default' or 'eu'. Defaults to 'default'.
 - `key_permission` (String) Permission for the initial key: 'read_write' or 'read_only'. Defaults to 'read_write'.
+- `location_hint` (String) Where to place the bucket: automatic, wnam (western North America), enam (eastern North America), weur (western Europe), eeur (eastern Europe), apac (Asia-Pacific) or oc (Oceania). The platform defaults to automatic, the only value allowed outside the default jurisdiction. Changing it forces a new bucket.
 - `visibility` (String) Bucket visibility: 'private' or 'public'. Defaults to 'private'.
 
 ### Read-Only

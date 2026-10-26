@@ -35,6 +35,8 @@ type ApplicationResourceModel struct {
 	SlackChannel              types.String `tfsdk:"slack_channel"`
 	AvatarURL                 types.String `tfsdk:"avatar_url"`
 	CreatedAt                 types.String `tfsdk:"created_at"`
+	StarterKit                types.String `tfsdk:"starter_kit"`
+	RootDirectory             types.String `tfsdk:"root_directory"`
 }
 
 func NewApplicationResource() resource.Resource {
@@ -100,6 +102,37 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 					warnIfNotReported(),
 				},
 			},
+			"starter_kit": schema.StringAttribute{
+				Optional: true,
+				Description: "Create the repository from a starter kit instead of using an existing one: laravel, " +
+					"laravel-react, laravel-vue, laravel-livewire, laravel-svelte, nextjs, nuxt, express, go, django, " +
+					"fastapi, rails or astro. repository then names a new GitHub repository (owner/name) to create, " +
+					"which must not exist yet, and source_control_provider_type must be github. " +
+					"The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.",
+				Validators: []validator.String{
+					stringvalidator.OneOf("laravel", "laravel-react", "laravel-vue", "laravel-livewire", "laravel-svelte",
+						"nextjs", "nuxt", "express", "go", "django", "fastapi", "rails", "astro"),
+					stringvalidator.ConflictsWith(path.MatchRoot("root_directory")),
+				},
+				PlanModifiers: []planmodifier.String{
+					requiresReplaceUnlessImported(),
+					warnIfNotReported(),
+				},
+			},
+			"root_directory": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				Description: "Subdirectory of the repository the application lives in, for a repository that holds " +
+					"more than one project (max 255 chars). Leave unset for the repository root. " +
+					"It cannot be changed after creation, so changing it forces a new application.",
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 255),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
 			"slack_channel": schema.StringAttribute{
 				Optional:    true,
 				Computed:    true,
@@ -158,6 +191,10 @@ func (r *ApplicationResource) Create(ctx context.Context, req resource.CreateReq
 		v := plan.SourceControlProviderType.ValueString()
 		createReq.SourceControlProviderType = &v
 	}
+	createReq.StarterKit = plan.StarterKit.ValueStringPointer()
+	if isSet(plan.RootDirectory) {
+		createReq.RootDirectory = plan.RootDirectory.ValueStringPointer()
+	}
 
 	app, err := r.client.CreateApplication(ctx, createReq)
 	if err != nil {
@@ -170,6 +207,7 @@ func (r *ApplicationResource) Create(ctx context.Context, req resource.CreateReq
 	plan.SlackChannel = types.StringPointerValue(app.Attributes.SlackChannel)
 	plan.AvatarURL = types.StringPointerValue(app.Attributes.AvatarURL)
 	plan.CreatedAt = types.StringPointerValue(app.Attributes.CreatedAt)
+	plan.RootDirectory = types.StringPointerValue(app.Attributes.RootDirectory)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -197,6 +235,7 @@ func (r *ApplicationResource) Read(ctx context.Context, req resource.ReadRequest
 	state.SlackChannel = types.StringPointerValue(app.Attributes.SlackChannel)
 	state.AvatarURL = types.StringPointerValue(app.Attributes.AvatarURL)
 	state.CreatedAt = types.StringPointerValue(app.Attributes.CreatedAt)
+	state.RootDirectory = types.StringPointerValue(app.Attributes.RootDirectory)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -250,6 +289,7 @@ func (r *ApplicationResource) Update(ctx context.Context, req resource.UpdateReq
 	plan.SlackChannel = types.StringPointerValue(app.Attributes.SlackChannel)
 	plan.AvatarURL = types.StringPointerValue(app.Attributes.AvatarURL)
 	plan.CreatedAt = types.StringPointerValue(app.Attributes.CreatedAt)
+	plan.RootDirectory = types.StringPointerValue(app.Attributes.RootDirectory)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }

@@ -56,6 +56,9 @@ type ApplicationAttributes struct {
 	// Repository is reported as an object, not the "owner/name" string that
 	// create and update accept. Null when the application has no repository.
 	Repository *ApplicationRepository `json:"repository"`
+	// RootDirectory is the repository subdirectory the application lives in;
+	// null for the repository root.
+	RootDirectory *string `json:"root_directory"`
 }
 
 // ApplicationRepository is the response-side repository object on an
@@ -70,6 +73,10 @@ type CreateApplicationRequest struct {
 	Name                      string  `json:"name"`
 	Region                    string  `json:"region"`
 	ClusterID                 *string `json:"cluster_id,omitempty"`
+	// StarterKit creates the repository from a starter kit rather than using
+	// an existing one.
+	StarterKit    *string `json:"starter_kit,omitempty"`
+	RootDirectory *string `json:"root_directory,omitempty"`
 }
 
 type UpdateApplicationRequest struct {
@@ -131,6 +138,13 @@ type EnvironmentAttributes struct {
 	NetworkSettings       EnvironmentNetwork `json:"network_settings"`
 	CreatedFromAutomation bool               `json:"created_from_automation"`
 	CreatedAt             *string            `json:"created_at"`
+	// Serving is how the environment is served. Absent unless the
+	// organization can serve static sites.
+	Serving                   *EnvironmentServing `json:"serving"`
+	StartCommand              *string             `json:"start_command"`
+	HibernationWakeUpInterval *int64              `json:"hibernation_wake_up_interval"`
+	// Resend is null when Resend is not attached.
+	Resend *EnvironmentResend `json:"resend"`
 	// EnvironmentVariables is the environment's variables, keys and plaintext
 	// values both. There is no GET on /environments/{id}/variables -- that
 	// route answers 405 and accepts POST only -- so this is the only way to
@@ -146,6 +160,55 @@ type EnvironmentNetwork struct {
 	Cache struct {
 		Strategy string `json:"strategy"`
 	} `json:"cache"`
+	ResponseHeaders EnvironmentResponseHeaders `json:"response_headers"`
+	Firewall        EnvironmentFirewall        `json:"firewall"`
+}
+
+// EnvironmentResponseHeaders is network_settings.response_headers. The
+// published schema leaves robots_tag out, but the API reports it.
+type EnvironmentResponseHeaders struct {
+	Frame       *string `json:"frame"`
+	ContentType *string `json:"content_type"`
+	RobotsTag   *string `json:"robots_tag"`
+	HSTS        *HSTS   `json:"hsts"`
+}
+
+// HSTS is the Strict-Transport-Security setting. A null MaxAge means HSTS is
+// off.
+type HSTS struct {
+	MaxAge            *int64 `json:"max_age"`
+	IncludeSubdomains bool   `json:"include_subdomains"`
+	Preload           bool   `json:"preload"`
+}
+
+// EnvironmentFirewall is the part of network_settings.firewall the provider
+// manages. Pointers keep "not reported" apart from false.
+type EnvironmentFirewall struct {
+	BlockPath             *bool `json:"block_path"`
+	BrowserIntegrityCheck *bool `json:"browser_integrity_check"`
+}
+
+// EnvironmentServing is the serving object: mode "process" for an application
+// server, or "static" with the directory Root that is served. The published
+// schema types it as a string, so a bare string is accepted as the mode.
+type EnvironmentServing struct {
+	Mode string  `json:"mode"`
+	Root *string `json:"root"`
+}
+
+func (s *EnvironmentServing) UnmarshalJSON(b []byte) error {
+	var mode string
+	if err := json.Unmarshal(b, &mode); err == nil {
+		*s = EnvironmentServing{Mode: mode}
+		return nil
+	}
+	type plain EnvironmentServing
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*s = EnvironmentServing(p)
+	return nil
 }
 
 // AttachID renders an id as a JSON string for the nullable attachment fields
@@ -165,9 +228,10 @@ func AttachID(id string) json.RawMessage {
 func DetachID() json.RawMessage { return json.RawMessage("null") }
 
 type CreateEnvironmentRequest struct {
-	Branch    string  `json:"branch"`
-	Name      string  `json:"name"`
-	ClusterID *string `json:"cluster_id,omitempty"`
+	Branch        string  `json:"branch"`
+	Name          string  `json:"name"`
+	ClusterID     *string `json:"cluster_id,omitempty"`
+	EdgeNetworkID *string `json:"edge_network_id,omitempty"`
 }
 
 type UpdateEnvironmentRequest struct {
@@ -194,6 +258,46 @@ type UpdateEnvironmentRequest struct {
 	ShutdownTimeout            *int            `json:"shutdown_timeout,omitempty"`
 	UsesPurgeEdgeCacheOnDeploy *bool           `json:"uses_purge_edge_cache_on_deploy,omitempty"`
 	CacheStrategy              *string         `json:"cache_strategy,omitempty"`
+
+	// Serving changes the served directory of a static site. The mode cannot
+	// change after creation, so it is always the environment's current one.
+	Serving      *ServingRequest `json:"serving,omitempty"`
+	StartCommand *NullableString `json:"start_command,omitempty"`
+	// HibernationWakeUpInterval null turns the periodic wake-up off.
+	HibernationWakeUpInterval *NullableInt `json:"hibernation_wake_up_interval,omitempty"`
+	// NightwatchToken null disconnects Nightwatch.
+	NightwatchToken *NullableString `json:"nightwatch_token,omitempty"`
+	// FilesystemKeys replaces every bucket attachment; an empty list detaches
+	// them all. A pointer so that empty list is sent rather than omitted.
+	FilesystemKeys             *[]FilesystemKeyAttachment `json:"filesystem_keys,omitempty"`
+	ResponseHeadersFrame       *string                    `json:"response_headers_frame,omitempty"`
+	ResponseHeadersContentType *string                    `json:"response_headers_content_type,omitempty"`
+	ResponseHeadersRobotsTag   *string                    `json:"response_headers_robots_tag,omitempty"`
+	// ResponseHeadersHSTS must carry all three of its fields.
+	ResponseHeadersHSTS           *HSTSRequest `json:"response_headers_hsts,omitempty"`
+	FirewallBlockPath             *bool        `json:"firewall_block_path,omitempty"`
+	FirewallBrowserIntegrityCheck *bool        `json:"firewall_browser_integrity_check,omitempty"`
+}
+
+type ServingRequest struct {
+	Mode string `json:"mode"`
+	// Root null resets a static site to serving its top-level directory.
+	Root NullableString `json:"root"`
+}
+
+// FilesystemKeyAttachment attaches a bucket to an environment through one of
+// its access keys, under a disk name.
+type FilesystemKeyAttachment struct {
+	ID            string `json:"id"`
+	Disk          string `json:"disk"`
+	IsDefaultDisk bool   `json:"is_default_disk"`
+}
+
+// HSTSRequest is the HSTS setting as sent. MaxAge null turns HSTS off.
+type HSTSRequest struct {
+	MaxAge            NullableInt `json:"max_age"`
+	IncludeSubdomains bool        `json:"include_subdomains"`
+	Preload           bool        `json:"preload"`
 }
 
 // ---------------------------------------------------------------------
@@ -234,6 +338,27 @@ type InstanceAttributes struct {
 	// payload degrades to raw JSON instead of failing the whole decode.
 	QueueStatus QueueStatusValue `json:"queue_status"`
 	CreatedAt   *string          `json:"created_at"`
+	// Probes holds the health checks configured on an app instance. Only the
+	// checks and fields that were set are reported; null when none are.
+	Probes *InstanceProbes `json:"probes"`
+}
+
+// InstanceProbes is the probes object, on both request and response. A check
+// left nil falls back to the platform default.
+type InstanceProbes struct {
+	Startup   *InstanceProbe `json:"startup,omitempty"`
+	Readiness *InstanceProbe `json:"readiness,omitempty"`
+	Liveness  *InstanceProbe `json:"liveness,omitempty"`
+}
+
+// InstanceProbe is one health check. Unset fields take the platform default.
+type InstanceProbe struct {
+	Path     *string `json:"path,omitempty"`
+	Port     *int64  `json:"port,omitempty"`
+	Delay    *int64  `json:"delay,omitempty"`
+	Interval *int64  `json:"interval,omitempty"`
+	Timeout  *int64  `json:"timeout,omitempty"`
+	Tries    *int64  `json:"tries,omitempty"`
 }
 
 type CreateInstanceRequest struct {
@@ -272,6 +397,10 @@ type UpdateInstanceRequest struct {
 	VisibilityTimeout                *int    `json:"visibility_timeout,omitempty"`
 	ShutdownTimeout                  *int    `json:"shutdown_timeout,omitempty"`
 	// polling_interval is read-only; see CreateInstanceRequest.
+
+	// Probes replaces every health check at once: a check or field left out
+	// returns to the platform default, and an empty object clears them all.
+	Probes *InstanceProbes `json:"probes,omitempty"`
 }
 
 // ---------------------------------------------------------------------
@@ -383,6 +512,8 @@ type CreateDatabaseClusterRequest struct {
 	ClusterID *string `json:"cluster_id,omitempty"`
 	// Config is required by the API; it is sent even when empty.
 	Config map[string]any `json:"config"`
+	// CreateDefaultDatabase is omitted when unset so the API default applies.
+	CreateDefaultDatabase *bool `json:"create_default_database,omitempty"`
 }
 
 // UpdateDatabaseClusterRequest is the entire PATCH body. config is required,
@@ -485,6 +616,7 @@ type StorageBucketAttributes struct {
 	Status       string  `json:"status"`
 	Visibility   string  `json:"visibility"`
 	Jurisdiction string  `json:"jurisdiction"`
+	LocationHint *string `json:"location_hint"`
 	Endpoint     *string `json:"endpoint"`
 	URL          *string `json:"url"`
 	// AllowedOrigins is deprecated by the API (removed May 17, 2026) in
@@ -530,6 +662,7 @@ type CreateStorageBucketRequest struct {
 	Jurisdiction  string        `json:"jurisdiction"`
 	KeyName       string        `json:"key_name"`
 	KeyPermission string        `json:"key_permission"`
+	LocationHint  *string       `json:"location_hint,omitempty"`
 	CorsSettings  *CorsSettings `json:"cors_settings,omitempty"`
 	// Deprecated: use CorsSettings. Removed from the API May 17, 2026.
 	AllowedOrigins []string `json:"allowed_origins,omitempty"`

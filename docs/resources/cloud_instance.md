@@ -54,8 +54,10 @@ resource "laravel_cloud_instance" "example" {
 ### Optional
 
 - `hibernation_timeout` (Number) Hibernation timeout in seconds (1-60). The create route ignores it, so on create the provider applies it with a follow-up update.
+- `is_default` (Boolean) Whether this managed queue is the environment's default, the one a job goes to when it names no queue. Set true to make it the default; only managed_queue instances can be. It cannot be set false: the default moves when another queue is made the default.
 - `max_replicas` (Number) Maximum number of replicas. Only applicable to the "custom" scaling type; the API rejects it for "auto".
 - `min_replicas` (Number) Minimum number of replicas. Only applicable to the "custom" scaling type; the API rejects it for "auto", and it does not apply to managed queues, which always scale to zero when idle.
+- `probes` (Attributes) Custom health checks for an app instance's web process. Only app instances accept them, and only on plans with health checks; manage one by importing the environment's app instance. The checks configured here replace all existing ones, and a check left out uses the platform default. When unset, Terraform leaves the instance's health checks alone, including any the platform set up itself; removing the attribute once set resets every check to the platform default. (see [below for nested schema](#nestedatt--probes))
 - `scaling_cpu_threshold_percentage` (Number) CPU scaling threshold (50-95).
 - `scaling_memory_threshold_percentage` (Number) Memory scaling threshold (50-95).
 - `shutdown_timeout` (Number) Queue shutdown timeout in seconds (managed_queue).
@@ -70,10 +72,56 @@ resource "laravel_cloud_instance" "example" {
 
 - `created_at` (String)
 - `id` (String) The ID of this resource.
-- `is_default` (Boolean) Whether this is the default instance.
 - `paused` (Boolean) Whether the instance is paused.
 - `polling_interval` (Number) Queue polling interval in seconds (managed_queue). Read-only: the API reports this value but accepts it in neither the create nor the update request, so it is managed by the platform.
 - `queue_status` (String) Raw queue status JSON (managed_queue).
+
+<a id="nestedatt--probes"></a>
+### Nested Schema for `probes`
+
+Optional:
+
+- `liveness` (Attributes) The liveness check. Fields left unset take the platform default. (see [below for nested schema](#nestedatt--probes--liveness))
+- `readiness` (Attributes) The readiness check. Fields left unset take the platform default. (see [below for nested schema](#nestedatt--probes--readiness))
+- `startup` (Attributes) The startup check. Fields left unset take the platform default. (see [below for nested schema](#nestedatt--probes--startup))
+
+<a id="nestedatt--probes--liveness"></a>
+### Nested Schema for `probes.liveness`
+
+Optional:
+
+- `delay` (Number) Seconds to wait before the first check (0-600).
+- `interval` (Number) Seconds between checks (1-300).
+- `path` (String) HTTP path to request, starting with "/" (max 255 chars).
+- `port` (Number) Port to request (1-65535).
+- `timeout` (Number) Seconds a check may take (1-120).
+- `tries` (Number) Failed checks before the check fails (1-1000).
+
+
+<a id="nestedatt--probes--readiness"></a>
+### Nested Schema for `probes.readiness`
+
+Optional:
+
+- `delay` (Number) Seconds to wait before the first check (0-600).
+- `interval` (Number) Seconds between checks (1-300).
+- `path` (String) HTTP path to request, starting with "/" (max 255 chars).
+- `port` (Number) Port to request (1-65535).
+- `timeout` (Number) Seconds a check may take (1-120).
+- `tries` (Number) Failed checks before the check fails (1-1000).
+
+
+<a id="nestedatt--probes--startup"></a>
+### Nested Schema for `probes.startup`
+
+Optional:
+
+- `delay` (Number) Seconds to wait before the first check (0-600).
+- `interval` (Number) Seconds between checks (1-300).
+- `path` (String) HTTP path to request, starting with "/" (max 255 chars).
+- `port` (Number) Port to request (1-65535).
+- `timeout` (Number) Seconds a check may take (1-120).
+- `tries` (Number) Failed checks before the check fails (1-1000).
 
 ## Import
 

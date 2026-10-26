@@ -1,0 +1,1 @@
+terraform import laravel_cloud_scheduled_command.nightly_reports "{scheduled_command_id}"

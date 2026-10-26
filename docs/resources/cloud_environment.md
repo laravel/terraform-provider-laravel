@@ -51,11 +51,25 @@ resource "laravel_cloud_environment" "example" {
 - `database_id` (String) ID of the database to attach (a laravel_cloud_database, not its cluster). Removing it detaches the database.
 - `database_schema_id` (String, Deprecated) Deprecated alias for database_id.
 - `deploy_command` (String) Custom deploy command (max 2000 chars).
+- `edge_network_id` (String) Dedicated edge network to create the environment in (see the laravel_cloud_edge_networks data source). Only for organizations with a dedicated edge network. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
+- `filesystem_keys` (Attributes List) Object storage buckets attached to the environment, each through one of its access keys and under a disk name. This list replaces every attachment: an empty list detaches all buckets, and so does removing the attribute once set. Write-only: the API never reports the attachments back, so changes made outside Terraform are not detected. (see [below for nested schema](#nestedatt--filesystem_keys))
+- `firewall_block_path` (Boolean) Whether the firewall blocks requests for common exploit paths.
+- `firewall_browser_integrity_check` (Boolean) Whether the firewall runs a browser integrity check on requests.
+- `hibernation_wake_up_interval` (Number) Minutes between periodic wake-ups of a hibernating environment (1-10080, up to 7 days). Set 0 to turn periodic wake-ups off.
+- `nightwatch_token` (String, Sensitive) Nightwatch environment token (44 chars) that connects the environment to Nightwatch. Removing it disconnects Nightwatch. Write-only: the API never reports it back, so a token changed outside Terraform is not detected.
 - `node_version` (String) Node.js version.
 - `php_version` (String) PHP version to run, in the API's "major:minor" form (e.g. "8.4:1"). The API reports only the major version (see php_major_version), so an import derives this from it. A version changed outside Terraform is not detected.
+- `response_headers_content_type` (String) X-Content-Type-Options response header: nosniff or none.
+- `response_headers_frame` (String) X-Frame-Options response header: deny, sameorigin or all.
+- `response_headers_hsts_include_subdomains` (Boolean) Whether HSTS also covers subdomains.
+- `response_headers_hsts_max_age` (Number) Strict-Transport-Security max-age in seconds; 0 turns HSTS off. Null when HSTS was never set. Required when include_subdomains or preload is true.
+- `response_headers_hsts_preload` (Boolean) Whether the HSTS header asks for preloading. Needs include_subdomains and a max_age of at least 31536000.
+- `response_headers_robots_tag` (String) X-Robots-Tag response header: "index, follow" or "noindex, nofollow".
+- `serving_root` (String) Directory a static environment serves, relative to the repository ("." for the top level). Only static environments accept it.
 - `shutdown_timeout` (Number) Shutdown timeout (1-600). Write-only: the API accepts this but never reports it back, so drift cannot be detected.
 - `sleep_timeout` (Number) Sleep timeout (1-60). Write-only: the API accepts this but never reports it back, so drift cannot be detected.
 - `slug` (String)
+- `start_command` (String) Command that starts a dynamic application that is not PHP, e.g. "gunicorn myproject.wsgi" (max 255 chars). Required by the API for dynamic JavaScript, Python, Ruby, Go, Rust and Java applications, and rejected for PHP and static ones.
 - `timeout` (Number) Request timeout (5-60 seconds). Write-only: the API accepts this but never reports it back, so drift cannot be detected.
 - `uses_deploy_hook` (Boolean)
 - `uses_octane` (Boolean)
@@ -63,13 +77,27 @@ resource "laravel_cloud_environment" "example" {
 - `uses_push_to_deploy` (Boolean)
 - `uses_vanity_domain` (Boolean)
 - `vanity_domain` (String) Vanity domain hostname for the environment (3-100 characters). Set through the API's dedicated vanity-domain endpoint rather than the environment update body. Leave unset to keep the assigned default.
+- `websocket_application_id` (String) WebSocket application (laravel_cloud_websocket_application) to attach. Removing it detaches the application.
 
 ### Read-Only
 
 - `created_at` (String)
 - `id` (String) The ID of this resource.
 - `php_major_version` (String) Major PHP version reported by the API (e.g. "8.4").
+- `serving_mode` (String) How the environment is served: "process" (an application server) or "static" (files served directly). Fixed when the environment is created. Null when the API does not report it.
 - `status` (String) Current environment status.
+
+<a id="nestedatt--filesystem_keys"></a>
+### Nested Schema for `filesystem_keys`
+
+Required:
+
+- `disk` (String) Disk name the bucket is exposed as (1-40 chars: letters, numbers, spaces, dashes and underscores).
+- `key_id` (String) ID of the bucket access key (laravel_cloud_storage_bucket_key) to attach the bucket with.
+
+Optional:
+
+- `is_default_disk` (Boolean) Whether this is the default disk. At most one attachment can be. Defaults to false.
 
 ## Import
 

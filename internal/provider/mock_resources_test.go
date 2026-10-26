@@ -37,10 +37,18 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			collectionPattern: "/databases/clusters", itemPattern: "/databases/clusters/{id}",
 			patch: true, del: true,
 			seed: seedCluster,
-			// The platform creates a database inside every new cluster. It is
-			// not managed by Terraform, and it is what makes a cluster
-			// impossible to delete without sweeping its databases first.
+			// The platform creates a database inside every new cluster unless
+			// create_default_database is false. It is not managed by
+			// Terraform, and it is what makes a cluster impossible to delete
+			// without sweeping its databases first.
 			afterCreate: func(f *fakeCloud, clusterID string) {
+				attrs := f.objects[clusterType][clusterID]
+				createDefault, sent := attrs["create_default_database"]
+				// A create-only request field: never reported back.
+				delete(attrs, "create_default_database")
+				if sent && createDefault == false {
+					return
+				}
 				f.seq++
 				id := fmt.Sprintf("db-schema-%d", f.seq)
 				if f.objects["database"] == nil {
@@ -60,6 +68,9 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
 				a["status"] = "available"
+				if _, ok := a["location_hint"]; !ok {
+					a["location_hint"] = "automatic"
+				}
 				return a
 			},
 			// The real API MERGES a cors_settings body into the bucket's
@@ -120,8 +131,13 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			relationshipName: "environment", relationshipType: "environments",
 			seed: func(body map[string]any, _ string) map[string]any {
 				// Echo the body; managed-queue / status pointer fields are left
-				// absent so they decode to null (not zero values).
-				return cloneMap(body)
+				// absent so they decode to null (not zero values) -- except
+				// is_default, which a new managed queue reports as false.
+				a := cloneMap(body)
+				if a["type"] == "managed_queue" {
+					a["is_default"] = false
+				}
+				return a
 			},
 			// The API does not report replica counts for an automatically
 			// scaled instance -- they are rejected on the way in and absent on
@@ -133,6 +149,11 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 				if attrs["scaling_type"] == "auto" {
 					delete(attrs, "min_replicas")
 					delete(attrs, "max_replicas")
+				}
+				// Only app instances take health checks; anything else has
+				// them silently dropped. An empty object clears them.
+				if probes, ok := attrs["probes"].(map[string]any); ok && (attrs["type"] != "app" || len(probes) == 0) {
+					attrs["probes"] = nil
 				}
 			},
 		},
@@ -253,6 +274,21 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			},
 		},
 		{
+			typeName: "scheduled_command", idPrefix: "sched", parentWildcard: "iid",
+			collectionPattern: "/instances/{iid}/scheduled-commands", itemPattern: "/scheduled-commands/{id}",
+			patch: true, del: true,
+			relationshipName: "instance", relationshipType: "instances",
+			seed: func(body map[string]any, _ string) map[string]any {
+				a := cloneMap(body)
+				// name is nullable and reported as null when it was not sent.
+				if _, ok := a["name"]; !ok {
+					a["name"] = nil
+				}
+				a["created_at"] = "2026-01-01T00:00:00Z"
+				return a
+			},
+		},
+		{
 			// Only list/create are nested under the server; the per-item routes are
 			// flat. The nested GET 404s and the nested PATCH/DELETE fall through to
 			// the web catch-all (302 to the app root), which dropped the application
@@ -302,6 +338,35 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 	}
 
 	registerDataSourceRoutes(mux)
+
+	// Making a managed queue the environment's default. It is refused for a
+	// queue that already is, and clears the flag on the environment's others.
+	mux.HandleFunc("POST /instances/{id}/default", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		id := r.PathValue("id")
+		attrs, ok := f.objects["instance"][id]
+		if !ok {
+			writeError(w, http.StatusNotFound, fmt.Errorf("instance not found"))
+			return
+		}
+		if attrs["type"] != "managed_queue" {
+			writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("only managed queues can be the default"))
+			return
+		}
+		if attrs["is_default"] == true {
+			writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("this queue is already the default"))
+			return
+		}
+		envID := f.parents["instance"][id]
+		for other, otherAttrs := range f.objects["instance"] {
+			if f.parents["instance"][other] == envID && otherAttrs["type"] == "managed_queue" {
+				otherAttrs["is_default"] = false
+			}
+		}
+		attrs["is_default"] = true
+		w.WriteHeader(http.StatusOK)
+	})
 
 	// -------- bespoke endpoints --------
 

@@ -41,6 +41,8 @@ type DatabaseClusterResourceModel struct {
 	Connection   types.Object `tfsdk:"connection_details"`
 	CreatedAt    types.String `tfsdk:"created_at"`
 	ForceDestroy types.Bool   `tfsdk:"force_destroy"`
+	// CreateDefaultDatabase is create-only and never reported back.
+	CreateDefaultDatabase types.Bool `tfsdk:"create_default_database"`
 }
 
 // databaseConnectionAttrTypes describes the connection_details object shared by
@@ -138,12 +140,22 @@ func (r *DatabaseClusterResource) Schema(_ context.Context, _ resource.SchemaReq
 					requiresReplaceUnlessImported(),
 				},
 			},
+			"create_default_database": schema.BoolAttribute{
+				Optional: true,
+				Description: "Whether the platform creates a default database inside the new cluster. The API defaults " +
+					"to true, and rejects false for Neon Serverless Postgres. Create-only: the API never reports it " +
+					"back, so an imported cluster leaves it null.",
+				PlanModifiers: []planmodifier.Bool{
+					boolRequiresReplaceUnlessImported(),
+				},
+			},
 			"force_destroy": schema.BoolAttribute{
 				Optional: true,
 				Description: "Allow destroying this cluster even though it still contains " +
 					"databases. The API refuses to delete a cluster while any database is " +
-					"attached, and a cluster always carries at least the one the platform " +
-					"creates with it, so destroying is impossible without this. Setting it " +
+					"attached, and a cluster carries at least the one the platform creates " +
+					"with it (unless create_default_database is false), so destroying is " +
+					"usually impossible without this. Setting it " +
 					"true DELETES EVERY DATABASE IN THE CLUSTER, including ones Terraform " +
 					"did not create and does not manage. Defaults to false, in which case " +
 					"destroy fails and names the databases that are in the way.",
@@ -209,6 +221,7 @@ func (r *DatabaseClusterResource) Create(ctx context.Context, req resource.Creat
 		v := plan.ClusterID.ValueString()
 		createReq.ClusterID = &v
 	}
+	createReq.CreateDefaultDatabase = plan.CreateDefaultDatabase.ValueBoolPointer()
 	if !plan.Config.IsNull() {
 		var cfg map[string]any
 		if err := json.Unmarshal([]byte(plan.Config.ValueString()), &cfg); err != nil {
@@ -326,9 +339,10 @@ func (r *DatabaseClusterResource) Delete(ctx context.Context, req resource.Delet
 
 	id := state.ID.ValueString()
 
-	// A cluster always carries at least the database the platform creates
-	// alongside it, and the API refuses to delete a cluster while any database
-	// is attached -- so a destroy cannot succeed without removing them first.
+	// A cluster carries at least the database the platform creates alongside
+	// it (unless create_default_database was false), and the API refuses to
+	// delete a cluster while any database is attached -- so a destroy usually
+	// cannot succeed without removing them first.
 	//
 	// Removing them is destructive well beyond what Terraform manages: the
 	// cluster may also hold databases created in the dashboard or by another

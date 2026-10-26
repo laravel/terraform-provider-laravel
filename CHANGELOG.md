@@ -5,6 +5,43 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `laravel_cloud_scheduled_command` runs a command on a cron schedule on an
+  instance.
+- `laravel_cloud_secret` manages an organization secret. The API accepts a
+  value only sealed to the organization's public key, so the provider fetches
+  that key and encrypts the value before sending it. The value is never
+  returned, so a change made outside Terraform is not detected.
+- `laravel_cloud_environment_secret` attaches a secret to an environment, and
+  notices when it is detached outside Terraform.
+- `laravel_cloud_environment_resend` connects Resend email sending to an
+  environment, with a new sending key or one reused from another environment.
+- `laravel_cloud_environment` settings: `start_command`,
+  `hibernation_wake_up_interval`, `serving_root` (and the read-only
+  `serving_mode`), the `response_headers_*` and `firewall_*` settings,
+  `nightwatch_token`, `filesystem_keys` for attaching buckets,
+  `websocket_application_id`, and `edge_network_id` on create. Settings the
+  API reports are adopted when left unset, so upgrading does not plan to reset
+  values chosen in the dashboard; `nightwatch_token` and `filesystem_keys` are
+  never reported and keep their configured value.
+- `laravel_cloud_instance.probes` sets the health checks of an app instance.
+  Health checks are left alone until the attribute is set, so ones the
+  platform configured itself are not removed.
+- `laravel_cloud_instance.is_default` can be set to make a managed queue the
+  environment's default.
+- `laravel_cloud_application.starter_kit` and `root_directory`,
+  `laravel_cloud_database_cluster.create_default_database` and
+  `laravel_cloud_storage_bucket.location_hint`, all accepted only on create.
+
+### Changed
+
+- `laravel_cloud_database_cluster.force_destroy` is not needed to destroy a
+  cluster created with `create_default_database = false`, since the platform
+  then creates no database inside it.
+
 ## [1.1.0] - 2026-09-24
 
 ### Upgrade notes
