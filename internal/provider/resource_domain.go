@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -12,12 +13,14 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
 
 var (
-	_ resource.Resource                = &DomainResource{}
-	_ resource.ResourceWithImportState = &DomainResource{}
+	_ resource.Resource                 = &DomainResource{}
+	_ resource.ResourceWithImportState  = &DomainResource{}
+	_ resource.ResourceWithUpgradeState = &DomainResource{}
 )
 
 type DomainResource struct {
@@ -56,6 +59,9 @@ func (r *DomainResource) Metadata(_ context.Context, req resource.MetadataReques
 func (r *DomainResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a domain attached to a Laravel Cloud environment.",
+		// Version 1 changed the dns_records records other than ssl from strings
+		// to {type, name, value} objects.
+		Version: 1,
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed: true,
@@ -170,22 +176,14 @@ func (r *DomainResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 							},
 						},
 					},
-					"pre_verification": schema.StringAttribute{
-						Computed:    true,
-						Description: "TXT value used for pre-verification.",
-					},
-					"origin": schema.StringAttribute{
-						Computed:    true,
-						Description: "Origin address the domain should point at.",
-					},
-					"origin_cname": schema.StringAttribute{
-						Computed:    true,
-						Description: "Origin CNAME target.",
-					},
-					"dcv": schema.StringAttribute{
-						Computed:    true,
-						Description: "Domain control validation value.",
-					},
+					"pre_verification": domainDNSRecordAttribute(
+						"Record used for pre-verification, or null when none is needed."),
+					"origin": domainDNSRecordAttribute(
+						"Record pointing the domain at its origin, or null when none is needed."),
+					"origin_cname": domainDNSRecordAttribute(
+						"CNAME record pointing the domain at its origin, or null when none is needed."),
+					"dcv": domainDNSRecordAttribute(
+						"Domain control validation record, or null when none is needed."),
 				},
 			},
 			"downtime": schema.BoolAttribute{
@@ -348,6 +346,31 @@ func (r *DomainResource) ImportState(ctx context.Context, req resource.ImportSta
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
+func (r *DomainResource) UpgradeState(_ context.Context) map[int64]resource.StateUpgrader {
+	return map[int64]resource.StateUpgrader{
+		0: {StateUpgrader: upgradeDomainStateV0},
+	}
+}
+
+// upgradeDomainStateV0 clears dns_records, whose records were strings in
+// version 0. It is computed from the API, so the refresh that follows the
+// upgrade fills it in again in the new shape.
+func upgradeDomainStateV0(_ context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+	var state map[string]json.RawMessage
+	if err := json.Unmarshal(req.RawState.JSON, &state); err != nil {
+		resp.Diagnostics.AddError("Error upgrading domain state", err.Error())
+		return
+	}
+	state["dns_records"] = json.RawMessage("null")
+
+	upgraded, err := json.Marshal(state)
+	if err != nil {
+		resp.Diagnostics.AddError("Error upgrading domain state", err.Error())
+		return
+	}
+	resp.DynamicValue = &tfprotov6.DynamicValue{JSON: upgraded}
+}
+
 func mapDomainToState(d *client.DomainData, state *DomainResourceModel) {
 	if envID := d.Relationships.Environment.RelatedID(); envID != "" {
 		state.EnvironmentID = types.StringValue(envID)
@@ -370,18 +393,41 @@ func mapDomainToState(d *client.DomainData, state *DomainResourceModel) {
 	}
 }
 
-var domainSSLRecordAttrTypes = map[string]attr.Type{
+// domainRecordAttrTypes is the shape of every record in dns_records.
+var domainRecordAttrTypes = map[string]attr.Type{
 	"type":  types.StringType,
 	"name":  types.StringType,
 	"value": types.StringType,
 }
 
 var domainDNSRecordsAttrTypes = map[string]attr.Type{
-	"ssl":              types.ListType{ElemType: types.ObjectType{AttrTypes: domainSSLRecordAttrTypes}},
-	"pre_verification": types.StringType,
-	"origin":           types.StringType,
-	"origin_cname":     types.StringType,
-	"dcv":              types.StringType,
+	"ssl":              types.ListType{ElemType: types.ObjectType{AttrTypes: domainRecordAttrTypes}},
+	"pre_verification": types.ObjectType{AttrTypes: domainRecordAttrTypes},
+	"origin":           types.ObjectType{AttrTypes: domainRecordAttrTypes},
+	"origin_cname":     types.ObjectType{AttrTypes: domainRecordAttrTypes},
+	"dcv":              types.ObjectType{AttrTypes: domainRecordAttrTypes},
+}
+
+// domainDNSRecordAttribute is the schema of a dns_records record other than ssl.
+func domainDNSRecordAttribute(description string) schema.SingleNestedAttribute {
+	return schema.SingleNestedAttribute{
+		Computed:    true,
+		Description: description,
+		Attributes: map[string]schema.Attribute{
+			"type": schema.StringAttribute{
+				Computed:    true,
+				Description: "Record type, such as A, CNAME or TXT.",
+			},
+			"name": schema.StringAttribute{
+				Computed:    true,
+				Description: "Record name.",
+			},
+			"value": schema.StringAttribute{
+				Computed:    true,
+				Description: "Record value.",
+			},
+		},
+	}
 }
 
 // domainDNSRecordsObject converts the API's dns_records payload into the
@@ -390,17 +436,17 @@ var domainDNSRecordsAttrTypes = map[string]attr.Type{
 // response, and a provider that panics on an unexpected payload takes the whole
 // Terraform run down with a stack trace instead of reporting drift.
 func domainDNSRecordsObject(r client.DomainDNSRecords) types.Object {
-	sslType := types.ObjectType{AttrTypes: domainSSLRecordAttrTypes}
+	sslType := types.ObjectType{AttrTypes: domainRecordAttrTypes}
 
 	ssl := make([]attr.Value, 0, len(r.SSL))
 	for _, rec := range r.SSL {
-		obj, diags := types.ObjectValue(domainSSLRecordAttrTypes, map[string]attr.Value{
+		obj, diags := types.ObjectValue(domainRecordAttrTypes, map[string]attr.Value{
 			"type":  types.StringValue(rec.Type),
 			"name":  types.StringPointerValue(rec.Name),
 			"value": types.StringPointerValue(rec.Value),
 		})
 		if diags.HasError() {
-			obj = types.ObjectNull(domainSSLRecordAttrTypes)
+			obj = types.ObjectNull(domainRecordAttrTypes)
 		}
 		ssl = append(ssl, obj)
 	}
@@ -411,13 +457,28 @@ func domainDNSRecordsObject(r client.DomainDNSRecords) types.Object {
 
 	records, diags := types.ObjectValue(domainDNSRecordsAttrTypes, map[string]attr.Value{
 		"ssl":              sslList,
-		"pre_verification": types.StringValue(r.PreVerification),
-		"origin":           types.StringValue(r.Origin),
-		"origin_cname":     types.StringValue(r.OriginCNAME),
-		"dcv":              types.StringValue(r.DCV),
+		"pre_verification": domainDNSRecordObject(r.PreVerification),
+		"origin":           domainDNSRecordObject(r.Origin),
+		"origin_cname":     domainDNSRecordObject(r.OriginCNAME),
+		"dcv":              domainDNSRecordObject(r.DCV),
 	})
 	if diags.HasError() {
 		return types.ObjectNull(domainDNSRecordsAttrTypes)
 	}
 	return records
+}
+
+func domainDNSRecordObject(r *client.DomainDNSRecord) types.Object {
+	if r == nil {
+		return types.ObjectNull(domainRecordAttrTypes)
+	}
+	record, diags := types.ObjectValue(domainRecordAttrTypes, map[string]attr.Value{
+		"type":  types.StringPointerValue(r.Type),
+		"name":  types.StringPointerValue(r.Name),
+		"value": types.StringPointerValue(r.Value),
+	})
+	if diags.HasError() {
+		return types.ObjectNull(domainRecordAttrTypes)
+	}
+	return record
 }

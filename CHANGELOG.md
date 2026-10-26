@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Upgrade notes
+
+- `laravel_cloud_domain.dns_records.origin`, `origin_cname`, `dcv` and
+  `pre_verification` are now objects with `type`, `name` and `value` instead
+  of strings, so a reference such as `dns_records.origin` becomes
+  `dns_records.origin.value`. Existing state is upgraded automatically.
+
+### Fixed
+
+- Reading a `laravel_cloud_domain` whose DNS records are populated no longer
+  fails with `cannot unmarshal object into Go struct field
+  DomainDNSRecords.data.attributes.dns_records.origin of type string`. The
+  published API spec types these records as strings, but the API returns them
+  as `{type, name, value}` objects, or null when a record is not needed, so
+  such a domain could not be refreshed or imported. They are now
+  exposed as objects, and a record the API does return as a string is kept as
+  its `value`.
+
 ## [1.1.0] - 2026-09-24
 
 ### Upgrade notes

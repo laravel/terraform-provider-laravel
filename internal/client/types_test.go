@@ -126,6 +126,61 @@ func TestDomainAttributes_CloudflareAndDowntime(t *testing.T) {
 	}
 }
 
+func TestDomainAttributes_DNSRecordObjects(t *testing.T) {
+	// A verified root domain, as the API returns it: origin and dcv are
+	// {type, name, value} objects and the records it does not need are null.
+	const body = `{
+		"name": "example.com",
+		"type": "root",
+		"dns_records": {
+			"ssl": [{"type": "CNAME", "name": "_acme-challenge.example.com", "value": "example.com.abc123.dcv.cloudflare.com"}],
+			"pre_verification": null,
+			"origin": {"type": "A", "name": "example.com", "value": "192.0.2.1"},
+			"origin_cname": null,
+			"dcv": {"type": "CNAME", "name": "_acme-challenge.example.com", "value": "example.com.abc123.dcv.cloudflare.com"}
+		}
+	}`
+	var attrs DomainAttributes
+	if err := json.Unmarshal([]byte(body), &attrs); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	records := attrs.DNSRecords
+	origin := records.Origin
+	if origin == nil || origin.Type == nil || *origin.Type != "A" ||
+		origin.Name == nil || *origin.Name != "example.com" ||
+		origin.Value == nil || *origin.Value != "192.0.2.1" {
+		t.Errorf("Origin = %+v, want A example.com 192.0.2.1", origin)
+	}
+	if records.DCV == nil || records.DCV.Type == nil || *records.DCV.Type != "CNAME" {
+		t.Errorf("DCV = %+v, want a CNAME record", records.DCV)
+	}
+	if records.PreVerification != nil {
+		t.Errorf("PreVerification = %+v, want nil", records.PreVerification)
+	}
+	if records.OriginCNAME != nil {
+		t.Errorf("OriginCNAME = %+v, want nil", records.OriginCNAME)
+	}
+}
+
+func TestDomainAttributes_DNSRecordStrings(t *testing.T) {
+	// The published API spec types these records as strings; a bare string is
+	// kept as the record's value.
+	const body = `{"dns_records": {"ssl": [], "origin": "origin.example.com"}}`
+	var attrs DomainAttributes
+	if err := json.Unmarshal([]byte(body), &attrs); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	origin := attrs.DNSRecords.Origin
+	if origin == nil || origin.Value == nil || *origin.Value != "origin.example.com" {
+		t.Fatalf("Origin = %+v, want value origin.example.com", origin)
+	}
+	if origin.Type != nil || origin.Name != nil {
+		t.Errorf("Origin = %+v, want type and name nil", origin)
+	}
+}
+
 func TestOrganizationAttributes_Slug(t *testing.T) {
 	var attrs OrganizationAttributes
 	if err := json.Unmarshal([]byte(`{"name":"Acme","slug":"acme"}`), &attrs); err != nil {

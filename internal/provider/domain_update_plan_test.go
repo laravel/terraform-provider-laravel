@@ -1,9 +1,13 @@
 package provider
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
+	fwresource "github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
@@ -30,11 +34,21 @@ func TestDomainDNSRecordsPlan(t *testing.T) {
 				Config: config,
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(addr,
-						tfjsonpath.New("dns_records").AtMapKey("origin_cname"),
-						knownvalue.StringExact("cname.laravel.cloud")),
+						tfjsonpath.New("dns_records").AtMapKey("origin"),
+						knownvalue.ObjectExact(map[string]knownvalue.Check{
+							"type":  knownvalue.StringExact("A"),
+							"name":  knownvalue.StringExact("example.com"),
+							"value": knownvalue.StringExact("192.0.2.1"),
+						})),
 					statecheck.ExpectKnownValue(addr,
-						tfjsonpath.New("dns_records").AtMapKey("pre_verification"),
+						tfjsonpath.New("dns_records").AtMapKey("origin_cname"),
+						knownvalue.Null()),
+					statecheck.ExpectKnownValue(addr,
+						tfjsonpath.New("dns_records").AtMapKey("pre_verification").AtMapKey("value"),
 						knownvalue.StringExact("laravel-cloud-verification=token")),
+					statecheck.ExpectKnownValue(addr,
+						tfjsonpath.New("dns_records").AtMapKey("dcv").AtMapKey("type"),
+						knownvalue.StringExact("CNAME")),
 					statecheck.ExpectKnownValue(addr,
 						tfjsonpath.New("dns_records").AtMapKey("ssl").AtSliceIndex(0).AtMapKey("type"),
 						knownvalue.StringExact("TXT")),
@@ -139,4 +153,46 @@ resource "laravel_cloud_domain" "site" {
   %[3]s
 }
 `, baseURL, name, extra)
+}
+
+// TestDomainUpgradeStateV0 covers state written before dns_records records
+// became objects. Version 0 stored them as strings, which no longer decode, so
+// the upgrade clears dns_records for the following refresh to fill in and keeps
+// every other attribute.
+func TestDomainUpgradeStateV0(t *testing.T) {
+	const v0 = `{
+		"id": "domain-1",
+		"environment_id": "env-1",
+		"name": "example.com",
+		"stage": "origin",
+		"dns_records": {
+			"ssl": [],
+			"pre_verification": "",
+			"origin": "",
+			"origin_cname": "",
+			"dcv": ""
+		}
+	}`
+
+	upgrader := (&DomainResource{}).UpgradeState(context.Background())[0]
+	req := fwresource.UpgradeStateRequest{RawState: &tfprotov6.RawState{JSON: []byte(v0)}}
+	var resp fwresource.UpgradeStateResponse
+	upgrader.StateUpgrader(context.Background(), req, &resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("upgrade: %v", resp.Diagnostics)
+	}
+	if resp.DynamicValue == nil {
+		t.Fatal("upgrade returned no state")
+	}
+	var upgraded map[string]any
+	if err := json.Unmarshal(resp.DynamicValue.JSON, &upgraded); err != nil {
+		t.Fatalf("unmarshal upgraded state: %v", err)
+	}
+	if upgraded["dns_records"] != nil {
+		t.Errorf("dns_records = %v, want null", upgraded["dns_records"])
+	}
+	if upgraded["id"] != "domain-1" || upgraded["name"] != "example.com" || upgraded["stage"] != "origin" {
+		t.Errorf("upgraded state = %v, want the other attributes kept", upgraded)
+	}
 }

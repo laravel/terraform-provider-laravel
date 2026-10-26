@@ -312,10 +312,39 @@ type DomainAttributes struct {
 // DomainDNSRecords is the dns_records object on a domain.
 type DomainDNSRecords struct {
 	SSL             []DomainSSLRecord `json:"ssl"`
-	PreVerification string            `json:"pre_verification"`
-	Origin          string            `json:"origin"`
-	OriginCNAME     string            `json:"origin_cname"`
-	DCV             string            `json:"dcv"`
+	PreVerification *DomainDNSRecord  `json:"pre_verification"`
+	Origin          *DomainDNSRecord  `json:"origin"`
+	OriginCNAME     *DomainDNSRecord  `json:"origin_cname"`
+	DCV             *DomainDNSRecord  `json:"dcv"`
+}
+
+// DomainDNSRecord is one record in dns_records other than ssl.
+//
+// The published API spec types these fields as strings, but the API returns
+// them as {type, name, value} objects, or null when the record is not needed
+// (for example origin_cname on a root domain). Decoding them as strings failed
+// every read of such a domain. Both shapes are accepted: a bare string is kept
+// as the record's value.
+type DomainDNSRecord struct {
+	Type  *string `json:"type"`
+	Name  *string `json:"name"`
+	Value *string `json:"value"`
+}
+
+func (r *DomainDNSRecord) UnmarshalJSON(data []byte) error {
+	var value string
+	if err := json.Unmarshal(data, &value); err == nil {
+		*r = DomainDNSRecord{Value: &value}
+		return nil
+	}
+
+	type record DomainDNSRecord
+	var decoded record
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = DomainDNSRecord(decoded)
+	return nil
 }
 
 // DomainSSLRecord is one CNAME/TXT record required for SSL issuance.

@@ -154,7 +154,9 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 				a["origin_status"] = "pending"
 				a["action_required"] = "add_txt_records"
 				// dns_records is required in the response and is how an
-				// operator learns which records to create.
+				// operator learns which records to create. Its records are
+				// {type, name, value} objects, or null when not needed, even
+				// though the published API spec types them as strings.
 				a["dns_records"] = map[string]any{
 					"ssl": []any{
 						map[string]any{
@@ -163,10 +165,22 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 							"value": "dcv-token",
 						},
 					},
-					"pre_verification": "laravel-cloud-verification=token",
-					"origin":           "origin.laravel.cloud",
-					"origin_cname":     "cname.laravel.cloud",
-					"dcv":              "dcv-token",
+					"pre_verification": map[string]any{
+						"type":  "TXT",
+						"name":  "_cf-custom-hostname.example.com",
+						"value": "laravel-cloud-verification=token",
+					},
+					"origin": map[string]any{
+						"type":  "A",
+						"name":  "example.com",
+						"value": "192.0.2.1",
+					},
+					"origin_cname": nil,
+					"dcv": map[string]any{
+						"type":  "CNAME",
+						"name":  "_acme-challenge.example.com",
+						"value": "example.com.dcv.cloudflare.com",
+					},
 				}
 				return a
 			},
