@@ -17,14 +17,21 @@ func (c *Client) ListSecrets(ctx context.Context) ([]SecretData, error) {
 // route answers PATCH and DELETE only -- so the organization's list is the only
 // way to read one back. It returns a not-found error when the id is absent, so
 // callers can treat it like any other single-resource read.
+//
+// The list is paged, and a secret deleted elsewhere between two page fetches
+// shifts the rest by one, so a secret can slip past unseen. A miss is checked
+// against a second listing before it is reported: a false not-found would drop
+// the secret from state and plan to create it again.
 func (c *Client) GetSecret(ctx context.Context, id string) (*SecretData, error) {
-	secrets, err := c.ListSecrets(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for i := range secrets {
-		if secrets[i].ID == id {
-			return &secrets[i], nil
+	for attempt := 0; attempt < 2; attempt++ {
+		secrets, err := c.ListSecrets(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for i := range secrets {
+			if secrets[i].ID == id {
+				return &secrets[i], nil
+			}
 		}
 	}
 	return nil, &APIError{StatusCode: 404, Body: fmt.Sprintf("secret %s not found", id)}

@@ -66,13 +66,31 @@ func mapSettingsToState(env *client.EnvironmentData, state *EnvironmentResourceM
 	state.ServingRoot = servingRootFromAPI(env)
 	state.StartCommand = types.StringPointerValue(a.StartCommand)
 	state.HibernationWakeUpInterval = wakeUpIntervalFromAPI(a.HibernationWakeUpInterval, state.HibernationWakeUpInterval)
+	// The published response schema leaves some of these out (robots_tag and
+	// browser_integrity_check among them). A setting the response does not
+	// carry keeps its prior value: reading its absence as null would plan to
+	// send it again on every apply.
 	rh := a.NetworkSettings.ResponseHeaders
-	state.ResponseHeadersFrame = types.StringPointerValue(rh.Frame)
-	state.ResponseHeadersContentType = types.StringPointerValue(rh.ContentType)
-	state.ResponseHeadersRobotsTag = types.StringPointerValue(rh.RobotsTag)
-	state.ResponseHeadersHSTSMaxAge, state.ResponseHeadersHSTSIncludeSubdomains, state.ResponseHeadersHSTSPreload = hstsFromAPI(env)
-	state.FirewallBlockPath = types.BoolPointerValue(a.NetworkSettings.Firewall.BlockPath)
-	state.FirewallBrowserIntegrityCheck = types.BoolPointerValue(a.NetworkSettings.Firewall.BrowserIntegrityCheck)
+	keepStringIfAbsent(&state.ResponseHeadersFrame, rh.Frame)
+	keepStringIfAbsent(&state.ResponseHeadersContentType, rh.ContentType)
+	keepStringIfAbsent(&state.ResponseHeadersRobotsTag, rh.RobotsTag)
+	if rh.HSTS != nil {
+		state.ResponseHeadersHSTSMaxAge, state.ResponseHeadersHSTSIncludeSubdomains, state.ResponseHeadersHSTSPreload = hstsFromAPI(env)
+	}
+	keepBoolIfAbsent(&state.FirewallBlockPath, a.NetworkSettings.Firewall.BlockPath)
+	keepBoolIfAbsent(&state.FirewallBrowserIntegrityCheck, a.NetworkSettings.Firewall.BrowserIntegrityCheck)
+}
+
+func keepStringIfAbsent(dst *types.String, api *string) {
+	if api != nil {
+		*dst = types.StringValue(*api)
+	}
+}
+
+func keepBoolIfAbsent(dst *types.Bool, api *bool) {
+	if api != nil {
+		*dst = types.BoolValue(*api)
+	}
 }
 
 // setUnknownSettingsFromAPI resolves the readable settings the configuration

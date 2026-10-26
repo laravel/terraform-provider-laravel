@@ -3,6 +3,7 @@ package provider
 import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -135,6 +136,86 @@ func probesFromAPI(p *client.InstanceProbes) *InstanceProbesModel {
 		Readiness: probeFromAPI(p.Readiness),
 		Liveness:  probeFromAPI(p.Liveness),
 	}
+}
+
+// probes is stored on the resource model as a types.Object rather than as
+// *InstanceProbesModel: a Go struct pointer cannot hold an unknown value, and
+// probes set from another resource's output is unknown at plan time, which
+// would fail every plan with a value conversion error. The helpers below
+// convert between the two once the value is known.
+
+var probeAttrTypes = map[string]attr.Type{
+	"path":     types.StringType,
+	"port":     types.Int64Type,
+	"delay":    types.Int64Type,
+	"interval": types.Int64Type,
+	"timeout":  types.Int64Type,
+	"tries":    types.Int64Type,
+}
+
+var probesAttrTypes = map[string]attr.Type{
+	"startup":   types.ObjectType{AttrTypes: probeAttrTypes},
+	"readiness": types.ObjectType{AttrTypes: probeAttrTypes},
+	"liveness":  types.ObjectType{AttrTypes: probeAttrTypes},
+}
+
+func probeToObject(m *InstanceProbeModel) types.Object {
+	if m == nil {
+		return types.ObjectNull(probeAttrTypes)
+	}
+	return types.ObjectValueMust(probeAttrTypes, map[string]attr.Value{
+		"path":     m.Path,
+		"port":     m.Port,
+		"delay":    m.Delay,
+		"interval": m.Interval,
+		"timeout":  m.Timeout,
+		"tries":    m.Tries,
+	})
+}
+
+// probesToObject renders probes for the resource model; nil becomes null.
+func probesToObject(m *InstanceProbesModel) types.Object {
+	if m == nil {
+		return types.ObjectNull(probesAttrTypes)
+	}
+	return types.ObjectValueMust(probesAttrTypes, map[string]attr.Value{
+		"startup":   probeToObject(m.Startup),
+		"readiness": probeToObject(m.Readiness),
+		"liveness":  probeToObject(m.Liveness),
+	})
+}
+
+func probeFromObject(v attr.Value) (*InstanceProbeModel, bool) {
+	o, ok := v.(types.Object)
+	if !ok || o.IsNull() {
+		return nil, true
+	}
+	if o.IsUnknown() {
+		return nil, false
+	}
+	a := o.Attributes()
+	str := func(k string) types.String { s, _ := a[k].(types.String); return s }
+	num := func(k string) types.Int64 { n, _ := a[k].(types.Int64); return n }
+	return &InstanceProbeModel{
+		Path: str("path"), Port: num("port"), Delay: num("delay"),
+		Interval: num("interval"), Timeout: num("timeout"), Tries: num("tries"),
+	}, true
+}
+
+// probesFromObject reads probes off the resource model. It reports false when
+// the value, or one of its checks, is not known yet.
+func probesFromObject(o types.Object) (*InstanceProbesModel, bool) {
+	if o.IsNull() {
+		return nil, true
+	}
+	if o.IsUnknown() {
+		return nil, false
+	}
+	a := o.Attributes()
+	startup, ok1 := probeFromObject(a["startup"])
+	readiness, ok2 := probeFromObject(a["readiness"])
+	liveness, ok3 := probeFromObject(a["liveness"])
+	return &InstanceProbesModel{Startup: startup, Readiness: readiness, Liveness: liveness}, ok1 && ok2 && ok3
 }
 
 func probeEqual(a, b *InstanceProbeModel) bool {

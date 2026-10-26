@@ -117,6 +117,36 @@ func TestInstanceProbesPlan(t *testing.T) {
 	})
 }
 
+// TestInstanceProbesUnknownPlan sets probes from a value that is unknown until
+// apply. The whole object is unknown at plan time, which a Go struct cannot
+// hold, so this guards against modelling probes as one again.
+func TestInstanceProbesUnknownPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	addr := "laravel_cloud_instance.app"
+	// The environment's slug is known only once it is created, so the whole
+	// conditional -- and with it probes -- is unknown when planning.
+	config := appInstanceConfig(baseURL, `
+  probes = laravel_cloud_environment.env.slug == "" ? null : {
+    readiness = { path = "/up" }
+  }
+`)
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("probes").AtMapKey("readiness").AtMapKey("path"), knownvalue.StringExact("/up")),
+				},
+			},
+			{
+				Config:           config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+		},
+	})
+}
+
 // TestInstanceProbesValidationPlan rejects probes the API would drop or ignore, and
 // an is_default the API has no way to apply.
 func TestInstanceProbesValidationPlan(t *testing.T) {

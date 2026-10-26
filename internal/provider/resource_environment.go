@@ -7,6 +7,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -16,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
@@ -66,6 +68,8 @@ type EnvironmentResourceModel struct {
 	StartCommand                         types.String         `tfsdk:"start_command"`
 	HibernationWakeUpInterval            types.Int64          `tfsdk:"hibernation_wake_up_interval"`
 	NightwatchToken                      types.String         `tfsdk:"nightwatch_token"`
+	NightwatchTokenWO                    types.String         `tfsdk:"nightwatch_token_wo"`
+	NightwatchTokenWOVersion             types.Int64          `tfsdk:"nightwatch_token_wo_version"`
 	FilesystemKeys                       []FilesystemKeyModel `tfsdk:"filesystem_keys"`
 	ResponseHeadersFrame                 types.String         `tfsdk:"response_headers_frame"`
 	ResponseHeadersContentType           types.String         `tfsdk:"response_headers_content_type"`
@@ -360,10 +364,32 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Optional:  true,
 				Sensitive: true,
 				Description: "Nightwatch environment token (44 chars) that connects the environment to Nightwatch. " +
-					"Removing it disconnects Nightwatch. Write-only: the API never reports it back, so a token " +
-					"changed outside Terraform is not detected.",
+					"Removing it disconnects Nightwatch. The API never reports it back, so a token changed outside " +
+					"Terraform is not detected. It is stored in Terraform state; with Terraform 1.11 or later, use " +
+					"nightwatch_token_wo instead to keep it out of state.",
 				Validators: []validator.String{
 					stringvalidator.LengthBetween(44, 44),
+					stringvalidator.ConflictsWith(path.MatchRoot("nightwatch_token_wo")),
+				},
+			},
+			"nightwatch_token_wo": schema.StringAttribute{
+				Optional:  true,
+				Sensitive: true,
+				WriteOnly: true,
+				Description: "Nightwatch environment token as a write-only argument (Terraform 1.11 or later): it is " +
+					"sent and never stored in plan or state. Because Terraform cannot see it change, it is sent " +
+					"only on create and when nightwatch_token_wo_version changes; bump the version to rotate it. " +
+					"Removing both disconnects Nightwatch.",
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(44, 44),
+					stringvalidator.AlsoRequires(path.MatchRoot("nightwatch_token_wo_version")),
+				},
+			},
+			"nightwatch_token_wo_version": schema.Int64Attribute{
+				Optional:    true,
+				Description: "Version of nightwatch_token_wo. Changing it sends the current nightwatch_token_wo.",
+				Validators: []validator.Int64{
+					int64validator.AlsoRequires(path.MatchRoot("nightwatch_token_wo")),
 				},
 			},
 			"filesystem_keys": schema.ListNestedAttribute{
@@ -619,6 +645,15 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	}
 
 	patchReq := buildEnvironmentUpdateFromDiff(origPlan, env, adopted)
+	if wo, d := nightwatchTokenWO(ctx, req.Config); d.HasError() {
+		resp.Diagnostics.Append(d...)
+		return
+	} else if !wo.IsNull() {
+		if patchReq == nil {
+			patchReq = &client.UpdateEnvironmentRequest{}
+		}
+		patchReq.NightwatchToken = nullableStringRequest(wo)
+	}
 	if patchReq != nil {
 		patched, err := r.client.UpdateEnvironment(ctx, env.ID, *patchReq)
 		if err == nil && patched != nil {
@@ -642,6 +677,12 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 				"The environment was created, but updating settings failed: "+err.Error()+
 					". The planned values are kept in state. Run 'terraform apply' again to retry.",
 			)
+			// nightwatch_token and filesystem_keys are never reported back,
+			// so no refresh could notice they were not applied and the next
+			// plan would send nothing. Mark them for Read to drop instead.
+			if patchReq.NightwatchToken != nil || patchReq.FilesystemKeys != nil {
+				resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentWriteOnlyKey, []byte("true"))...)
+			}
 		}
 		// Whether PATCH succeeded or failed, we keep the plan values in
 		// state. The API may not echo back the values we sent (e.g.
@@ -700,8 +741,34 @@ func (r *EnvironmentResource) Read(ctx context.Context, req resource.ReadRequest
 	}
 
 	mapEnvironmentToState(env, &state)
+	// Settings that never reached the API after create are dropped from state,
+	// so the next plan shows them being added and sends them.
+	if pending, d := req.Private.GetKey(ctx, unsentWriteOnlyKey); d.HasError() {
+		resp.Diagnostics.Append(d...)
+		return
+	} else if len(pending) > 0 {
+		state.NightwatchToken = types.StringNull()
+		state.NightwatchTokenWOVersion = types.Int64Null()
+		state.FilesystemKeys = nil
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
+
+// nightwatchTokenWO reads the write-only token, which only the configuration
+// carries.
+func nightwatchTokenWO(ctx context.Context, config tfsdk.Config) (types.String, diag.Diagnostics) {
+	var wo types.String
+	d := config.GetAttribute(ctx, path.Root("nightwatch_token_wo"), &wo)
+	if wo.IsUnknown() {
+		wo = types.StringNull()
+	}
+	return wo, d
+}
+
+// unsentWriteOnlyKey is the private state key that records an environment
+// whose nightwatch_token and filesystem_keys failed to reach the API on
+// create. An update that succeeds clears it.
+const unsentWriteOnlyKey = "unsent_write_only"
 
 func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan EnvironmentResourceModel
@@ -728,6 +795,23 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 	}
 
 	updateReq := buildEnvironmentUpdateFromStateDiff(plan, state)
+	// nightwatch_token_wo never reaches state, so its version stands in for
+	// it: a changed version sends the current token, or null when it was
+	// removed. It goes after the state diff so that switching from
+	// nightwatch_token sends the new token rather than clearing it.
+	if !plan.NightwatchTokenWOVersion.Equal(state.NightwatchTokenWOVersion) {
+		wo, d := nightwatchTokenWO(ctx, req.Config)
+		resp.Diagnostics.Append(d...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if !wo.IsNull() || plan.NightwatchToken.IsNull() {
+			if updateReq == nil {
+				updateReq = &client.UpdateEnvironmentRequest{}
+			}
+			updateReq.NightwatchToken = nullableStringRequest(wo)
+		}
+	}
 	if updateReq == nil {
 		// Nothing else changed — just keep state as-is.
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
@@ -739,6 +823,7 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 		resp.Diagnostics.AddError("Error updating environment", err.Error())
 		return
 	}
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentWriteOnlyKey, nil)...)
 
 	// Keep plan values in state rather than overwriting from the API
 	// response. The API may not echo back the values we sent (e.g.

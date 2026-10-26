@@ -43,6 +43,8 @@ resource "laravel_cloud_environment" "example" {
 
 ### Optional
 
+> **NOTE**: [Write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) are supported in Terraform 1.11 and later.
+
 - `build_command` (String) Custom build command (max 2000 chars).
 - `cache_id` (String) Cache to attach.
 - `cache_strategy` (String) Cache strategy (default, bypass).
@@ -56,7 +58,9 @@ resource "laravel_cloud_environment" "example" {
 - `firewall_block_path` (Boolean) Whether the firewall blocks requests for common exploit paths.
 - `firewall_browser_integrity_check` (Boolean) Whether the firewall runs a browser integrity check on requests.
 - `hibernation_wake_up_interval` (Number) Minutes between periodic wake-ups of a hibernating environment (1-10080, up to 7 days). Set 0 to turn periodic wake-ups off.
-- `nightwatch_token` (String, Sensitive) Nightwatch environment token (44 chars) that connects the environment to Nightwatch. Removing it disconnects Nightwatch. Write-only: the API never reports it back, so a token changed outside Terraform is not detected.
+- `nightwatch_token` (String, Sensitive) Nightwatch environment token (44 chars) that connects the environment to Nightwatch. Removing it disconnects Nightwatch. The API never reports it back, so a token changed outside Terraform is not detected. It is stored in Terraform state; with Terraform 1.11 or later, use nightwatch_token_wo instead to keep it out of state.
+- `nightwatch_token_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Nightwatch environment token as a write-only argument (Terraform 1.11 or later): it is sent and never stored in plan or state. Because Terraform cannot see it change, it is sent only on create and when nightwatch_token_wo_version changes; bump the version to rotate it. Removing both disconnects Nightwatch.
+- `nightwatch_token_wo_version` (Number) Version of nightwatch_token_wo. Changing it sends the current nightwatch_token_wo.
 - `node_version` (String) Node.js version.
 - `php_version` (String) PHP version to run, in the API's "major:minor" form (e.g. "8.4:1"). The API reports only the major version (see php_major_version), so an import derives this from it. A version changed outside Terraform is not detected.
 - `response_headers_content_type` (String) X-Content-Type-Options response header: nosniff or none.

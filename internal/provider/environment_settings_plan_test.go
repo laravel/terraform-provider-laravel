@@ -183,6 +183,106 @@ func TestEnvironmentSettingsPlan(t *testing.T) {
 	})
 }
 
+// TestEnvironmentOmittedSettingsPlan covers settings the published response
+// schema leaves out (robots_tag, browser_integrity_check). If the API does
+// not report them, a refresh must keep the configured value rather than read
+// the absence as null and plan to send them again forever.
+func TestEnvironmentOmittedSettingsPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	addr := "laravel_cloud_environment.env"
+	config := environmentSettingsConfig(baseURL, `
+  response_headers_robots_tag      = "noindex, nofollow"
+  firewall_browser_integrity_check = false
+`)
+	omit := func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, env := range f.envs {
+			env.Attributes.NetworkSettings.ResponseHeaders.RobotsTag = nil
+			env.Attributes.NetworkSettings.Firewall.BrowserIntegrityCheck = nil
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config},
+			{
+				PreConfig:        omit,
+				Config:           config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("response_headers_robots_tag"), knownvalue.StringExact("noindex, nofollow")),
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("firewall_browser_integrity_check"), knownvalue.Bool(false)),
+				},
+			},
+		},
+	})
+}
+
+// TestEnvironmentUnsentWriteOnlyPlan covers a create whose follow-up update
+// fails. The API never reports nightwatch_token or filesystem_keys, so unless
+// the provider remembers they were not sent, state claims them and no later
+// plan would ever send them.
+func TestEnvironmentUnsentWriteOnlyPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	addr := "laravel_cloud_environment.env"
+	config := environmentSettingsConfig(baseURL, fmt.Sprintf(`
+  nightwatch_token = %q
+  filesystem_keys  = [{ key_id = "key-1", disk = "s3" }]
+`, testNightwatchToken))
+
+	f.mu.Lock()
+	f.failEnvUpdates = 1
+	f.mu.Unlock()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// The environment is created; the settings update fails and
+				// is reported as a warning, and the refresh after it already
+				// plans to send the two settings again.
+				Config:             config,
+				ExpectNonEmptyPlan: true,
+				Check: func(*terraform.State) error {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					if len(f.envUpdateBodies) != 0 {
+						return fmt.Errorf("expected the follow-up update to fail, got %v", f.envUpdateBodies)
+					}
+					return nil
+				},
+			},
+			{
+				// The next plan must send both settings.
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
+				}},
+				Check: func(*terraform.State) error {
+					body, err := lastEnvUpdate(f)
+					if err != nil {
+						return err
+					}
+					if body["nightwatch_token"] != testNightwatchToken {
+						return fmt.Errorf("nightwatch_token was not resent: %v", body)
+					}
+					if keys, _ := body["filesystem_keys"].([]any); len(keys) != 1 {
+						return fmt.Errorf("filesystem_keys were not resent: %v", body)
+					}
+					return nil
+				},
+			},
+			{
+				// Once applied, the marker is gone and nothing is planned.
+				Config:           config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+		},
+	})
+}
+
 // TestEnvironmentWebsocketApplicationPlan attaches a WebSocket application to
 // an environment and detaches it again by removing the attribute, which must
 // send null rather than omit the field.

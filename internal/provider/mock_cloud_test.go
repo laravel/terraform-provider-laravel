@@ -45,6 +45,9 @@ type fakeCloud struct {
 	// envUpdateBodies holds the same bodies as sent, where an explicit null is
 	// still distinguishable from an omitted field.
 	envUpdateBodies []map[string]any
+	// failEnvUpdates makes that many of the next PATCH /environments calls
+	// fail with a 500, to model a follow-up update that does not land.
+	failEnvUpdates int
 
 	// Generic JSON:API store used by every resource other than applications
 	// and environments (which have bespoke handlers above). Keyed by
@@ -340,6 +343,11 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failEnvUpdates > 0 {
+		f.failEnvUpdates--
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("server error"))
+		return
+	}
 	f.envUpdateBodies = append(f.envUpdateBodies, body)
 
 	env, ok := f.envs[r.PathValue("id")]

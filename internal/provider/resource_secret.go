@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"regexp"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
@@ -29,12 +32,16 @@ type SecretResource struct {
 }
 
 type SecretResourceModel struct {
-	ID        types.String `tfsdk:"id"`
-	Key       types.String `tfsdk:"key"`
-	Value     types.String `tfsdk:"value"`
-	Notes     types.String `tfsdk:"notes"`
-	CreatedAt types.String `tfsdk:"created_at"`
-	UpdatedAt types.String `tfsdk:"updated_at"`
+	ID    types.String `tfsdk:"id"`
+	Key   types.String `tfsdk:"key"`
+	Value types.String `tfsdk:"value"`
+	Notes types.String `tfsdk:"notes"`
+	// ValueWO is write-only: it is in the configuration and nowhere else, so
+	// it is always null here and is read from req.Config.
+	ValueWO        types.String `tfsdk:"value_wo"`
+	ValueWOVersion types.Int64  `tfsdk:"value_wo_version"`
+	CreatedAt      types.String `tfsdk:"created_at"`
+	UpdatedAt      types.String `tfsdk:"updated_at"`
 }
 
 func NewSecretResource() resource.Resource {
@@ -67,11 +74,33 @@ func (r *SecretResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				},
 			},
 			"value": schema.StringAttribute{
-				Required:  true,
+				Optional:  true,
 				Sensitive: true,
-				Description: "The secret's value. It is stored in Terraform state, as every sensitive value is. " +
-					"The API never returns it, so a value changed outside Terraform is not detected, and the " +
-					"first apply after an import writes the configured value.",
+				Description: "The secret's value. It is stored in Terraform state, as every sensitive value is; " +
+					"with Terraform 1.11 or later, use value_wo instead to keep it out of state. Exactly one of " +
+					"value and value_wo is required. The API never returns it, so a value changed outside " +
+					"Terraform is not detected, and the first apply after an import writes the configured value.",
+				Validators: []validator.String{
+					stringvalidator.ExactlyOneOf(path.MatchRoot("value_wo")),
+				},
+			},
+			"value_wo": schema.StringAttribute{
+				Optional:  true,
+				Sensitive: true,
+				WriteOnly: true,
+				Description: "The secret's value as a write-only argument (Terraform 1.11 or later): it is sent " +
+					"and never stored in plan or state. Because Terraform cannot see it change, it is sent " +
+					"only on create and when value_wo_version changes; bump the version to rotate the value.",
+				Validators: []validator.String{
+					stringvalidator.AlsoRequires(path.MatchRoot("value_wo_version")),
+				},
+			},
+			"value_wo_version": schema.Int64Attribute{
+				Optional:    true,
+				Description: "Version of value_wo. Changing it sends the current value_wo; it has no other effect.",
+				Validators: []validator.Int64{
+					int64validator.AlsoRequires(path.MatchRoot("value_wo")),
+				},
 			},
 			"notes": schema.StringAttribute{
 				Optional:    true,
@@ -112,7 +141,12 @@ func (r *SecretResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
-	keyPairID, sealed, err := r.client.SealSecretValue(ctx, plan.Value.ValueString())
+	value, d := secretValue(ctx, req.Config, plan)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	keyPairID, sealed, err := r.client.SealSecretValue(ctx, value)
 	if err != nil {
 		resp.Diagnostics.AddError("Error encrypting secret value", err.Error())
 		return
@@ -165,8 +199,16 @@ func (r *SecretResource) Update(ctx context.Context, req resource.UpdateRequest,
 
 	// key is required on every update, even when it is unchanged.
 	updateReq := client.UpdateSecretRequest{Key: plan.Key.ValueString()}
-	if !plan.Value.Equal(state.Value) {
-		keyPairID, sealed, err := r.client.SealSecretValue(ctx, plan.Value.ValueString())
+	// value is compared directly. value_wo never reaches state, so it is sent
+	// when its version changes, which includes switching to it from value.
+	if (!plan.Value.IsNull() && !plan.Value.Equal(state.Value)) ||
+		(plan.Value.IsNull() && !plan.ValueWOVersion.Equal(state.ValueWOVersion)) {
+		value, d := secretValue(ctx, req.Config, plan)
+		resp.Diagnostics.Append(d...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		keyPairID, sealed, err := r.client.SealSecretValue(ctx, value)
 		if err != nil {
 			resp.Diagnostics.AddError("Error encrypting secret value", err.Error())
 			return
@@ -203,6 +245,24 @@ func (r *SecretResource) Delete(ctx context.Context, req resource.DeleteRequest,
 
 func (r *SecretResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// secretValue returns the value to send: value when it is set, otherwise the
+// write-only value_wo, which only the configuration carries.
+func secretValue(ctx context.Context, config tfsdk.Config, plan SecretResourceModel) (string, diag.Diagnostics) {
+	if !plan.Value.IsNull() {
+		return plan.Value.ValueString(), nil
+	}
+	var wo types.String
+	d := config.GetAttribute(ctx, path.Root("value_wo"), &wo)
+	if d.HasError() {
+		return "", d
+	}
+	if wo.IsNull() || wo.IsUnknown() {
+		d.AddAttributeError(path.Root("value_wo"), "Missing secret value",
+			"Set value, or value_wo with value_wo_version.")
+	}
+	return wo.ValueString(), d
 }
 
 func mapSecretToState(s *client.SecretData, state *SecretResourceModel) {

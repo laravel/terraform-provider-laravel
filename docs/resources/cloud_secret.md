@@ -18,10 +18,24 @@ variable "stripe_secret" {
   sensitive = true
 }
 
+# Terraform 1.11 or later: the value is sent but never stored in state.
+# Bump value_wo_version to send a new value.
 resource "laravel_cloud_secret" "stripe" {
-  key   = "STRIPE_SECRET"
-  value = var.stripe_secret
-  notes = "Stripe live key"
+  key              = "STRIPE_SECRET"
+  value_wo         = var.stripe_secret
+  value_wo_version = 1
+  notes            = "Stripe live key"
+}
+
+# Earlier Terraform versions: the value is kept in state, marked sensitive.
+resource "laravel_cloud_secret" "mailgun" {
+  key   = "MAILGUN_SECRET"
+  value = var.mailgun_secret
+}
+
+variable "mailgun_secret" {
+  type      = string
+  sensitive = true
 }
 ```
 
@@ -31,11 +45,15 @@ resource "laravel_cloud_secret" "stripe" {
 ### Required
 
 - `key` (String) The secret's name (max 255 chars). It must start with a letter or underscore and contain only letters, numbers and underscores.
-- `value` (String, Sensitive) The secret's value. It is stored in Terraform state, as every sensitive value is. The API never returns it, so a value changed outside Terraform is not detected, and the first apply after an import writes the configured value.
 
 ### Optional
 
+> **NOTE**: [Write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) are supported in Terraform 1.11 and later.
+
 - `notes` (String) Free-form notes about the secret (max 500 chars).
+- `value` (String, Sensitive) The secret's value. It is stored in Terraform state, as every sensitive value is; with Terraform 1.11 or later, use value_wo instead to keep it out of state. Exactly one of value and value_wo is required. The API never returns it, so a value changed outside Terraform is not detected, and the first apply after an import writes the configured value.
+- `value_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) The secret's value as a write-only argument (Terraform 1.11 or later): it is sent and never stored in plan or state. Because Terraform cannot see it change, it is sent only on create and when value_wo_version changes; bump the version to rotate the value.
+- `value_wo_version` (Number) Version of value_wo. Changing it sends the current value_wo; it has no other effect.
 
 ### Read-Only
 

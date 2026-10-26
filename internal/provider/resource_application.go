@@ -289,7 +289,9 @@ func (r *ApplicationResource) Update(ctx context.Context, req resource.UpdateReq
 	plan.SlackChannel = types.StringPointerValue(app.Attributes.SlackChannel)
 	plan.AvatarURL = types.StringPointerValue(app.Attributes.AvatarURL)
 	plan.CreatedAt = types.StringPointerValue(app.Attributes.CreatedAt)
-	plan.RootDirectory = types.StringPointerValue(app.Attributes.RootDirectory)
+	// root_directory cannot change in place, so the planned value stands: after
+	// an upgrade it is planned as its null prior state, and the next refresh
+	// records the reported value.
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }

@@ -14,7 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `laravel_cloud_secret` manages an organization secret. The API accepts a
   value only sealed to the organization's public key, so the provider fetches
   that key and encrypts the value before sending it. The value is never
-  returned, so a change made outside Terraform is not detected.
+  returned, so a change made outside Terraform is not detected. On Terraform
+  1.11 or later, `value_wo` with `value_wo_version` keeps the value out of
+  state altogether.
 - `laravel_cloud_environment_secret` attaches a secret to an environment, and
   notices when it is detached outside Terraform.
 - `laravel_cloud_environment_resend` connects Resend email sending to an
@@ -26,7 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `websocket_application_id`, and `edge_network_id` on create. Settings the
   API reports are adopted when left unset, so upgrading does not plan to reset
   values chosen in the dashboard; `nightwatch_token` and `filesystem_keys` are
-  never reported and keep their configured value.
+  never reported and keep their configured value. `nightwatch_token_wo` with
+  `nightwatch_token_wo_version` is the write-only form of the token, for
+  Terraform 1.11 or later.
 - `laravel_cloud_instance.probes` sets the health checks of an app instance.
   Health checks are left alone until the attribute is set, so ones the
   platform configured itself are not removed.

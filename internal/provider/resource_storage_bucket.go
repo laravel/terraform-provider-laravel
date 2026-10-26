@@ -309,7 +309,12 @@ func (r *StorageBucketResource) Update(ctx context.Context, req resource.UpdateR
 		return
 	}
 
+	// location_hint cannot change in place, so the planned value stands. After an
+	// upgrade it is planned as its null prior state, and adopting the reported
+	// value here would contradict the plan; the next refresh records it.
+	plannedLocationHint := plan.LocationHint
 	mapStorageBucketToState(ctx, bucket, &plan, &resp.Diagnostics)
+	plan.LocationHint = plannedLocationHint
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 

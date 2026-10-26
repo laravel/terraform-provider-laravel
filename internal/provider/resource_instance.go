@@ -30,29 +30,29 @@ type InstanceResource struct {
 }
 
 type InstanceResourceModel struct {
-	ID                               types.String         `tfsdk:"id"`
-	EnvironmentID                    types.String         `tfsdk:"environment_id"`
-	Name                             types.String         `tfsdk:"name"`
-	Type                             types.String         `tfsdk:"type"`
-	Size                             types.String         `tfsdk:"size"`
-	ScalingType                      types.String         `tfsdk:"scaling_type"`
-	MinReplicas                      types.Int64          `tfsdk:"min_replicas"`
-	MaxReplicas                      types.Int64          `tfsdk:"max_replicas"`
-	UsesScheduler                    types.Bool           `tfsdk:"uses_scheduler"`
-	ScalingCPUThresholdPercentage    types.Int64          `tfsdk:"scaling_cpu_threshold_percentage"`
-	ScalingMemoryThresholdPercentage types.Int64          `tfsdk:"scaling_memory_threshold_percentage"`
-	SleepWithApp                     types.Bool           `tfsdk:"sleep_with_app"`
-	VisibilityTimeout                types.Int64          `tfsdk:"visibility_timeout"`
-	PollingInterval                  types.Int64          `tfsdk:"polling_interval"`
-	ShutdownTimeout                  types.Int64          `tfsdk:"shutdown_timeout"`
-	UsesOctane                       types.Bool           `tfsdk:"uses_octane"`
-	UsesInertiaSSR                   types.Bool           `tfsdk:"uses_inertia_ssr"`
-	HibernationTimeout               types.Int64          `tfsdk:"hibernation_timeout"`
-	Paused                           types.Bool           `tfsdk:"paused"`
-	IsDefault                        types.Bool           `tfsdk:"is_default"`
-	Probes                           *InstanceProbesModel `tfsdk:"probes"`
-	QueueStatus                      types.String         `tfsdk:"queue_status"`
-	CreatedAt                        types.String         `tfsdk:"created_at"`
+	ID                               types.String `tfsdk:"id"`
+	EnvironmentID                    types.String `tfsdk:"environment_id"`
+	Name                             types.String `tfsdk:"name"`
+	Type                             types.String `tfsdk:"type"`
+	Size                             types.String `tfsdk:"size"`
+	ScalingType                      types.String `tfsdk:"scaling_type"`
+	MinReplicas                      types.Int64  `tfsdk:"min_replicas"`
+	MaxReplicas                      types.Int64  `tfsdk:"max_replicas"`
+	UsesScheduler                    types.Bool   `tfsdk:"uses_scheduler"`
+	ScalingCPUThresholdPercentage    types.Int64  `tfsdk:"scaling_cpu_threshold_percentage"`
+	ScalingMemoryThresholdPercentage types.Int64  `tfsdk:"scaling_memory_threshold_percentage"`
+	SleepWithApp                     types.Bool   `tfsdk:"sleep_with_app"`
+	VisibilityTimeout                types.Int64  `tfsdk:"visibility_timeout"`
+	PollingInterval                  types.Int64  `tfsdk:"polling_interval"`
+	ShutdownTimeout                  types.Int64  `tfsdk:"shutdown_timeout"`
+	UsesOctane                       types.Bool   `tfsdk:"uses_octane"`
+	UsesInertiaSSR                   types.Bool   `tfsdk:"uses_inertia_ssr"`
+	HibernationTimeout               types.Int64  `tfsdk:"hibernation_timeout"`
+	Paused                           types.Bool   `tfsdk:"paused"`
+	IsDefault                        types.Bool   `tfsdk:"is_default"`
+	Probes                           types.Object `tfsdk:"probes"`
+	QueueStatus                      types.String `tfsdk:"queue_status"`
+	CreatedAt                        types.String `tfsdk:"created_at"`
 }
 
 func NewInstanceResource() resource.Resource {
@@ -300,7 +300,7 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 	// The API ignores probes it cannot apply rather than rejecting them. The
 	// instance exists, so keep the configured value and let the next plan
 	// retry, where Update reports why they were not applied.
-	if configuredProbes != nil && plan.Probes == nil {
+	if !configuredProbes.IsNull() && plan.Probes.IsNull() {
 		resp.Diagnostics.AddWarning("Health checks were not applied", probesNotAppliedDetail)
 		plan.Probes = configuredProbes
 	}
@@ -341,8 +341,8 @@ func instanceCreateFollowUp(plan InstanceResourceModel) (client.UpdateInstanceRe
 		req.HibernationTimeout = &v
 		set = true
 	}
-	if plan.Probes != nil {
-		req.Probes = probesRequest(plan.Probes)
+	if probes, _ := probesFromObject(plan.Probes); probes != nil {
+		req.Probes = probesRequest(probes)
 		set = true
 	}
 	return req, set
@@ -437,8 +437,10 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		v := int(plan.HibernationTimeout.ValueInt64())
 		updateReq.HibernationTimeout = &v
 	}
-	if !probesEqual(plan.Probes, state.Probes) {
-		updateReq.Probes = probesRequest(plan.Probes)
+	planProbes, _ := probesFromObject(plan.Probes)
+	stateProbes, _ := probesFromObject(state.Probes)
+	if !probesEqual(planProbes, stateProbes) {
+		updateReq.Probes = probesRequest(planProbes)
 	}
 
 	inst, err := r.client.UpdateInstance(ctx, state.ID.ValueString(), updateReq)
@@ -446,7 +448,7 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		resp.Diagnostics.AddError("Error updating instance", err.Error())
 		return
 	}
-	if plan.Probes != nil && inst.Attributes.Probes == nil {
+	if planProbes != nil && inst.Attributes.Probes == nil {
 		resp.Diagnostics.AddAttributeError(path.Root("probes"), "Health checks were not applied", probesNotAppliedDetail)
 		return
 	}
@@ -550,8 +552,8 @@ func mapInstanceToState(inst *client.InstanceData, state *InstanceResourceModel)
 	// probes are managed only once configured: health checks the platform set
 	// up on its own are not adopted, so leaving the attribute unset never
 	// plans to remove them.
-	if state.Probes != nil {
-		state.Probes = probesFromAPI(inst.Attributes.Probes)
+	if !state.Probes.IsNull() {
+		state.Probes = probesToObject(probesFromAPI(inst.Attributes.Probes))
 	}
 }
 
@@ -687,8 +689,10 @@ func (r *InstanceResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 // whole object, with nothing set is stored as nothing, so it could never be
 // read back as configured.
 func validateProbesConfig(config InstanceResourceModel, diags *diag.Diagnostics) {
-	p := config.Probes
-	if p == nil {
+	// An unknown value, say from another resource's output, is checked again
+	// once it is known.
+	p, known := probesFromObject(config.Probes)
+	if p == nil || !known {
 		return
 	}
 	if isSet(config.Type) && config.Type.ValueString() != "app" {
