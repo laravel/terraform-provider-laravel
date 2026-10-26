@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
 
@@ -40,9 +41,11 @@ func (p *LaravelCloudProvider) Schema(_ context.Context, _ provider.SchemaReques
 		Description: "Manage Laravel Cloud resources.",
 		Attributes: map[string]schema.Attribute{
 			"token": schema.StringAttribute{
-				Description: "Laravel Cloud API token. Can also be set via the LARAVEL_CLOUD_API_TOKEN environment variable.",
-				Optional:    true,
-				Sensitive:   true,
+				Description: "Laravel Cloud API token. Can also be set via the LARAVEL_CLOUD_API_TOKEN environment " +
+					"variable. If neither is set, the token saved by the Laravel Cloud CLI (`cloud auth`) " +
+					"in ~/.config/cloud is used.",
+				Optional:  true,
+				Sensitive: true,
 			},
 			"base_url": schema.StringAttribute{
 				Description: "Override the Laravel Cloud API base URL. Can also be set via the " +
@@ -77,26 +80,50 @@ func (p *LaravelCloudProvider) Configure(ctx context.Context, req provider.Confi
 		return
 	}
 
+	// The base URL follows the same precedence as the token: an explicit
+	// provider attribute wins, otherwise the environment variable. Without the
+	// env var there is no way to point acceptance tests at a non-production
+	// host, which is what TESTING.md has always documented. It is resolved
+	// first because it decides which CLI config file a token is read from.
+	baseURL := os.Getenv("LARAVEL_CLOUD_BASE_URL")
+	if !config.BaseURL.IsNull() && !config.BaseURL.IsUnknown() {
+		baseURL = config.BaseURL.ValueString()
+	}
+
 	token := os.Getenv("LARAVEL_CLOUD_API_TOKEN")
 	if !config.Token.IsNull() {
 		token = config.Token.ValueString()
 	}
 
+	// Last resort: the token `cloud auth` saved. Only consulted when nothing
+	// was configured, so an explicit token can never be overridden by a login
+	// on the machine running Terraform.
+	if token == "" {
+		cliTok, cliPath, err := cliToken(baseURL)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Unable to Read Laravel Cloud CLI Token",
+				"No API token was set in the provider configuration or via the LARAVEL_CLOUD_API_TOKEN "+
+					"environment variable, so the provider looked for one saved by the Laravel Cloud CLI "+
+					"and could not use it: "+err.Error()+". Set the token in the provider configuration "+
+					"or via LARAVEL_CLOUD_API_TOKEN.",
+			)
+			return
+		}
+		if cliTok != "" {
+			tflog.Debug(ctx, "Using Laravel Cloud API token saved by the Laravel Cloud CLI", map[string]any{"path": cliPath})
+		}
+		token = cliTok
+	}
+
 	if token == "" {
 		resp.Diagnostics.AddError(
 			"Missing API Token",
-			"The Laravel Cloud API token must be set in the provider configuration or via the LARAVEL_CLOUD_API_TOKEN environment variable.",
+			"The Laravel Cloud API token must be set in the provider configuration, via the "+
+				"LARAVEL_CLOUD_API_TOKEN environment variable, or by logging in with the Laravel "+
+				"Cloud CLI (`cloud auth`).",
 		)
 		return
-	}
-
-	// The base URL follows the same precedence as the token: an explicit
-	// provider attribute wins, otherwise the environment variable. Without the
-	// env var there is no way to point acceptance tests at a non-production
-	// host, which is what TESTING.md has always documented.
-	baseURL := os.Getenv("LARAVEL_CLOUD_BASE_URL")
-	if !config.BaseURL.IsNull() && !config.BaseURL.IsUnknown() {
-		baseURL = config.BaseURL.ValueString()
 	}
 
 	var opts []client.ClientOption
