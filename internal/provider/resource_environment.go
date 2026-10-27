@@ -5,15 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
@@ -55,7 +59,34 @@ type EnvironmentResourceModel struct {
 	DatabaseID                 types.String `tfsdk:"database_id"`
 	DatabaseSchemaID           types.String `tfsdk:"database_schema_id"`
 	CacheID                    types.String `tfsdk:"cache_id"`
+	WebsocketApplicationID     types.String `tfsdk:"websocket_application_id"`
 	CreatedAt                  types.String `tfsdk:"created_at"`
+
+	EdgeNetworkID                        types.String         `tfsdk:"edge_network_id"`
+	ServingMode                          types.String         `tfsdk:"serving_mode"`
+	ServingRoot                          types.String         `tfsdk:"serving_root"`
+	StartCommand                         types.String         `tfsdk:"start_command"`
+	HibernationWakeUpInterval            types.Int64          `tfsdk:"hibernation_wake_up_interval"`
+	NightwatchToken                      types.String         `tfsdk:"nightwatch_token"`
+	NightwatchTokenWO                    types.String         `tfsdk:"nightwatch_token_wo"`
+	NightwatchTokenWOVersion             types.Int64          `tfsdk:"nightwatch_token_wo_version"`
+	FilesystemKeys                       []FilesystemKeyModel `tfsdk:"filesystem_keys"`
+	ResponseHeadersFrame                 types.String         `tfsdk:"response_headers_frame"`
+	ResponseHeadersContentType           types.String         `tfsdk:"response_headers_content_type"`
+	ResponseHeadersRobotsTag             types.String         `tfsdk:"response_headers_robots_tag"`
+	ResponseHeadersHSTSMaxAge            types.Int64          `tfsdk:"response_headers_hsts_max_age"`
+	ResponseHeadersHSTSIncludeSubdomains types.Bool           `tfsdk:"response_headers_hsts_include_subdomains"`
+	ResponseHeadersHSTSPreload           types.Bool           `tfsdk:"response_headers_hsts_preload"`
+	FirewallBlockPath                    types.Bool           `tfsdk:"firewall_block_path"`
+	FirewallBrowserIntegrityCheck        types.Bool           `tfsdk:"firewall_browser_integrity_check"`
+}
+
+// FilesystemKeyModel attaches a bucket to the environment through one of its
+// access keys.
+type FilesystemKeyModel struct {
+	KeyID         types.String `tfsdk:"key_id"`
+	Disk          types.String `tfsdk:"disk"`
+	IsDefaultDisk types.Bool   `tfsdk:"is_default_disk"`
 }
 
 func NewEnvironmentResource() resource.Resource {
@@ -264,10 +295,207 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Optional:    true,
 				Description: "Cache to attach.",
 			},
+			"websocket_application_id": schema.StringAttribute{
+				Optional:    true,
+				Description: "WebSocket application (laravel_cloud_websocket_application) to attach. Removing it detaches the application.",
+			},
 			"created_at": schema.StringAttribute{
 				Computed: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"edge_network_id": schema.StringAttribute{
+				Optional: true,
+				Description: "Dedicated edge network to create the environment in (see the laravel_cloud_edge_networks " +
+					"data source). Only for organizations with a dedicated edge network. " +
+					"The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.",
+				PlanModifiers: []planmodifier.String{
+					requiresReplaceUnlessImported(),
+					warnIfNotReported(),
+				},
+			},
+			"serving_mode": schema.StringAttribute{
+				Computed: true,
+				Description: "How the environment is served: \"process\" (an application server) or \"static\" " +
+					"(files served directly). Fixed when the environment is created. Null when the API does not report it.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"serving_root": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				Description: "Directory a static environment serves, relative to the repository (\".\" for the top level). " +
+					"Only static environments accept it.",
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 255),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"start_command": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				Description: "Command that starts a dynamic application that is not PHP, e.g. \"gunicorn myproject.wsgi\" " +
+					"(max 255 chars). Required by the API for dynamic JavaScript, Python, Ruby, Go, Rust and Java " +
+					"applications, and rejected for PHP and static ones.",
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 255),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"hibernation_wake_up_interval": schema.Int64Attribute{
+				Optional: true,
+				Computed: true,
+				Description: "Minutes between periodic wake-ups of a hibernating environment (1-10080, up to 7 days). " +
+					"Set 0 to turn periodic wake-ups off.",
+				Validators: []validator.Int64{
+					int64validator.Between(0, 10080),
+				},
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
+			},
+			"nightwatch_token": schema.StringAttribute{
+				Optional:  true,
+				Sensitive: true,
+				Description: "Nightwatch environment token (44 chars) that connects the environment to Nightwatch. " +
+					"Removing it disconnects Nightwatch. The API never reports it back, so a token changed outside " +
+					"Terraform is not detected. It is stored in Terraform state; with Terraform 1.11 or later, use " +
+					"nightwatch_token_wo instead to keep it out of state.",
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(44, 44),
+					stringvalidator.ConflictsWith(path.MatchRoot("nightwatch_token_wo")),
+				},
+			},
+			"nightwatch_token_wo": schema.StringAttribute{
+				Optional:  true,
+				Sensitive: true,
+				WriteOnly: true,
+				Description: "Nightwatch environment token as a write-only argument (Terraform 1.11 or later): it is " +
+					"sent and never stored in plan or state. Because Terraform cannot see it change, it is sent " +
+					"only on create and when nightwatch_token_wo_version changes; bump the version to rotate it. " +
+					"Removing both disconnects Nightwatch.",
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(44, 44),
+					stringvalidator.AlsoRequires(path.MatchRoot("nightwatch_token_wo_version")),
+				},
+			},
+			"nightwatch_token_wo_version": schema.Int64Attribute{
+				Optional:    true,
+				Description: "Version of nightwatch_token_wo. Changing it sends the current nightwatch_token_wo.",
+				Validators: []validator.Int64{
+					int64validator.AlsoRequires(path.MatchRoot("nightwatch_token_wo")),
+				},
+			},
+			"filesystem_keys": schema.ListNestedAttribute{
+				Optional: true,
+				Description: "Object storage buckets attached to the environment, each through one of its access keys " +
+					"and under a disk name. This list replaces every attachment: an empty list detaches all buckets, " +
+					"and so does removing the attribute once set. Write-only: the API never reports the " +
+					"attachments back, so changes made outside Terraform are not detected.",
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"key_id": schema.StringAttribute{
+							Required:    true,
+							Description: "ID of the bucket access key (laravel_cloud_storage_bucket_key) to attach the bucket with.",
+						},
+						"disk": schema.StringAttribute{
+							Required:    true,
+							Description: "Disk name the bucket is exposed as (1-40 chars: letters, numbers, spaces, dashes and underscores).",
+							Validators: []validator.String{
+								stringvalidator.LengthBetween(1, 40),
+							},
+						},
+						"is_default_disk": schema.BoolAttribute{
+							Optional:    true,
+							Computed:    true,
+							Default:     booldefault.StaticBool(false),
+							Description: "Whether this is the default disk. At most one attachment can be. Defaults to false.",
+						},
+					},
+				},
+			},
+			"response_headers_frame": schema.StringAttribute{
+				Optional:    true,
+				Computed:    true,
+				Description: "X-Frame-Options response header: deny, sameorigin or all.",
+				Validators: []validator.String{
+					stringvalidator.OneOf("deny", "sameorigin", "all"),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"response_headers_content_type": schema.StringAttribute{
+				Optional:    true,
+				Computed:    true,
+				Description: "X-Content-Type-Options response header: nosniff or none.",
+				Validators: []validator.String{
+					stringvalidator.OneOf("nosniff", "none"),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"response_headers_robots_tag": schema.StringAttribute{
+				Optional:    true,
+				Computed:    true,
+				Description: "X-Robots-Tag response header: \"index, follow\" or \"noindex, nofollow\".",
+				Validators: []validator.String{
+					stringvalidator.OneOf("index, follow", "noindex, nofollow"),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"response_headers_hsts_max_age": schema.Int64Attribute{
+				Optional: true,
+				Computed: true,
+				Description: "Strict-Transport-Security max-age in seconds; 0 turns HSTS off. Null when HSTS was never set. " +
+					"Required when include_subdomains or preload is true.",
+				Validators: []validator.Int64{
+					int64validator.AtLeast(0),
+				},
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
+			},
+			"response_headers_hsts_include_subdomains": schema.BoolAttribute{
+				Optional:    true,
+				Computed:    true,
+				Description: "Whether HSTS also covers subdomains.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"response_headers_hsts_preload": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Description: "Whether the HSTS header asks for preloading. Needs include_subdomains and a max_age of " +
+					"at least 31536000.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"firewall_block_path": schema.BoolAttribute{
+				Optional:    true,
+				Computed:    true,
+				Description: "Whether the firewall blocks requests for common exploit paths.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"firewall_browser_integrity_check": schema.BoolAttribute{
+				Optional:    true,
+				Computed:    true,
+				Description: "Whether the firewall runs a browser integrity check on requests.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
 				},
 			},
 		},
@@ -328,6 +556,16 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	}
 	// If no match was found by name, fall through and create a new one.
 
+	// An adopted environment already lives wherever it was created; the edge
+	// network is chosen only on create.
+	if adopted && !plan.EdgeNetworkID.IsNull() {
+		resp.Diagnostics.AddWarning(
+			"edge_network_id not applied to the existing environment",
+			fmt.Sprintf("An environment named %q already existed and was adopted instead of created, so edge_network_id "+
+				"was not used. The edge network can only be chosen when an environment is created.", wantName),
+		)
+	}
+
 	if env == nil {
 		createReq := client.CreateEnvironmentRequest{
 			Name:   wantName,
@@ -337,6 +575,7 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 			v := plan.ClusterID.ValueString()
 			createReq.ClusterID = &v
 		}
+		createReq.EdgeNetworkID = plan.EdgeNetworkID.ValueStringPointer()
 
 		created, err := r.client.CreateEnvironment(ctx, appID, createReq)
 		if err != nil {
@@ -369,6 +608,7 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	setUnknownBoolFromAPI(&plan.UsesDeployHook, env.Attributes.UsesDeployHook)
 	setUnknownBoolFromAPI(&plan.UsesOctane, env.Attributes.UsesOctane)
 	setUnknownStringFromAPI(&plan.CacheStrategy, env.Attributes.NetworkSettings.Cache.Strategy)
+	setUnknownSettingsFromAPI(&plan, env)
 
 	// The remaining Optional+Computed attributes are write-only: the API
 	// accepts them on PATCH but never returns them, so there is no value to
@@ -405,6 +645,15 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	}
 
 	patchReq := buildEnvironmentUpdateFromDiff(origPlan, env, adopted)
+	if wo, d := nightwatchTokenWO(ctx, req.Config); d.HasError() {
+		resp.Diagnostics.Append(d...)
+		return
+	} else if !wo.IsNull() {
+		if patchReq == nil {
+			patchReq = &client.UpdateEnvironmentRequest{}
+		}
+		patchReq.NightwatchToken = nullableStringRequest(wo)
+	}
 	if patchReq != nil {
 		patched, err := r.client.UpdateEnvironment(ctx, env.ID, *patchReq)
 		if err == nil && patched != nil {
@@ -428,6 +677,12 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 				"The environment was created, but updating settings failed: "+err.Error()+
 					". The planned values are kept in state. Run 'terraform apply' again to retry.",
 			)
+			// nightwatch_token and filesystem_keys are never reported back,
+			// so no refresh could notice they were not applied and the next
+			// plan would send nothing. Mark them for Read to drop instead.
+			if patchReq.NightwatchToken != nil || patchReq.FilesystemKeys != nil {
+				resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentWriteOnlyKey, []byte("true"))...)
+			}
 		}
 		// Whether PATCH succeeded or failed, we keep the plan values in
 		// state. The API may not echo back the values we sent (e.g.
@@ -486,8 +741,34 @@ func (r *EnvironmentResource) Read(ctx context.Context, req resource.ReadRequest
 	}
 
 	mapEnvironmentToState(env, &state)
+	// Settings that never reached the API after create are dropped from state,
+	// so the next plan shows them being added and sends them.
+	if pending, d := req.Private.GetKey(ctx, unsentWriteOnlyKey); d.HasError() {
+		resp.Diagnostics.Append(d...)
+		return
+	} else if len(pending) > 0 {
+		state.NightwatchToken = types.StringNull()
+		state.NightwatchTokenWOVersion = types.Int64Null()
+		state.FilesystemKeys = nil
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
+
+// nightwatchTokenWO reads the write-only token, which only the configuration
+// carries.
+func nightwatchTokenWO(ctx context.Context, config tfsdk.Config) (types.String, diag.Diagnostics) {
+	var wo types.String
+	d := config.GetAttribute(ctx, path.Root("nightwatch_token_wo"), &wo)
+	if wo.IsUnknown() {
+		wo = types.StringNull()
+	}
+	return wo, d
+}
+
+// unsentWriteOnlyKey is the private state key that records an environment
+// whose nightwatch_token and filesystem_keys failed to reach the API on
+// create. An update that succeeds clears it.
+const unsentWriteOnlyKey = "unsent_write_only"
 
 func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan EnvironmentResourceModel
@@ -514,6 +795,23 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 	}
 
 	updateReq := buildEnvironmentUpdateFromStateDiff(plan, state)
+	// nightwatch_token_wo never reaches state, so its version stands in for
+	// it: a changed version sends the current token, or null when it was
+	// removed. It goes after the state diff so that switching from
+	// nightwatch_token sends the new token rather than clearing it.
+	if !plan.NightwatchTokenWOVersion.Equal(state.NightwatchTokenWOVersion) {
+		wo, d := nightwatchTokenWO(ctx, req.Config)
+		resp.Diagnostics.Append(d...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if !wo.IsNull() || plan.NightwatchToken.IsNull() {
+			if updateReq == nil {
+				updateReq = &client.UpdateEnvironmentRequest{}
+			}
+			updateReq.NightwatchToken = nullableStringRequest(wo)
+		}
+	}
 	if updateReq == nil {
 		// Nothing else changed — just keep state as-is.
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
@@ -525,6 +823,7 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 		resp.Diagnostics.AddError("Error updating environment", err.Error())
 		return
 	}
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentWriteOnlyKey, nil)...)
 
 	// Keep plan values in state rather than overwriting from the API
 	// response. The API may not echo back the values we sent (e.g.
@@ -546,15 +845,19 @@ func (r *EnvironmentResource) Delete(ctx context.Context, req resource.DeleteReq
 
 	envID := state.ID.ValueString()
 
-	// Detach database and cache from the environment before deleting so
-	// downstream resources (database schema, cluster) can be cleaned up.
-	if !databaseID(state).IsNull() || !state.CacheID.IsNull() {
+	// Detach database, cache and WebSocket application from the environment
+	// before deleting so downstream resources (database schema, cluster,
+	// WebSocket server) can be cleaned up.
+	if !databaseID(state).IsNull() || !state.CacheID.IsNull() || !state.WebsocketApplicationID.IsNull() {
 		detach := client.UpdateEnvironmentRequest{}
 		if !databaseID(state).IsNull() {
 			detach.DatabaseSchemaID = client.DetachID()
 		}
 		if !state.CacheID.IsNull() {
 			detach.CacheID = client.DetachID()
+		}
+		if !state.WebsocketApplicationID.IsNull() {
+			detach.WebsocketApplicationID = client.DetachID()
 		}
 		// Best-effort detach, but surface a failure as a warning: the
 		// subsequent delete will fail opaquely if the resources stay attached.
@@ -691,6 +994,13 @@ func buildEnvironmentUpdateFromStateDiff(plan, state EnvironmentResourceModel) *
 	}
 	if !plan.CacheID.Equal(state.CacheID) {
 		req.CacheID = attachOrDetach(plan.CacheID)
+		hasUpdates = true
+	}
+	if !plan.WebsocketApplicationID.Equal(state.WebsocketApplicationID) {
+		req.WebsocketApplicationID = attachOrDetach(plan.WebsocketApplicationID)
+		hasUpdates = true
+	}
+	if addSettingsFromStateDiff(&req, plan, state) {
 		hasUpdates = true
 	}
 
@@ -843,6 +1153,10 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 		req.CacheID = client.AttachID(plan.CacheID.ValueString())
 		hasUpdates = true
 	}
+	if isSet(plan.WebsocketApplicationID) {
+		req.WebsocketApplicationID = client.AttachID(plan.WebsocketApplicationID.ValueString())
+		hasUpdates = true
+	}
 	// These three are write-only, so they are sent whenever configured.
 	if !plan.UsesDeployHook.IsNull() && !plan.UsesDeployHook.IsUnknown() && plan.UsesDeployHook.ValueBool() != env.Attributes.UsesDeployHook {
 		v := plan.UsesDeployHook.ValueBool()
@@ -857,6 +1171,9 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 	if !plan.UsesPurgeEdgeCacheOnDeploy.IsNull() && !plan.UsesPurgeEdgeCacheOnDeploy.IsUnknown() {
 		v := plan.UsesPurgeEdgeCacheOnDeploy.ValueBool()
 		req.UsesPurgeEdgeCacheOnDeploy = &v
+		hasUpdates = true
+	}
+	if addSettingsFromCreateDiff(&req, plan, env) {
 		hasUpdates = true
 	}
 
@@ -900,6 +1217,7 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 	state.CreatedAt = types.StringPointerValue(env.Attributes.CreatedAt)
 	state.BuildCommand = types.StringPointerValue(env.Attributes.BuildCommand)
 	state.DeployCommand = types.StringPointerValue(env.Attributes.DeployCommand)
+	mapSettingsToState(env, state)
 
 	// color, timeout, sleep_timeout, shutdown_timeout,
 	// uses_purge_edge_cache_on_deploy and uses_vanity_domain are write-only:

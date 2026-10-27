@@ -3,6 +3,7 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -37,8 +38,16 @@ type fakeCloud struct {
 	// appUpdates records every PATCH /applications body, in order, so tests
 	// can assert on what the provider sent rather than only on its result.
 	appUpdates []client.UpdateApplicationRequest
+	// appCreates records every POST /applications body.
+	appCreates []client.CreateApplicationRequest
 	// envUpdates does the same for PATCH /environments.
 	envUpdates []client.UpdateEnvironmentRequest
+	// envUpdateBodies holds the same bodies as sent, where an explicit null is
+	// still distinguishable from an omitted field.
+	envUpdateBodies []map[string]any
+	// failEnvUpdates makes that many of the next PATCH /environments calls
+	// fail with a 500, to model a follow-up update that does not land.
+	failEnvUpdates int
 
 	// Generic JSON:API store used by every resource other than applications
 	// and environments (which have bespoke handlers above). Keyed by
@@ -56,6 +65,9 @@ type fakeCloud struct {
 	// -> value. Modelled as an upsert store rather than a whole-set replace,
 	// because that is what the separate /variables/delete route implies.
 	vars map[string]map[string]string
+
+	// secrets models the organization secrets API; see mock_secrets_test.go.
+	secrets *fakeSecrets
 }
 
 // newFakeCloud starts an httptest.Server backed by a fresh in-memory store and
@@ -72,6 +84,7 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 		children: map[string][]string{},
 		parents:  map[string]map[string]string{},
 		vars:     map[string]map[string]string{},
+		secrets:  newFakeSecrets(),
 	}
 
 	mux := http.NewServeMux()
@@ -90,6 +103,8 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 
 	// All other resources are served by the generic JSON:API engine.
 	f.registerGenericResources(mux)
+	f.registerSecretRoutes(mux)
+	f.registerEnvironmentExtraRoutes(mux)
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -116,12 +131,15 @@ func (f *fakeCloud) createApplication(w http.ResponseWriter, r *http.Request) {
 		ID:   id,
 		Type: "applications",
 		Attributes: client.ApplicationAttributes{
-			Name:       req.Name,
-			Slug:       slugify(req.Name),
-			Region:     req.Region,
-			Repository: &client.ApplicationRepository{FullName: req.Repository},
+			Name:          req.Name,
+			Slug:          slugify(req.Name),
+			Region:        req.Region,
+			Repository:    &client.ApplicationRepository{FullName: req.Repository},
+			RootDirectory: req.RootDirectory,
 		},
 	}
+	// starter_kit is create-only and not reported back.
+	f.appCreates = append(f.appCreates, req)
 	f.apps[id] = app
 	writeJSON(w, http.StatusCreated, client.Document[client.ApplicationData]{Data: *app})
 }
@@ -235,6 +253,7 @@ func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 			PHPMajorVersion: "8.4",
 			NodeVersion:     "20",
 			NetworkSettings: newEnvironmentNetwork("default"),
+			Serving:         &client.EnvironmentServing{Mode: "process"},
 		},
 		// The real API reports the owning application under
 		// relationships.application when include=application is requested.
@@ -302,18 +321,34 @@ func (f *fakeCloud) getEnvironment(w http.ResponseWriter, r *http.Request) {
 		env.Attributes.EnvironmentVariables = append(env.Attributes.EnvironmentVariables,
 			client.EnvironmentVariable{Key: k, Value: f.vars[id][k]})
 	}
-	writeJSON(w, http.StatusOK, environmentDoc(env))
+	writeJSON(w, http.StatusOK, f.withSecretsRelationship(r, id, environmentDoc(env)))
 }
 
 func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
-	var req client.UpdateEnvironmentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	var req client.UpdateEnvironmentRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	// A JSON null leaves a pointer field nil, which reads as "not sent". The
+	// API treats null as "clear", so restore that from the raw body.
+	var body map[string]any
+	_ = json.Unmarshal(raw, &body)
+	restoreNulls(&req, body)
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failEnvUpdates > 0 {
+		f.failEnvUpdates--
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("server error"))
+		return
+	}
+	f.envUpdateBodies = append(f.envUpdateBodies, body)
 
 	env, ok := f.envs[r.PathValue("id")]
 	if !ok {
@@ -334,7 +369,11 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 	// cache_strategy is written at the top level but only ever read back from
 	// network_settings.cache.strategy -- mirror that asymmetry faithfully.
 	if req.CacheStrategy != nil {
-		a.NetworkSettings = newEnvironmentNetwork(*req.CacheStrategy)
+		a.NetworkSettings.Cache.Strategy = *req.CacheStrategy
+	}
+	if err := f.applyEnvironmentSettings(env, req); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err)
+		return
 	}
 	if req.UsesPushToDeploy != nil {
 		a.UsesPushToDeploy = *req.UsesPushToDeploy
@@ -406,9 +445,18 @@ func nilIfEmpty(s string) *string {
 }
 
 // newEnvironmentNetwork builds the response-side network_settings object with
-// the given cache strategy.
+// the given cache strategy and the platform's defaults for everything else.
 func newEnvironmentNetwork(strategy string) client.EnvironmentNetwork {
 	var n client.EnvironmentNetwork
 	n.Cache.Strategy = strategy
+	n.ResponseHeaders = client.EnvironmentResponseHeaders{
+		Frame:       ptr("deny"),
+		ContentType: ptr("nosniff"),
+		RobotsTag:   ptr("index, follow"),
+		HSTS:        &client.HSTS{},
+	}
+	n.Firewall = client.EnvironmentFirewall{BlockPath: ptr(true), BrowserIntegrityCheck: ptr(true)}
 	return n
 }
+
+func ptr[T any](v T) *T { return &v }

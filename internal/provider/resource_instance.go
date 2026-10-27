@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -49,6 +50,7 @@ type InstanceResourceModel struct {
 	HibernationTimeout               types.Int64  `tfsdk:"hibernation_timeout"`
 	Paused                           types.Bool   `tfsdk:"paused"`
 	IsDefault                        types.Bool   `tfsdk:"is_default"`
+	Probes                           types.Object `tfsdk:"probes"`
 	QueueStatus                      types.String `tfsdk:"queue_status"`
 	CreatedAt                        types.String `tfsdk:"created_at"`
 }
@@ -181,9 +183,13 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Description: "Whether the instance is paused.",
 			},
 			"is_default": schema.BoolAttribute{
-				Computed:    true,
-				Description: "Whether this is the default instance.",
+				Optional: true,
+				Computed: true,
+				Description: "Whether this managed queue is the environment's default, the one a job goes to when it " +
+					"names no queue. Set true to make it the default; only managed_queue instances can be. It cannot " +
+					"be set false: the default moves when another queue is made the default.",
 			},
+			"probes": instanceProbesSchema(),
 			"queue_status": schema.StringAttribute{
 				Computed:    true,
 				Description: "Raw queue status JSON (managed_queue).",
@@ -279,8 +285,8 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		if updated, err := r.client.UpdateInstance(ctx, inst.ID, updateReq); err != nil {
 			resp.Diagnostics.AddWarning(
 				"Could not apply all settings after creating the instance",
-				"The instance was created, but applying uses_octane, uses_inertia_ssr or "+
-					"hibernation_timeout failed: "+err.Error()+
+				"The instance was created, but applying uses_octane, uses_inertia_ssr, "+
+					"hibernation_timeout or probes failed: "+err.Error()+
 					". The configured values are kept in state; run 'terraform apply' again to retry.",
 			)
 		} else {
@@ -288,9 +294,32 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		}
 	}
 
+	configuredProbes := plan.Probes
+	configuredDefault := plan.IsDefault
 	mapInstanceToState(inst, &plan)
+	// The API ignores probes it cannot apply rather than rejecting them. The
+	// instance exists, so keep the configured value and let the next plan
+	// retry, where Update reports why they were not applied.
+	if !configuredProbes.IsNull() && plan.Probes.IsNull() {
+		resp.Diagnostics.AddWarning("Health checks were not applied", probesNotAppliedDetail)
+		plan.Probes = configuredProbes
+	}
+	if isSet(configuredDefault) && configuredDefault.ValueBool() && !plan.IsDefault.ValueBool() {
+		if err := r.client.SetDefaultInstance(ctx, inst.ID); err != nil {
+			resp.Diagnostics.AddWarning(
+				"Could not make the queue the default after creating it",
+				"The instance was created, but making it the environment's default queue failed: "+err.Error()+
+					". A queue can become the default only once it is available; run 'terraform apply' again to retry.",
+			)
+		}
+		plan.IsDefault = configuredDefault
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
+
+// probesNotAppliedDetail explains a probes value the API accepted but ignored.
+const probesNotAppliedDetail = "The API did not apply probes. Health checks are available only on app instances, " +
+	"and only on plans that include them."
 
 // instanceCreateFollowUp collects the update-only attributes the create route
 // ignores, reporting whether any of them were configured.
@@ -310,6 +339,10 @@ func instanceCreateFollowUp(plan InstanceResourceModel) (client.UpdateInstanceRe
 	if !plan.HibernationTimeout.IsNull() && !plan.HibernationTimeout.IsUnknown() {
 		v := int(plan.HibernationTimeout.ValueInt64())
 		req.HibernationTimeout = &v
+		set = true
+	}
+	if probes, _ := probesFromObject(plan.Probes); probes != nil {
+		req.Probes = probesRequest(probes)
 		set = true
 	}
 	return req, set
@@ -404,15 +437,37 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		v := int(plan.HibernationTimeout.ValueInt64())
 		updateReq.HibernationTimeout = &v
 	}
+	planProbes, _ := probesFromObject(plan.Probes)
+	stateProbes, _ := probesFromObject(state.Probes)
+	if !probesEqual(planProbes, stateProbes) {
+		updateReq.Probes = probesRequest(planProbes)
+	}
 
 	inst, err := r.client.UpdateInstance(ctx, state.ID.ValueString(), updateReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating instance", err.Error())
 		return
 	}
+	if planProbes != nil && inst.Attributes.Probes == nil {
+		resp.Diagnostics.AddAttributeError(path.Root("probes"), "Health checks were not applied", probesNotAppliedDetail)
+		return
+	}
+
+	// Making a queue the default is its own call, and the API refuses it for
+	// the queue that already is.
+	configuredDefault := plan.IsDefault
+	if isSet(configuredDefault) && configuredDefault.ValueBool() && !state.IsDefault.ValueBool() {
+		if err := r.client.SetDefaultInstance(ctx, state.ID.ValueString()); err != nil {
+			resp.Diagnostics.AddError("Error making the queue the default", err.Error())
+			return
+		}
+	}
 
 	plan.EnvironmentID = state.EnvironmentID
 	mapInstanceToState(inst, &plan)
+	if isSet(configuredDefault) {
+		plan.IsDefault = configuredDefault
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -493,6 +548,13 @@ func mapInstanceToState(inst *client.InstanceData, state *InstanceResourceModel)
 	} else {
 		state.QueueStatus = types.StringValue(inst.Attributes.QueueStatus.Value)
 	}
+
+	// probes are managed only once configured: health checks the platform set
+	// up on its own are not adopted, so leaving the attribute unset never
+	// plans to remove them.
+	if !state.Probes.IsNull() {
+		state.Probes = probesToObject(probesFromAPI(inst.Attributes.Probes))
+	}
 }
 
 // ValidateConfig moves the scaling_type/replica incompatibility from a runtime
@@ -511,7 +573,19 @@ func (r *InstanceResource) ValidateConfig(ctx context.Context, req resource.Vali
 		return
 	}
 
-	isSet := func(v types.Int64) bool { return !v.IsNull() && !v.IsUnknown() }
+	if isSet(config.IsDefault) && !config.IsDefault.ValueBool() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("is_default"),
+			"is_default cannot be set to false",
+			"A queue stops being the default only when another queue is made the default. "+
+				"Set is_default = true on that queue instead, and remove it here.",
+		)
+	}
+	if isSet(config.IsDefault) && isSet(config.Type) && config.Type.ValueString() != "managed_queue" {
+		resp.Diagnostics.AddAttributeError(path.Root("is_default"), "is_default is only for managed queues",
+			fmt.Sprintf("Only a managed_queue instance can be the default queue; this one is %q.", config.Type.ValueString()))
+	}
+	validateProbesConfig(config, &resp.Diagnostics)
 
 	if got, ok := validateHibernationTimeout(config.HibernationTimeout); !ok {
 		resp.Diagnostics.AddAttributeError(
@@ -608,5 +682,31 @@ func (r *InstanceResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 	}
 	if changed {
 		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+	}
+}
+
+// validateProbesConfig rejects probes the API would drop. A check, or the
+// whole object, with nothing set is stored as nothing, so it could never be
+// read back as configured.
+func validateProbesConfig(config InstanceResourceModel, diags *diag.Diagnostics) {
+	// An unknown value, say from another resource's output, is checked again
+	// once it is known.
+	p, known := probesFromObject(config.Probes)
+	if p == nil || !known {
+		return
+	}
+	if isSet(config.Type) && config.Type.ValueString() != "app" {
+		diags.AddAttributeError(path.Root("probes"), "probes are only for app instances",
+			fmt.Sprintf("Only app instances accept health checks; this one is %q.", config.Type.ValueString()))
+	}
+	if p.Startup == nil && p.Readiness == nil && p.Liveness == nil {
+		diags.AddAttributeError(path.Root("probes"), "probes sets no check",
+			"Set at least one of startup, readiness or liveness, or remove probes to use the platform defaults.")
+	}
+	for name, c := range map[string]*InstanceProbeModel{"startup": p.Startup, "readiness": p.Readiness, "liveness": p.Liveness} {
+		if c != nil && c.Path.IsNull() && c.Port.IsNull() && c.Delay.IsNull() && c.Interval.IsNull() && c.Timeout.IsNull() && c.Tries.IsNull() {
+			diags.AddAttributeError(path.Root("probes").AtName(name), "Health check sets no field",
+				"Set at least one field of the "+name+" check, or remove it to use the platform default.")
+		}
 	}
 }

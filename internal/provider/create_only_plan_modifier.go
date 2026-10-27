@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 )
@@ -24,6 +25,18 @@ import (
 func requiresReplaceUnlessImported() planmodifier.String {
 	return stringplanmodifier.RequiresReplaceIf(
 		func(_ context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+			resp.RequiresReplace = !req.StateValue.IsNull()
+		},
+		"Requires replacement unless the attribute has no prior value, which is the case after an import.",
+		"Requires replacement unless the attribute has no prior value, which is the case after an import.",
+	)
+}
+
+// boolRequiresReplaceUnlessImported is requiresReplaceUnlessImported for a
+// boolean attribute.
+func boolRequiresReplaceUnlessImported() planmodifier.Bool {
+	return boolplanmodifier.RequiresReplaceIf(
+		func(_ context.Context, req planmodifier.BoolRequest, resp *boolplanmodifier.RequiresReplaceIfFuncResponse) {
 			resp.RequiresReplace = !req.StateValue.IsNull()
 		},
 		"Requires replacement unless the attribute has no prior value, which is the case after an import.",
