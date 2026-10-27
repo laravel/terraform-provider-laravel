@@ -9,6 +9,13 @@ conventional-commit titles of merged pull requests; do not edit them by hand.
 Earlier entries were written by hand in the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [1.2.1](https://github.com/laravel/terraform-provider-laravel/compare/v1.2.0...v1.2.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **domain:** decode dns_records single records as objects ([#25](https://github.com/laravel/terraform-provider-laravel/issues/25)) ([f695311](https://github.com/laravel/terraform-provider-laravel/commit/f695311b6c95348335f10b50fcd42586f8bafaae))
+
 ## [1.2.0] - 2026-10-27
 
 ### Added
