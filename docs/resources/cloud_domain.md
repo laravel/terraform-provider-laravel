@@ -72,11 +72,51 @@ resource "laravel_cloud_domain" "example" {
 
 Read-Only:
 
-- `dcv` (String) Domain control validation value.
-- `origin` (String) Origin address the domain should point at.
-- `origin_cname` (String) Origin CNAME target.
-- `pre_verification` (String) TXT value used for pre-verification.
+- `dcv` (Attributes) CNAME record for domain control validation. Null when the domain does not need it. (see [below for nested schema](#nestedatt--dns_records--dcv))
+- `origin` (Attributes) A record pointing the domain at its origin. Null when the domain does not need it. (see [below for nested schema](#nestedatt--dns_records--origin))
+- `origin_cname` (Attributes) CNAME record pointing the domain at its origin. Null when the domain does not need it. (see [below for nested schema](#nestedatt--dns_records--origin_cname))
+- `pre_verification` (Attributes) TXT record used for pre-verification. Null when the domain does not need it. (see [below for nested schema](#nestedatt--dns_records--pre_verification))
 - `ssl` (Attributes List) Records required for SSL certificate issuance. (see [below for nested schema](#nestedatt--dns_records--ssl))
+
+<a id="nestedatt--dns_records--dcv"></a>
+### Nested Schema for `dns_records.dcv`
+
+Read-Only:
+
+- `name` (String) Record name.
+- `type` (String) Record type.
+- `value` (String) Record value.
+
+
+<a id="nestedatt--dns_records--origin"></a>
+### Nested Schema for `dns_records.origin`
+
+Read-Only:
+
+- `name` (String) Record name.
+- `type` (String) Record type.
+- `value` (String) Record value.
+
+
+<a id="nestedatt--dns_records--origin_cname"></a>
+### Nested Schema for `dns_records.origin_cname`
+
+Read-Only:
+
+- `name` (String) Record name.
+- `type` (String) Record type.
+- `value` (String) Record value.
+
+
+<a id="nestedatt--dns_records--pre_verification"></a>
+### Nested Schema for `dns_records.pre_verification`
+
+Read-Only:
+
+- `name` (String) Record name.
+- `type` (String) Record type.
+- `value` (String) Record value.
+
 
 <a id="nestedatt--dns_records--ssl"></a>
 ### Nested Schema for `dns_records.ssl`

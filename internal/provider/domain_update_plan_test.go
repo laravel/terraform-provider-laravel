@@ -1,9 +1,13 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/providerserver"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
@@ -16,7 +20,8 @@ import (
 //
 // dns_records is required in the API response but was not modelled at all, so
 // there was no way to learn the CNAME/TXT records the domain needs -- which
-// made the domain workflow impossible to complete from Terraform.
+// made the domain workflow impossible to complete from Terraform. The single
+// records come back as {type, name, value} objects, or null when not needed.
 func TestDomainDNSRecordsPlan(t *testing.T) {
 	_, baseURL := newFakeCloud(t)
 	config := domainConfig(baseURL, "")
@@ -31,10 +36,17 @@ func TestDomainDNSRecordsPlan(t *testing.T) {
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(addr,
 						tfjsonpath.New("dns_records").AtMapKey("origin_cname"),
-						knownvalue.StringExact("cname.laravel.cloud")),
+						knownvalue.ObjectExact(map[string]knownvalue.Check{
+							"type":  knownvalue.StringExact("CNAME"),
+							"name":  knownvalue.StringExact("example.com"),
+							"value": knownvalue.StringExact("origin.example.net"),
+						})),
 					statecheck.ExpectKnownValue(addr,
-						tfjsonpath.New("dns_records").AtMapKey("pre_verification"),
-						knownvalue.StringExact("laravel-cloud-verification=token")),
+						tfjsonpath.New("dns_records").AtMapKey("pre_verification").AtMapKey("value"),
+						knownvalue.StringExact("verify-token")),
+					statecheck.ExpectKnownValue(addr,
+						tfjsonpath.New("dns_records").AtMapKey("origin"),
+						knownvalue.Null()),
 					statecheck.ExpectKnownValue(addr,
 						tfjsonpath.New("dns_records").AtMapKey("ssl").AtSliceIndex(0).AtMapKey("type"),
 						knownvalue.StringExact("TXT")),
@@ -139,4 +151,71 @@ resource "laravel_cloud_domain" "site" {
   %[3]s
 }
 `, baseURL, name, extra)
+}
+
+// TestDomainStateUpgradeV0 covers state written before the single records in
+// dns_records became objects. Version 0 stored them as strings, which no
+// longer fit the schema, so the upgrade must drop dns_records (the next read
+// refills it) and keep everything else.
+func TestDomainStateUpgradeV0(t *testing.T) {
+	server, err := providerserver.NewProtocol6WithError(New("test")())()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const v0 = `{
+		"id": "domain-1",
+		"environment_id": "env-1",
+		"name": "example.com",
+		"type": "root",
+		"hostname_status": "verified",
+		"ssl_status": "verified",
+		"origin_status": "verified",
+		"www_redirect": null,
+		"wildcard_enabled": null,
+		"verification_method": null,
+		"cloudflare_strategy": null,
+		"allow_downtime": null,
+		"downtime": null,
+		"stage": "origin",
+		"action_required": null,
+		"last_verified_at": null,
+		"dns_records": {"ssl": [], "pre_verification": "", "origin": "", "origin_cname": "", "dcv": ""},
+		"created_at": null
+	}`
+
+	resp, err := server.UpgradeResourceState(context.Background(), &tfprotov6.UpgradeResourceStateRequest{
+		TypeName: "laravel_cloud_domain",
+		Version:  0,
+		RawState: &tfprotov6.RawState{JSON: []byte(v0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range resp.Diagnostics {
+		t.Errorf("diagnostic: %s: %s", d.Summary, d.Detail)
+	}
+	if resp.UpgradedState == nil {
+		t.Fatal("no upgraded state")
+	}
+
+	schemaResp, err := server.GetProviderSchema(context.Background(), &tfprotov6.GetProviderSchemaRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	val, err := resp.UpgradedState.Unmarshal(schemaResp.ResourceSchemas["laravel_cloud_domain"].ValueType())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attrs map[string]tftypes.Value
+	if err := val.As(&attrs); err != nil {
+		t.Fatal(err)
+	}
+	if !attrs["dns_records"].IsNull() {
+		t.Errorf("dns_records = %v, want null", attrs["dns_records"])
+	}
+	var name string
+	if err := attrs["name"].As(&name); err != nil || name != "example.com" {
+		t.Errorf("name = %q (%v), want example.com", name, err)
+	}
 }
