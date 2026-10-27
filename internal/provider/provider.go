@@ -128,6 +128,10 @@ func (p *LaravelCloudProvider) Resources(_ context.Context) []func() resource.Re
 		NewDeploymentResource,
 		NewCommandResource,
 		NewDatabaseRestoreResource,
+		NewScheduledCommandResource,
+		NewSecretResource,
+		NewEnvironmentSecretResource,
+		NewEnvironmentResendResource,
 	}
 }
 

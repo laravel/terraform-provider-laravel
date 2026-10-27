@@ -70,7 +70,11 @@ provider "laravel" {
 | `laravel_cloud_storage_bucket` | Object storage bucket |
 | `laravel_cloud_storage_bucket_key` | Access key for a storage bucket |
 | `laravel_cloud_background_process` | Background worker process |
+| `laravel_cloud_scheduled_command` | Command run on a cron schedule on an instance |
 | `laravel_cloud_environment_variables` | Environment variables for an environment |
+| `laravel_cloud_secret` | Organization secret, encrypted before it is sent |
+| `laravel_cloud_environment_secret` | Attach a secret to an environment |
+| `laravel_cloud_environment_resend` | Resend email sending for an environment |
 | `laravel_cloud_deployment` | Deployment trigger |
 | `laravel_cloud_command` | Run a command in an environment |
 | `laravel_cloud_websocket_server` | WebSocket server |

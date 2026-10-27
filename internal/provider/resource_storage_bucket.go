@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -11,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
@@ -30,6 +32,7 @@ type StorageBucketResourceModel struct {
 	Name           types.String       `tfsdk:"name"`
 	Visibility     types.String       `tfsdk:"visibility"`
 	Jurisdiction   types.String       `tfsdk:"jurisdiction"`
+	LocationHint   types.String       `tfsdk:"location_hint"`
 	KeyName        types.String       `tfsdk:"key_name"`
 	KeyPermission  types.String       `tfsdk:"key_permission"`
 	AllowedOrigins types.List         `tfsdk:"allowed_origins"`
@@ -82,6 +85,20 @@ func (r *StorageBucketResource) Schema(_ context.Context, _ resource.SchemaReque
 				Description: "Bucket jurisdiction: 'default' or 'eu'. Defaults to 'default'.",
 				Default:     stringdefault.StaticString("default"),
 				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"location_hint": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				Description: "Where to place the bucket: automatic, wnam (western North America), enam (eastern North America), " +
+					"weur (western Europe), eeur (eastern Europe), apac (Asia-Pacific) or oc (Oceania). The platform " +
+					"defaults to automatic, the only value allowed outside the default jurisdiction. Changing it forces a new bucket.",
+				Validators: []validator.String{
+					stringvalidator.OneOf("automatic", "wnam", "enam", "weur", "eeur", "apac", "oc"),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
@@ -181,6 +198,9 @@ func (r *StorageBucketResource) Create(ctx context.Context, req resource.CreateR
 		Jurisdiction:  plan.Jurisdiction.ValueString(),
 		KeyName:       plan.KeyName.ValueString(),
 		KeyPermission: plan.KeyPermission.ValueString(),
+	}
+	if isSet(plan.LocationHint) {
+		createReq.LocationHint = plan.LocationHint.ValueStringPointer()
 	}
 	if !plan.AllowedOrigins.IsNull() {
 		var origins []string
@@ -289,7 +309,12 @@ func (r *StorageBucketResource) Update(ctx context.Context, req resource.UpdateR
 		return
 	}
 
+	// location_hint cannot change in place, so the planned value stands. After an
+	// upgrade it is planned as its null prior state, and adopting the reported
+	// value here would contradict the plan; the next refresh records it.
+	plannedLocationHint := plan.LocationHint
 	mapStorageBucketToState(ctx, bucket, &plan, &resp.Diagnostics)
+	plan.LocationHint = plannedLocationHint
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -348,6 +373,7 @@ func mapStorageBucketToState(ctx context.Context, b *client.StorageBucketData, s
 	state.Name = types.StringValue(b.Attributes.Name)
 	state.Visibility = types.StringValue(b.Attributes.Visibility)
 	state.Jurisdiction = types.StringValue(b.Attributes.Jurisdiction)
+	state.LocationHint = types.StringPointerValue(b.Attributes.LocationHint)
 	state.Endpoint = types.StringPointerValue(b.Attributes.Endpoint)
 	state.URL = types.StringPointerValue(b.Attributes.URL)
 	state.Status = types.StringValue(b.Attributes.Status)
