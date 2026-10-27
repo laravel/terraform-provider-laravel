@@ -9,6 +9,18 @@ conventional-commit titles of merged pull requests; do not edit them by hand.
 Earlier entries were written by hand in the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [1.2.3](https://github.com/laravel/terraform-provider-laravel/compare/v1.2.2...v1.2.3) (2026-10-27)
+
+
+### Bug Fixes
+
+* **domain:** decode dns_records single records as objects ([#25](https://github.com/laravel/terraform-provider-laravel/issues/25)) ([f695311](https://github.com/laravel/terraform-provider-laravel/commit/f695311b6c95348335f10b50fcd42586f8bafaae))
+
+
+### Dependencies
+
+* bump golang.org/x/crypto from 0.55.0 to 0.58.0 ([#24](https://github.com/laravel/terraform-provider-laravel/issues/24)) ([87631a2](https://github.com/laravel/terraform-provider-laravel/commit/87631a27734056dea496f60bda50585c3cb6d854))
+
 ## [1.2.2](https://github.com/laravel/terraform-provider-laravel/compare/v1.2.1...v1.2.2) (2026-10-27)
 
 
