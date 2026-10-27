@@ -126,6 +126,33 @@ func TestDomainAttributes_CloudflareAndDowntime(t *testing.T) {
 	}
 }
 
+func TestDomainAttributes_DNSRecordsAreObjects(t *testing.T) {
+	// The public spec types these as strings, but the API returns each single
+	// record as a {type, name, value} object, or null when it isn't needed.
+	// Decoding them as strings failed every read of such a domain.
+	const body = `{"name":"example.com","dns_records":{
+		"ssl":[{"type":"TXT","name":"_acme-challenge.example.com","value":"ssl-token"}],
+		"pre_verification":{"type":"TXT","name":"_cf-custom-hostname.example.com","value":"verify-token"},
+		"origin":null,
+		"origin_cname":{"type":"CNAME","name":"example.com","value":"origin.example.net"},
+		"dcv":null
+	}}`
+	var attrs DomainAttributes
+	if err := json.Unmarshal([]byte(body), &attrs); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	r := attrs.DNSRecords
+	if r.OriginCNAME == nil || *r.OriginCNAME != (DomainDNSRecord{Type: "CNAME", Name: "example.com", Value: "origin.example.net"}) {
+		t.Errorf("OriginCNAME = %+v", r.OriginCNAME)
+	}
+	if r.PreVerification == nil || r.PreVerification.Value != "verify-token" {
+		t.Errorf("PreVerification = %+v", r.PreVerification)
+	}
+	if r.Origin != nil || r.DCV != nil {
+		t.Errorf("Origin = %+v, DCV = %+v, want nil", r.Origin, r.DCV)
+	}
+}
+
 func TestOrganizationAttributes_Slug(t *testing.T) {
 	var attrs OrganizationAttributes
 	if err := json.Unmarshal([]byte(`{"name":"Acme","slug":"acme"}`), &attrs); err != nil {

@@ -439,12 +439,24 @@ type DomainAttributes struct {
 }
 
 // DomainDNSRecords is the dns_records object on a domain.
+//
+// The public spec types pre_verification, origin, origin_cname and dcv as
+// strings, but the API returns each as a {type, name, value} record, or null
+// when the domain needs no such record. Decoding them as strings failed every
+// read of a domain that had one.
 type DomainDNSRecords struct {
 	SSL             []DomainSSLRecord `json:"ssl"`
-	PreVerification string            `json:"pre_verification"`
-	Origin          string            `json:"origin"`
-	OriginCNAME     string            `json:"origin_cname"`
-	DCV             string            `json:"dcv"`
+	PreVerification *DomainDNSRecord  `json:"pre_verification"`
+	Origin          *DomainDNSRecord  `json:"origin"`
+	OriginCNAME     *DomainDNSRecord  `json:"origin_cname"`
+	DCV             *DomainDNSRecord  `json:"dcv"`
+}
+
+// DomainDNSRecord is a single record the domain needs at the DNS provider.
+type DomainDNSRecord struct {
+	Type  string `json:"type"`
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // DomainSSLRecord is one CNAME/TXT record required for SSL issuance.

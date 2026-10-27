@@ -184,10 +184,18 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 							"value": "dcv-token",
 						},
 					},
-					"pre_verification": "laravel-cloud-verification=token",
-					"origin":           "origin.laravel.cloud",
-					"origin_cname":     "cname.laravel.cloud",
-					"dcv":              "dcv-token",
+					"pre_verification": map[string]any{
+						"type":  "TXT",
+						"name":  "_cf-custom-hostname.example.com",
+						"value": "verify-token",
+					},
+					"origin": nil,
+					"origin_cname": map[string]any{
+						"type":  "CNAME",
+						"name":  "example.com",
+						"value": "origin.example.net",
+					},
+					"dcv": nil,
 				}
 				return a
 			},
