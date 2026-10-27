@@ -9,6 +9,13 @@ conventional-commit titles of merged pull requests; do not edit them by hand.
 Earlier entries were written by hand in the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [1.2.2](https://github.com/laravel/terraform-provider-laravel/compare/v1.2.1...v1.2.2) (2026-10-27)
+
+
+### Dependencies
+
+* bump golang.org/x/crypto from 0.55.0 to 0.58.0 ([#24](https://github.com/laravel/terraform-provider-laravel/issues/24)) ([87631a2](https://github.com/laravel/terraform-provider-laravel/commit/87631a27734056dea496f60bda50585c3cb6d854))
+
 ## [1.2.1](https://github.com/laravel/terraform-provider-laravel/compare/v1.2.0...v1.2.1) (2026-10-27)
 
 
