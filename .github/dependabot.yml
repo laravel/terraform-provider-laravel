@@ -1,11 +1,16 @@
 version: 2
 updates:
+  # Commit prefixes keep Dependabot's PR titles conventional (see
+  # .github/workflows/pr-title.yml). Go module bumps ship in the binary, so
+  # "deps" lists them in the changelog; action bumps are CI-only and hidden.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
       day: sunday
     open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
 
   - package-ecosystem: gomod
     directory: /
@@ -13,3 +18,5 @@ updates:
       interval: weekly
       day: sunday
     open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps

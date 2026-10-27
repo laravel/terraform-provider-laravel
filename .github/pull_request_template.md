@@ -1,3 +1,11 @@
+<!--
+The PR title becomes the squash commit and the CHANGELOG.md entry, so write it
+as a conventional commit for provider users, e.g.
+  fix(environment): stop false diffs after import
+  feat(database): add the backup_retention attribute
+Use `feat!:` or a BREAKING CHANGE footer for breaking changes. See RELEASE.md.
+-->
+
 ### Description
 
 <!--- Describe the change and why it's needed. -->
