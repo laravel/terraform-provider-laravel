@@ -9,6 +9,13 @@ conventional-commit titles of merged pull requests; do not edit them by hand.
 Earlier entries were written by hand in the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [1.3.0](https://github.com/laravel/terraform-provider-laravel/compare/v1.2.2...v1.3.0) (2026-10-28)
+
+
+### Features
+
+* **provider:** fall back to the token saved by the Laravel Cloud CLI ([#20](https://github.com/laravel/terraform-provider-laravel/issues/20)) ([dbbbc88](https://github.com/laravel/terraform-provider-laravel/commit/dbbbc88968bebeb71f502a9e999f9de5f206c9ac))
+
 ## [1.2.2](https://github.com/laravel/terraform-provider-laravel/compare/v1.2.1...v1.2.2) (2026-10-27)
 
 
