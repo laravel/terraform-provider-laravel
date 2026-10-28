@@ -24,6 +24,7 @@ terraform {
 provider "laravel" {
   # The API token may also be supplied via the LARAVEL_CLOUD_API_TOKEN
   # environment variable, which is preferred over committing it to config.
+  # If neither is set, the token saved by `cloud auth` is used.
   # token = "..."
 
   # base_url defaults to https://cloud.laravel.com/api and rarely needs setting.
@@ -36,4 +37,4 @@ provider "laravel" {
 ### Optional
 
 - `base_url` (String) Override the Laravel Cloud API base URL. Can also be set via the LARAVEL_CLOUD_BASE_URL environment variable. Defaults to https://cloud.laravel.com/api.
-- `token` (String, Sensitive) Laravel Cloud API token. Can also be set via the LARAVEL_CLOUD_API_TOKEN environment variable.
+- `token` (String, Sensitive) Laravel Cloud API token. Can also be set via the LARAVEL_CLOUD_API_TOKEN environment variable. If neither is set, the token saved by the Laravel Cloud CLI (`cloud auth`) in ~/.config/cloud is used.

@@ -54,6 +54,15 @@ provider "laravel" {
 }
 ```
 
+If neither is set, the provider falls back to the token saved by the
+[Laravel Cloud CLI](https://github.com/laravel/cloud-cli) when you run
+`cloud auth`, so a local `terraform plan` works without exporting anything.
+The token is read from `~/.config/cloud/config.json`, or from
+`~/.config/cloud/<host>-config.json` when `base_url` points at another host,
+matching where the CLI keeps it. If you are logged in to more than one
+organization the CLI holds several tokens, and the provider asks you to set the
+token explicitly rather than guess which organization to manage.
+
 ## Resources
 
 | Resource | Description |
