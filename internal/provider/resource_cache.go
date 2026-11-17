@@ -35,6 +35,7 @@ type CacheResourceModel struct {
 	AutoUpgradeEnabled types.Bool   `tfsdk:"auto_upgrade_enabled"`
 	IsPublic           types.Bool   `tfsdk:"is_public"`
 	EvictionPolicy     types.String `tfsdk:"eviction_policy"`
+	ClusterID          types.String `tfsdk:"cluster_id"`
 	Connection         types.Object `tfsdk:"connection_details"`
 	CreatedAt          types.String `tfsdk:"created_at"`
 }
@@ -121,6 +122,18 @@ func (r *CacheResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				Optional:    true,
 				Description: "Eviction policy (Valkey only, defaults to allkeys-lru).",
 			},
+			"cluster_id": schema.StringAttribute{
+				Optional: true,
+				Description: "Dedicated cluster ID, from the laravel_cloud_dedicated_clusters data source. " +
+					"Only cache types that run on a dedicated cluster accept it, and the cluster must be " +
+					"in the cache's region. When omitted for such a type, the API picks the " +
+					"organization's dedicated cluster in that region. Changing this forces a new cache: " +
+					"the API's update endpoint does not accept it, and it is never reported back, so an " +
+					"imported cache leaves it null.",
+				PlanModifiers: []planmodifier.String{
+					requiresReplaceUnlessImported(),
+				},
+			},
 			"connection_details": schema.SingleNestedAttribute{
 				Computed:    true,
 				Description: "Read-only connection details for the cache.",
@@ -169,6 +182,10 @@ func (r *CacheResource) Create(ctx context.Context, req resource.CreateRequest, 
 	if !plan.EvictionPolicy.IsNull() {
 		v := plan.EvictionPolicy.ValueString()
 		createReq.EvictionPolicy = &v
+	}
+	if !plan.ClusterID.IsNull() {
+		v := plan.ClusterID.ValueString()
+		createReq.ClusterID = &v
 	}
 
 	cache, err := r.client.CreateCache(ctx, createReq)
@@ -252,6 +269,17 @@ func (r *CacheResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	if !plan.EvictionPolicy.Equal(state.EvictionPolicy) && !plan.EvictionPolicy.IsNull() {
 		v := plan.EvictionPolicy.ValueString()
 		updateReq.EvictionPolicy = &v
+	}
+
+	// Nothing the API can update changed -- the change is to cluster_id being
+	// recorded after an import. Send nothing and keep the computed values.
+	if updateReq == (client.UpdateCacheRequest{}) {
+		plan.ID = state.ID
+		plan.Status = state.Status
+		plan.Connection = state.Connection
+		plan.CreatedAt = state.CreatedAt
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		return
 	}
 
 	cache, err := r.client.UpdateCache(ctx, state.ID.ValueString(), updateReq)

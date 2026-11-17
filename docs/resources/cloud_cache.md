@@ -37,6 +37,7 @@ resource "laravel_cloud_cache" "example" {
 
 ### Optional
 
+- `cluster_id` (String) Dedicated cluster ID, from the laravel_cloud_dedicated_clusters data source. Only cache types that run on a dedicated cluster accept it, and the cluster must be in the cache's region. When omitted for such a type, the API picks the organization's dedicated cluster in that region. Changing this forces a new cache: the API's update endpoint does not accept it, and it is never reported back, so an imported cache leaves it null.
 - `eviction_policy` (String) Eviction policy (Valkey only, defaults to allkeys-lru).
 
 ### Read-Only
