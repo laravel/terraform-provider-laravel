@@ -9,6 +9,18 @@ conventional-commit titles of merged pull requests; do not edit them by hand.
 Earlier entries were written by hand in the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [1.4.0](https://github.com/laravel/terraform-provider-laravel/compare/v1.3.0...v1.4.0) (2026-11-19)
+
+
+### Features
+
+* **cache:** support cluster_id on laravel_cloud_cache ([#32](https://github.com/laravel/terraform-provider-laravel/issues/32)) ([5d7de6a](https://github.com/laravel/terraform-provider-laravel/commit/5d7de6a0c333efc16e81ec2dd67403bde625f41c))
+
+
+### Dependencies
+
+* bump golang.org/x/crypto from 0.58.0 to 0.59.0 ([#30](https://github.com/laravel/terraform-provider-laravel/issues/30)) ([b24eeac](https://github.com/laravel/terraform-provider-laravel/commit/b24eeac0205a59996db0dfc5e086f4db9f569d31))
+
 ## [1.3.0](https://github.com/laravel/terraform-provider-laravel/compare/v1.2.2...v1.3.0) (2026-10-28)
 
 
