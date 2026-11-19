@@ -200,3 +200,61 @@ resource "laravel_cloud_database_cluster" "cluster" {
 		},
 	})
 }
+
+func cacheConfig(baseURL, extra string) string {
+	return providerCfg(baseURL) + fmt.Sprintf(`
+resource "laravel_cloud_cache" "cache" {
+  name                 = "sessions"
+  type                 = "aws_elasticache_valkey"
+  region               = "us-east-2"
+  size                 = "1gb"
+  auto_upgrade_enabled = false
+  is_public            = false
+%s
+}
+`, extra)
+}
+
+// TestCacheClusterIDPlan covers cluster_id: sent on create, stable on re-plan
+// although the API never reports it back, and replaced when changed.
+func TestCacheClusterIDPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	addr := "laravel_cloud_cache.cache"
+
+	sentClusterID := func(want string) resource.TestCheckFunc {
+		return func(*terraform.State) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			for _, attrs := range f.objects["cache"] {
+				if attrs["cluster_id"] == want {
+					return nil
+				}
+			}
+			return fmt.Errorf("no cache was created with cluster_id %q", want)
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cacheConfig(baseURL, `  cluster_id = "dc-1"`),
+				Check:  sentClusterID("dc-1"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("cluster_id"), knownvalue.StringExact("dc-1")),
+				},
+			},
+			{
+				Config:           cacheConfig(baseURL, `  cluster_id = "dc-1"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+			{
+				Config: cacheConfig(baseURL, `  cluster_id = "dc-2"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(addr, plancheck.ResourceActionDestroyBeforeCreate),
+				}},
+				Check: sentClusterID("dc-2"),
+			},
+		},
+	})
+}

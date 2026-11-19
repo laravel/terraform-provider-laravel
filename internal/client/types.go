@@ -602,6 +602,9 @@ type CreateCacheRequest struct {
 	AutoUpgradeEnabled bool    `json:"auto_upgrade_enabled"`
 	IsPublic           bool    `json:"is_public"`
 	EvictionPolicy     *string `json:"eviction_policy,omitempty"`
+	// ClusterID picks the dedicated cluster for a cache type that runs on one.
+	// Create-only, and never reported back on the cache.
+	ClusterID *string `json:"cluster_id,omitempty"`
 }
 
 type UpdateCacheRequest struct {
