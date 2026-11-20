@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -89,7 +90,7 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString("service"),
-				Description: "Instance type (service or managed_queue). Defaults to service when not set.",
+				Description: "Instance type (service or managed_queue). Defaults to service when not set. An environment's app instance, which can only be imported, is app.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -139,7 +140,7 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"sleep_with_app": schema.BoolAttribute{
 				Optional:    true,
 				Computed:    true,
-				Description: "Whether the instance sleeps with the app (managed_queue).",
+				Description: "Whether the instance's replicas scale to zero along with the app, waking when it does. Only for service instances.",
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
 				},
@@ -171,16 +172,34 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"uses_octane": schema.BoolAttribute{
-				Optional:    true,
-				Description: "Whether the instance uses Laravel Octane. The create route ignores it, so on create the provider applies it with a follow-up update.",
+				Optional: true,
+				Computed: true,
+				Description: "Whether the app is served by Laravel Octane. Only for app instances, which Laravel Cloud " +
+					"creates with the environment, so manage one by importing it. The same setting as the " +
+					"environment's uses_octane: set it in one place.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"uses_inertia_ssr": schema.BoolAttribute{
-				Optional:    true,
-				Description: "Whether the instance uses Inertia SSR. The create route ignores it, so on create the provider applies it with a follow-up update.",
+				Optional: true,
+				Computed: true,
+				Description: "Whether the app runs an Inertia SSR server. Only for app instances, which Laravel Cloud " +
+					"creates with the environment, so manage one by importing it. Changing it also changes the " +
+					"environment's build command.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"hibernation_timeout": schema.Int64Attribute{
-				Optional:    true,
-				Description: "Hibernation timeout in seconds (1-60). The create route ignores it, so on create the provider applies it with a follow-up update.",
+				Optional: true,
+				Computed: true,
+				Description: "Minutes of inactivity (1-60) before the app hibernates (scales to zero). Set 0 to turn " +
+					"hibernation off. Only for app instances, which Laravel Cloud creates with the environment, so " +
+					"manage one by importing it. The environment's sleep_timeout writes the same setting: set only one.",
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
 			},
 			"paused": schema.BoolAttribute{
 				Computed:    true,
@@ -290,10 +309,7 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	// uses_octane, uses_inertia_ssr and hibernation_timeout are accepted only
-	// by the update route. Writing them straight into state would have claimed
-	// a value that was never sent, and because the API does not report them
-	// back no later refresh could ever notice -- so they are applied here.
+	// probes are accepted only by the update route, so they are applied here.
 	//
 	// The instance exists by this point, so a failure must not abort Create:
 	// returning early would skip the state write below and strand a live,
@@ -302,8 +318,7 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		if updated, err := r.client.UpdateInstance(ctx, inst.ID, updateReq); err != nil {
 			resp.Diagnostics.AddWarning(
 				"Could not apply all settings after creating the instance",
-				"The instance was created, but applying uses_octane, uses_inertia_ssr, "+
-					"hibernation_timeout or probes failed: "+err.Error()+
+				"The instance was created, but applying probes failed: "+err.Error()+
 					". The configured values are kept in state; run 'terraform apply' again to retry.",
 			)
 		} else {
@@ -339,25 +354,12 @@ const probesNotAppliedDetail = "The API did not apply probes. Health checks are 
 	"and only on plans that include them."
 
 // instanceCreateFollowUp collects the update-only attributes the create route
-// ignores, reporting whether any of them were configured.
+// ignores, reporting whether any of them were configured. uses_octane,
+// uses_inertia_ssr and hibernation_timeout are not among them: they apply only
+// to app instances, which the API cannot create.
 func instanceCreateFollowUp(plan InstanceResourceModel) (client.UpdateInstanceRequest, bool) {
 	var req client.UpdateInstanceRequest
 	set := false
-	if !plan.UsesOctane.IsNull() && !plan.UsesOctane.IsUnknown() {
-		v := plan.UsesOctane.ValueBool()
-		req.UsesOctane = &v
-		set = true
-	}
-	if !plan.UsesInertiaSSR.IsNull() && !plan.UsesInertiaSSR.IsUnknown() {
-		v := plan.UsesInertiaSSR.ValueBool()
-		req.UsesInertiaSSR = &v
-		set = true
-	}
-	if !plan.HibernationTimeout.IsNull() && !plan.HibernationTimeout.IsUnknown() {
-		v := int(plan.HibernationTimeout.ValueInt64())
-		req.HibernationTimeout = &v
-		set = true
-	}
 	if probes, _ := probesFromObject(plan.Probes); probes != nil {
 		req.Probes = probesRequest(probes)
 		set = true
@@ -453,19 +455,18 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		v := int(plan.PollingInterval.ValueInt64())
 		updateReq.PollingInterval = &v
 	}
-	// Update-only behavioral fields: not returned by the API, so send them
-	// whenever they are set in the plan.
-	if !plan.UsesOctane.IsNull() {
+	if isSet(plan.UsesOctane) && !plan.UsesOctane.Equal(state.UsesOctane) {
 		v := plan.UsesOctane.ValueBool()
 		updateReq.UsesOctane = &v
 	}
-	if !plan.UsesInertiaSSR.IsNull() {
+	if isSet(plan.UsesInertiaSSR) && !plan.UsesInertiaSSR.Equal(state.UsesInertiaSSR) {
 		v := plan.UsesInertiaSSR.ValueBool()
 		updateReq.UsesInertiaSSR = &v
 	}
-	if !plan.HibernationTimeout.IsNull() {
-		v := int(plan.HibernationTimeout.ValueInt64())
-		updateReq.HibernationTimeout = &v
+	// 0 turns hibernation off, which the API spells null.
+	if isSet(plan.HibernationTimeout) && !plan.HibernationTimeout.Equal(state.HibernationTimeout) {
+		v := plan.HibernationTimeout.ValueInt64()
+		updateReq.HibernationTimeout = &client.NullableInt{Value: int(v), Null: v == 0}
 	}
 	planProbes, _ := probesFromObject(plan.Probes)
 	stateProbes, _ := probesFromObject(state.Probes)
@@ -505,6 +506,18 @@ func (r *InstanceResource) Delete(ctx context.Context, req resource.DeleteReques
 	var state InstanceResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// The API refuses to delete an environment's app instance, which can only
+	// have been imported. Deleting the environment deletes it, so it is only
+	// dropped from state here.
+	if state.Type.ValueString() == "app" {
+		resp.Diagnostics.AddWarning(
+			"App instance not deleted",
+			fmt.Sprintf("Instance %q is its environment's app instance, which Laravel Cloud cannot delete on its own. "+
+				"It was removed from Terraform state and is deleted along with the environment.", state.Name.ValueString()),
+		)
 		return
 	}
 
@@ -566,6 +579,11 @@ func mapInstanceToState(inst *client.InstanceData, state *InstanceResourceModel)
 		state.ShutdownTimeout = types.Int64Null()
 	}
 
+	// App-instance settings; null for every other type.
+	state.UsesOctane = types.BoolPointerValue(inst.Attributes.UsesOctane)
+	state.UsesInertiaSSR = types.BoolPointerValue(inst.Attributes.UsesInertiaSSR)
+	state.HibernationTimeout = hibernationTimeoutFromAPI(inst)
+
 	// Computed read-only fields.
 	if inst.Attributes.Paused != nil {
 		state.Paused = types.BoolValue(*inst.Attributes.Paused)
@@ -589,6 +607,19 @@ func mapInstanceToState(inst *client.InstanceData, state *InstanceResourceModel)
 	if !state.Probes.IsNull() {
 		state.Probes = probesToObject(probesFromAPI(inst.Attributes.Probes))
 	}
+}
+
+// hibernationTimeoutFromAPI maps the API's timeout onto the attribute. For an
+// app instance null means hibernation is off, which the configuration spells
+// 0, so that is what it reads as; other instance types have no timeout.
+func hibernationTimeoutFromAPI(inst *client.InstanceData) types.Int64 {
+	if inst.Attributes.HibernationTimeout != nil {
+		return types.Int64Value(*inst.Attributes.HibernationTimeout)
+	}
+	if inst.Attributes.InstanceType == "app" {
+		return types.Int64Value(0)
+	}
+	return types.Int64Null()
 }
 
 // ValidateConfig moves the scaling_type/replica incompatibility from a runtime
@@ -622,14 +653,7 @@ func (r *InstanceResource) ValidateConfig(ctx context.Context, req resource.Vali
 	validateProbesConfig(config, &resp.Diagnostics)
 	validateManagedQueueConfig(config, &resp.Diagnostics)
 
-	if got, ok := validateHibernationTimeout(config.HibernationTimeout); !ok {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("hibernation_timeout"),
-			"hibernation_timeout is out of range",
-			fmt.Sprintf("The Laravel Cloud API requires hibernation_timeout to be between %d and %d seconds; got %d.",
-				hibernationTimeoutMin, hibernationTimeoutMax, got),
-		)
-	}
+	validateAppInstanceConfig(config, &resp.Diagnostics)
 
 	if config.ScalingType.ValueString() == "none" {
 		for _, a := range []struct {
@@ -679,22 +703,33 @@ func (r *InstanceResource) ValidateConfig(ctx context.Context, req resource.Vali
 	}
 }
 
-// hibernationTimeoutMin/Max are the bounds the API enforces: it answers an
-// out-of-range value with "The hibernation timeout must be null or an integer
-// between 1 and 60." Checking here turns that into a plan-time error, and the
-// provider now applies this attribute with a post-create update, where a 422
-// would otherwise surface only as a warning after the instance already exists.
-const (
-	hibernationTimeoutMin = 1
-	hibernationTimeoutMax = 60
-)
-
-func validateHibernationTimeout(v types.Int64) (int64, bool) {
-	if v.IsNull() || v.IsUnknown() {
-		return 0, true
+// validateAppInstanceConfig checks the settings only app instances have. The
+// API ignores them on other types and reports null, so they could never
+// converge there, and it answers a timeout outside 1-60 minutes with "The
+// hibernation timeout must be null or an integer between 1 and 60."
+func validateAppInstanceConfig(config InstanceResourceModel, diags *diag.Diagnostics) {
+	instanceType := config.Type.ValueString()
+	if config.Type.IsNull() {
+		instanceType = "service"
 	}
-	got := v.ValueInt64()
-	return got, got >= hibernationTimeoutMin && got <= hibernationTimeoutMax
+	if !config.Type.IsUnknown() && instanceType != "app" {
+		for name, v := range map[string]attr.Value{
+			"uses_octane":         config.UsesOctane,
+			"uses_inertia_ssr":    config.UsesInertiaSSR,
+			"hibernation_timeout": config.HibernationTimeout,
+		} {
+			if !v.IsNull() {
+				diags.AddAttributeError(path.Root(name), name+" is only for app instances",
+					fmt.Sprintf("Only an environment's app instance has %s; this one is %q. Import the app instance "+
+						"to manage it.", name, instanceType))
+			}
+		}
+	}
+	if v := config.HibernationTimeout; isSet(v) && v.ValueInt64() != 0 && (v.ValueInt64() < 1 || v.ValueInt64() > 60) {
+		diags.AddAttributeError(path.Root("hibernation_timeout"), "hibernation_timeout is out of range",
+			fmt.Sprintf("hibernation_timeout is in minutes and must be between 1 and 60, or 0 to turn hibernation "+
+				"off; got %d.", v.ValueInt64()))
+	}
 }
 
 // ModifyPlan leaves the replica counts to the platform when it chooses them.

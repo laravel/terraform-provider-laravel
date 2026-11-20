@@ -261,6 +261,12 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 					}
 				}
 				syncInstanceScaling(a)
+				// A new environment's app instance runs without Octane or
+				// Inertia SSR and hibernates after 5 minutes.
+				if a["type"] == "app" {
+					a["uses_octane"], a["uses_inertia_ssr"], a["hibernation_timeout"] = false, false, 5
+				}
+				syncAppInstanceSettings(a)
 				return a
 			},
 			patchFn: func(attrs, patch map[string]any) {
@@ -268,6 +274,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 					attrs[k] = v
 				}
 				syncInstanceScaling(attrs)
+				syncAppInstanceSettings(attrs)
 				// Only app instances take health checks; anything else has
 				// them silently dropped. An empty object clears them.
 				if probes, ok := attrs["probes"].(map[string]any); ok && (attrs["type"] != "app" || len(probes) == 0) {
@@ -850,6 +857,15 @@ func fakeWorkerCommand(config any) string {
 // reports as max_replicas for an automatically scaled instance (1000 on the
 // test organization's plan).
 const fakeAutoMaxReplicas = 10
+
+// syncAppInstanceSettings does what the API does with the settings only app
+// instances have: every other type ignores them and reports null. A null
+// hibernation_timeout, which turns hibernation off, is kept as null.
+func syncAppInstanceSettings(a map[string]any) {
+	if a["type"] != "app" {
+		a["uses_octane"], a["uses_inertia_ssr"], a["hibernation_timeout"] = nil, nil, nil
+	}
+}
 
 // syncInstanceScaling does what the API does after every instance create and
 // update: "auto" runs 1 replica up to the plan's limit and "none" exactly 1,

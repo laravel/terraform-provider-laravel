@@ -219,3 +219,124 @@ resource "laravel_cloud_instance" "worker" {
 }
 `, name, testAccRepository(), testAccBranch(), scalingType, extra)
 }
+
+// An environment's app instance, imported, reads back its Octane,
+// Inertia SSR and hibernation settings, takes hibernation_timeout in minutes,
+// and turns hibernation off with 0. The provider used to read none of them
+// back, documented the timeout in seconds, and never sent null, so
+// hibernation could not be turned off. Destroy leaves the app instance to the
+// environment, as the API refuses to delete it.
+func TestAccInstance_appSettings(t *testing.T) {
+	name := testAccName()
+	const addr = "laravel_cloud_instance.app"
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: testAccAppInstanceConfig(name, "", false)},
+			{
+				Config:             testAccAppInstanceConfig(name, "", true),
+				ResourceName:       addr,
+				ImportState:        true,
+				ImportStatePersist: true,
+				ImportStateIdFunc: func(s *terraform.State) (string, error) {
+					envID := s.RootModule().Resources["laravel_cloud_environment.test"].Primary.ID
+					instances, err := testAccClient().ListInstances(context.Background(), envID)
+					if err != nil {
+						return "", err
+					}
+					for _, i := range instances {
+						if i.Attributes.InstanceType == "app" {
+							return i.ID, nil
+						}
+					}
+					return "", fmt.Errorf("environment %s has no app instance", envID)
+				},
+			},
+			{
+				// A new environment's app instance hibernates after 5 minutes.
+				Config: testAccAppInstanceConfig(name, "", true),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectEmptyPlan(),
+				}},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(addr, "uses_octane", "false"),
+					resource.TestCheckResourceAttr(addr, "uses_inertia_ssr", "false"),
+					resource.TestCheckResourceAttr(addr, "hibernation_timeout", "5"),
+				),
+			},
+			{
+				Config: testAccAppInstanceConfig(name, "uses_octane = true\n  hibernation_timeout = 10", true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(addr, "uses_octane", "true"),
+					resource.TestCheckResourceAttr(addr, "hibernation_timeout", "10"),
+					testAccCheckAppInstance(addr, true, intPtr(10)),
+				),
+			},
+			{
+				Config: testAccAppInstanceConfig(name, "uses_octane = true\n  hibernation_timeout = 0", true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(addr, "hibernation_timeout", "0"),
+					testAccCheckAppInstance(addr, true, nil),
+				),
+			},
+		},
+	})
+}
+
+// testAccCheckAppInstance reads the app instance's settings from the API.
+func testAccCheckAppInstance(addr string, octane bool, hibernation *int) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		inst, err := testAccClient().GetInstance(context.Background(), s.RootModule().Resources[addr].Primary.ID)
+		if err != nil {
+			return err
+		}
+		a := inst.Attributes
+		if a.UsesOctane == nil || *a.UsesOctane != octane {
+			return fmt.Errorf("API uses_octane = %v, want %v", a.UsesOctane, octane)
+		}
+		var got *int
+		if a.HibernationTimeout != nil {
+			got = intPtr(int(*a.HibernationTimeout))
+		}
+		if (got == nil) != (hibernation == nil) || (got != nil && *got != *hibernation) {
+			return fmt.Errorf("API hibernation_timeout = %s, want %s", fmtIntPtr(got), fmtIntPtr(hibernation))
+		}
+		return nil
+	}
+}
+
+func testAccAppInstanceConfig(name, extra string, withInstance bool) string {
+	cfg := fmt.Sprintf(`
+resource "laravel_cloud_application" "test" {
+  name       = %[1]q
+  repository = %[2]q
+  region     = "us-east-2"
+}
+
+# Not "production": the API refuses to delete an application's production
+# environment.
+resource "laravel_cloud_environment" "test" {
+  application_id = laravel_cloud_application.test.id
+  name           = "staging"
+  branch         = %[3]q
+}
+`, name, testAccRepository(), testAccBranch())
+	if !withInstance {
+		return cfg
+	}
+	// Laravel Cloud creates the app instance with the environment, named App.
+	return cfg + fmt.Sprintf(`
+resource "laravel_cloud_instance" "app" {
+  environment_id = laravel_cloud_environment.test.id
+  name           = "App"
+  type           = "app"
+  size           = "flex-512mb"
+  scaling_type   = "none"
+  min_replicas   = 1
+  max_replicas   = 1
+  %s
+}
+`, extra)
+}

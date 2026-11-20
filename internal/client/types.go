@@ -348,6 +348,12 @@ type InstanceAttributes struct {
 	ShutdownTimeout   *int  `json:"shutdown_timeout"`
 	Paused            *bool `json:"paused"`
 	IsDefault         *bool `json:"is_default"`
+	// App-instance settings, stored on the environment: null for every other
+	// instance type. HibernationTimeout is in minutes, and null when
+	// hibernation is off.
+	UsesOctane         *bool  `json:"uses_octane"`
+	UsesInertiaSSR     *bool  `json:"uses_inertia_ssr"`
+	HibernationTimeout *int64 `json:"hibernation_timeout"`
 	// QueueStatus is a string enum per the spec (creating, updating,
 	// available, deleting, deleted, unknown) or null. It is decoded through
 	// QueueStatusValue rather than a plain *string so that a non-string
@@ -416,9 +422,10 @@ type UpdateInstanceRequest struct {
 	SleepWithApp                     *bool        `json:"sleep_with_app,omitempty"`
 	UsesOctane                       *bool        `json:"uses_octane,omitempty"`
 	UsesInertiaSSR                   *bool        `json:"uses_inertia_ssr,omitempty"`
-	HibernationTimeout               *int         `json:"hibernation_timeout,omitempty"`
-	VisibilityTimeout                *int         `json:"visibility_timeout,omitempty"`
-	ShutdownTimeout                  *int         `json:"shutdown_timeout,omitempty"`
+	// HibernationTimeout is in minutes; null turns hibernation off.
+	HibernationTimeout *NullableInt `json:"hibernation_timeout,omitempty"`
+	VisibilityTimeout  *int         `json:"visibility_timeout,omitempty"`
+	ShutdownTimeout    *int         `json:"shutdown_timeout,omitempty"`
 	// PollingInterval applies to previous-generation managed queues only; see
 	// CreateInstanceRequest.
 	PollingInterval *int `json:"polling_interval,omitempty"`

@@ -53,7 +53,7 @@ resource "laravel_cloud_instance" "example" {
 
 ### Optional
 
-- `hibernation_timeout` (Number) Hibernation timeout in seconds (1-60). The create route ignores it, so on create the provider applies it with a follow-up update.
+- `hibernation_timeout` (Number) Minutes of inactivity (1-60) before the app hibernates (scales to zero). Set 0 to turn hibernation off. Only for app instances, which Laravel Cloud creates with the environment, so manage one by importing it. The environment's sleep_timeout writes the same setting: set only one.
 - `is_default` (Boolean) Whether this managed queue is the environment's default, the one a job goes to when it names no queue. Set true to make it the default; only managed_queue instances can be. It cannot be set false: the default moves when another queue is made the default.
 - `max_replicas` (Number) Maximum number of replicas. Set it only for the "custom" scaling type: for "auto" the platform sets it to the plan's replica limit, and for "none" to 1.
 - `min_replicas` (Number) Minimum number of replicas. Set it only for the "custom" scaling type: for "auto" and "none" the platform sets it to 1. Required for custom scaling except on managed queues, where it is the minimum number of workers: optional on current-generation (mq.*) sizes, where 0 lets the queue scale to zero when idle, and rejected on previous-generation sizes, which always scale to zero.
@@ -62,10 +62,10 @@ resource "laravel_cloud_instance" "example" {
 - `scaling_cpu_threshold_percentage` (Number) CPU usage, in percent (50-95), above which the instance scales out. Leave unset for the platform default. Not allowed with scaling_type "none".
 - `scaling_memory_threshold_percentage` (Number) Memory usage, in percent (50-95), above which the instance scales out. Leave unset for the platform default. Not allowed with scaling_type "none".
 - `shutdown_timeout` (Number) Queue shutdown timeout in seconds (managed_queue).
-- `sleep_with_app` (Boolean) Whether the instance sleeps with the app (managed_queue).
-- `type` (String) Instance type (service or managed_queue). Defaults to service when not set.
-- `uses_inertia_ssr` (Boolean) Whether the instance uses Inertia SSR. The create route ignores it, so on create the provider applies it with a follow-up update.
-- `uses_octane` (Boolean) Whether the instance uses Laravel Octane. The create route ignores it, so on create the provider applies it with a follow-up update.
+- `sleep_with_app` (Boolean) Whether the instance's replicas scale to zero along with the app, waking when it does. Only for service instances.
+- `type` (String) Instance type (service or managed_queue). Defaults to service when not set. An environment's app instance, which can only be imported, is app.
+- `uses_inertia_ssr` (Boolean) Whether the app runs an Inertia SSR server. Only for app instances, which Laravel Cloud creates with the environment, so manage one by importing it. Changing it also changes the environment's build command.
+- `uses_octane` (Boolean) Whether the app is served by Laravel Octane. Only for app instances, which Laravel Cloud creates with the environment, so manage one by importing it. The same setting as the environment's uses_octane: set it in one place.
 - `uses_scheduler` (Boolean)
 - `visibility_timeout` (Number) Queue visibility timeout in seconds (managed_queue).
 
