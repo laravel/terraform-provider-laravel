@@ -76,6 +76,10 @@ type crudSpec struct {
 	// API answers with a 422.
 	validateCreate func(body map[string]any) string
 
+	// beforeCreate, if set, can refuse a POST by returning the message the
+	// API answers with a 422 -- a database cluster that is busy, for example.
+	beforeCreate func(f *fakeCloud, parentID string) string
+
 	// beforeDelete, if set, can refuse a DELETE by returning the message the
 	// API answers with a 422 -- a bucket that still has keys, for example.
 	beforeDelete func(f *fakeCloud, id string) string
@@ -136,6 +140,13 @@ func (f *fakeCloud) genCreate(s crudSpec) http.HandlerFunc {
 		parentID := ""
 		if s.parentWildcard != "" {
 			parentID = r.PathValue(s.parentWildcard)
+		}
+
+		if s.beforeCreate != nil {
+			if msg := s.beforeCreate(f, parentID); msg != "" {
+				writeError(w, http.StatusUnprocessableEntity, errors.New(msg))
+				return
+			}
 		}
 
 		f.seq++

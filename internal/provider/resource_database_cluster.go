@@ -337,103 +337,88 @@ func (r *DatabaseClusterResource) Delete(ctx context.Context, req resource.Delet
 		return
 	}
 
-	id := state.ID.ValueString()
+	resp.Diagnostics.Append(deleteDatabaseCluster(ctx, r.client, state.ID.ValueString(), state.ForceDestroy.ValueBool())...)
+}
 
-	// A cluster carries at least the database the platform creates alongside
-	// it (unless create_default_database was false), and the API refuses to
-	// delete a cluster while any database is attached -- so a destroy usually
-	// cannot succeed without removing them first.
-	//
-	// Removing them is destructive well beyond what Terraform manages: the
-	// cluster may also hold databases created in the dashboard or by another
-	// tool, and this resource's state does not track them. Doing it implicitly
-	// would turn a failed destroy, which is recoverable, into silent data loss,
-	// which is not -- and lifecycle.prevent_destroy could not guard it, because
-	// those databases are not resources in state. So it is opt-in, on the same
-	// reasoning as force_destroy on a storage bucket.
-	if !state.ForceDestroy.ValueBool() {
-		names, err := clusterDatabaseNames(ctx, r.client, id)
+// deleteDatabaseCluster destroys a database cluster, for this resource and for
+// laravel_cloud_database_restore, whose restored cluster is an ordinary one.
+//
+// The API refuses to delete a cluster while any database is attached, and a
+// cluster usually has some: the one the platform creates with it (unless
+// create_default_database was false), or the copies a restore makes of the
+// source cluster's databases.
+//
+// Removing them is destructive well beyond what Terraform manages: the cluster
+// may also hold databases created in the dashboard or by another tool, and the
+// resource's state does not track them. Doing it implicitly would turn a failed
+// destroy, which is recoverable, into silent data loss, which is not -- and
+// lifecycle.prevent_destroy could not guard it, because those databases are not
+// resources in state. So it is opt-in with force_destroy, on the same reasoning
+// as force_destroy on a storage bucket.
+func deleteDatabaseCluster(ctx context.Context, c *client.Client, id string, forceDestroy bool) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	if !forceDestroy {
+		names, err := clusterDatabaseNames(ctx, c, id)
 		if err != nil {
-			resp.Diagnostics.AddError("Error listing databases before deleting cluster", err.Error())
-			return
+			diags.AddError("Error listing databases before deleting cluster", err.Error())
+			return diags
 		}
 		if len(names) > 0 {
-			resp.Diagnostics.AddError(
+			diags.AddError(
 				"Database cluster still contains databases",
 				fmt.Sprintf(
 					"The cluster %q cannot be deleted because it still contains %d database(s): %s.\n\n"+
-						"The API refuses to delete a cluster with databases attached, and a cluster always "+
-						"carries at least the one created with it. Either remove them first, or set "+
-						"force_destroy = true on this resource to have Terraform delete every database in "+
-						"the cluster as part of the destroy.\n\n"+
+						"The API refuses to delete a cluster with databases attached. Either remove them "+
+						"first, or set force_destroy = true on this resource to have Terraform delete every "+
+						"database in the cluster as part of the destroy.\n\n"+
 						"force_destroy deletes ALL of them, including any this configuration does not manage.",
 					id, len(names), strings.Join(names, ", "),
 				),
 			)
-			return
-		}
-	} else if diags := deleteClusterSchemas(ctx, r.client, id); diags != nil {
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
+			return diags
 		}
 	}
 
-	// The cluster may still be settling after the schema deletions.
-	err := client.RetryOnConflict(ctx, databaseDeleteAttempts, databaseDeleteInterval, func() error {
-		return r.client.DeleteDatabaseCluster(ctx, id)
+	// Deleting a database starts an update of the cluster, so the next delete,
+	// of a database or of the cluster, is refused as busy until it finishes; so
+	// is anything while the cluster is still being created or restored. Each
+	// attempt deletes whatever databases are left and then the cluster.
+	err := client.RetryOnConflict(ctx, databaseBusyAttempts, databaseBusyInterval, func() error {
+		if forceDestroy {
+			if err := deleteClusterDatabases(ctx, c, id); err != nil {
+				return err
+			}
+		}
+		return c.DeleteDatabaseCluster(ctx, id)
 	}, func(err error) bool {
-		msg := err.Error()
-		return strings.Contains(msg, "schemas attached") ||
-			strings.Contains(msg, "operation is already in progress") ||
-			strings.Contains(msg, "update operation is already in progress")
+		// A database that appeared after the listing, such as one a restore
+		// is still copying, is deleted on the next attempt.
+		return client.IsBusy(err) || (forceDestroy && client.IsClusterNotEmpty(err))
 	})
 	if err != nil {
-		resp.Diagnostics.AddError("Error deleting database cluster", err.Error())
+		diags.AddError("Error deleting database cluster", err.Error())
 	}
+	return diags
 }
 
-// deleteClusterSchemas removes every schema in the cluster so the cluster
-// itself can be deleted. A schema that is already gone is not an error; a
+// deleteClusterDatabases deletes every database in the cluster so the cluster
+// itself can be deleted. A database that is already gone is not an error; a
 // cluster that is already gone means there is nothing to do.
-func deleteClusterSchemas(ctx context.Context, c *client.Client, clusterID string) diag.Diagnostics {
-	var diags diag.Diagnostics
-
-	schemas, err := c.ListDatabases(ctx, clusterID)
+func deleteClusterDatabases(ctx context.Context, c *client.Client, clusterID string) error {
+	databases, err := c.ListDatabases(ctx, clusterID)
 	if err != nil {
 		if client.IsNotFound(err) {
 			return nil
 		}
-		diags.AddError(
-			"Error listing databases before deleting cluster",
-			"The cluster's databases must be removed before the cluster can be deleted, "+
-				"but listing them failed: "+err.Error(),
-		)
-		return diags
+		return fmt.Errorf("listing databases before deleting cluster %q: %w", clusterID, err)
 	}
-
-	for _, schema := range schemas {
-		schemaID := schema.ID
-		err := client.RetryOnConflict(ctx, databaseDeleteAttempts, databaseDeleteInterval, func() error {
-			if err := c.DeleteDatabase(ctx, clusterID, schemaID); err != nil {
-				if client.IsNotFound(err) {
-					return nil
-				}
-				return err
-			}
-			return nil
-		}, func(err error) bool {
-			return strings.Contains(err.Error(), "operation is already in progress")
-		})
-		if err != nil {
-			diags.AddError(
-				"Error deleting database before deleting cluster",
-				fmt.Sprintf("Could not delete database %q in cluster %q: %s", schemaID, clusterID, err),
-			)
-			return diags
+	for _, db := range databases {
+		if err := c.DeleteDatabase(ctx, clusterID, db.ID); err != nil && !client.IsNotFound(err) {
+			return fmt.Errorf("deleting database %q before deleting cluster %q: %w", db.ID, clusterID, err)
 		}
 	}
-	return diags
+	return nil
 }
 
 // keepConnectionUnlessConfigChanges plans connection_details for an update.
@@ -685,15 +670,14 @@ func jsonEqual(a, b any) bool {
 	return string(ab) == string(bb)
 }
 
-// Deleting anything in a database cluster fails while the cluster is still
-// provisioning, and provisioning a cluster routinely takes longer than ten
-// minutes. The previous five-minute budget was shorter than the operation it
-// was waiting on, so a create-then-destroy cycle -- an acceptance test, or a
-// user correcting a mistake -- gave up and left a billable database behind.
-const (
-	databaseDeleteAttempts = 120
-	databaseDeleteInterval = 10 * time.Second
-)
+// Anything that changes a database cluster -- creating or deleting a database
+// in it, deleting it, restoring it -- is refused while the cluster is busy, and
+// provisioning a cluster routinely takes twenty minutes or more. These bound
+// how long the provider waits for it. The interval is a variable so the plan
+// tests need not wait.
+const databaseBusyAttempts = 180
+
+var databaseBusyInterval = 10 * time.Second
 
 // clusterDatabaseNames returns the names of every database in the cluster, so a
 // refused destroy can say what is actually in the way. A cluster that is

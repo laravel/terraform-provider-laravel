@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
@@ -69,6 +70,10 @@ type fakeCloud struct {
 
 	// secrets models the organization secrets API; see mock_secrets_test.go.
 	secrets *fakeSecrets
+
+	// clusterBusy counts, per database cluster, how many more requests that
+	// change it are refused as busy -- see mock_resources_test.go.
+	clusterBusy map[string]int
 }
 
 // newFakeCloud starts an httptest.Server backed by a fresh in-memory store and
@@ -86,7 +91,15 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 		parents:  map[string]map[string]string{},
 		vars:     map[string]map[string]string{},
 		secrets:  newFakeSecrets(),
+
+		clusterBusy: map[string]int{},
 	}
+
+	// The fake answers busy for a request or two, not twenty minutes, so the
+	// provider need not wait between retries.
+	interval := databaseBusyInterval
+	databaseBusyInterval = time.Millisecond
+	t.Cleanup(func() { databaseBusyInterval = interval })
 
 	mux := http.NewServeMux()
 	// Applications

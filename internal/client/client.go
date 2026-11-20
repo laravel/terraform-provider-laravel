@@ -208,6 +208,33 @@ func IsNotFound(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.StatusCode == 404
 }
 
+// IsBusy returns true if the API refused the request because the resource, or
+// the database cluster it belongs to, has another operation in progress -- a
+// cluster that is still being created counts. The same request succeeds once
+// that operation finishes.
+//
+// The API has no error code for this, only a 422 validation message, and the
+// wording differs by route: "This database cluster is already being updated.
+// Try again shortly." when creating or deleting a database, and "An update is
+// already in progress for this database. Try again in a few seconds." when
+// deleting a cluster or restoring one.
+func IsBusy(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	return strings.Contains(apiErr.Body, "already being updated") ||
+		strings.Contains(apiErr.Body, "already in progress")
+}
+
+// IsClusterNotEmpty returns true if the API refused to delete a database
+// cluster because it still has databases.
+func IsClusterNotEmpty(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity &&
+		strings.Contains(apiErr.Body, "still has databases")
+}
+
 // RetryOnConflict retries operation up to maxAttempts when isRetryable returns
 // true for the error. It respects context cancellation between attempts.
 //

@@ -46,19 +46,21 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 				createDefault, sent := attrs["create_default_database"]
 				// A create-only request field: never reported back.
 				delete(attrs, "create_default_database")
+				// A new cluster is "creating", which the API counts as busy.
+				f.clusterBusy[clusterID] = clusterCreatingRefusals
 				if sent && createDefault == false {
 					return
 				}
-				f.seq++
-				id := fmt.Sprintf("db-schema-%d", f.seq)
-				if f.objects["database"] == nil {
-					f.objects["database"] = map[string]map[string]any{}
+				f.addClusterDatabase(clusterID, autoCreatedDatabaseName)
+			},
+			beforeDelete: func(f *fakeCloud, clusterID string) string {
+				if f.refuseIfBusy(clusterID) {
+					return clusterBusyMessage
 				}
-				f.objects["database"][id] = map[string]any{
-					"name": autoCreatedDatabaseName, "status": "available",
+				if len(f.clusterDatabaseIDs(clusterID)) > 0 {
+					return "The database cluster still has databases and cannot be deleted."
 				}
-				key := "database:" + clusterID
-				f.children[key] = append(f.children[key], id)
+				return ""
 			},
 		},
 		{
@@ -290,6 +292,22 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			// DELETE /databases/{id} does not accept it. The resource must use
 			// the nested route.
 			deletePattern: "/databases/clusters/{cid}/databases/{id}",
+			// Creating or deleting a database is refused while its cluster is
+			// busy, and deleting one starts an update of the cluster.
+			beforeCreate: func(f *fakeCloud, clusterID string) string {
+				if f.refuseIfBusy(clusterID) {
+					return databaseClusterBusyMessage
+				}
+				return ""
+			},
+			beforeDelete: func(f *fakeCloud, id string) string {
+				clusterID := f.parents["database"][id]
+				if f.refuseIfBusy(clusterID) {
+					return databaseClusterBusyMessage
+				}
+				f.clusterBusy[clusterID] = 1
+				return ""
+			},
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
 				a["status"] = "available"
@@ -367,6 +385,18 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			typeName: "database_snapshot", idPrefix: "snap", parentWildcard: "cid",
 			collectionPattern: "/databases/clusters/{cid}/snapshots", itemPattern: "/database-snapshots/{id}",
 			relationshipName: "database", relationshipType: "databases",
+			beforeCreate: func(f *fakeCloud, clusterID string) string {
+				if f.refuseIfBusy(clusterID) {
+					return clusterBusyMessage
+				}
+				return ""
+			},
+			beforeDelete: func(f *fakeCloud, id string) string {
+				if f.refuseIfBusy(f.parents["database_snapshot"][id]) {
+					return clusterBusyMessage
+				}
+				return ""
+			},
 			del: true,
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
@@ -491,6 +521,53 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 		f.objects[clusterType][id] = attrs
 		writeJSON(w, http.StatusCreated, jsonAPIObject(id, clusterType, attrs))
 	})
+}
+
+// The API's 422 messages for a busy cluster: one from the database routes,
+// another from deleting or restoring the cluster itself.
+const (
+	databaseClusterBusyMessage = "This database cluster is already being updated. Try again shortly."
+	clusterBusyMessage         = "An update is already in progress for this database. Try again in a few seconds."
+)
+
+// clusterCreatingRefusals is how many requests a new cluster refuses as busy before it becomes available.
+const clusterCreatingRefusals = 2
+
+// refuseIfBusy reports whether the cluster is busy, and uses up one refusal.
+func (f *fakeCloud) refuseIfBusy(clusterID string) bool {
+	if f.clusterBusy[clusterID] == 0 {
+		return false
+	}
+	f.clusterBusy[clusterID]--
+	return true
+}
+
+// addClusterDatabase stores a database inside a cluster, as the platform does
+// when it creates a cluster.
+func (f *fakeCloud) addClusterDatabase(clusterID string, name any) {
+	f.seq++
+	id := fmt.Sprintf("db-schema-%d", f.seq)
+	if f.objects["database"] == nil {
+		f.objects["database"] = map[string]map[string]any{}
+	}
+	f.objects["database"][id] = map[string]any{"name": name, "status": "available"}
+	key := "database:" + clusterID
+	f.children[key] = append(f.children[key], id)
+	if f.parents["database"] == nil {
+		f.parents["database"] = map[string]string{}
+	}
+	f.parents["database"][id] = clusterID
+}
+
+// clusterDatabaseIDs returns the ids of the databases still in a cluster.
+func (f *fakeCloud) clusterDatabaseIDs(clusterID string) []string {
+	var ids []string
+	for _, id := range f.children["database:"+clusterID] {
+		if _, ok := f.objects["database"][id]; ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // seedCluster builds the stored attributes for a database cluster, including a
