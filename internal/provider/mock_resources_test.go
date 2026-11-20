@@ -310,6 +310,8 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			collectionPattern: "/environments/{eid}/domains", itemPattern: "/domains/{id}",
 			patch: true, del: true,
 			relationshipName: "environment", relationshipType: "environments",
+			// A domain verifies on the third check; see POST /domains/{id}/verify.
+			afterCreate: func(f *fakeCloud, id string) { f.busy[id] = 2 },
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
 				// The request sends www_redirect; the API echoes it as `redirect`.
@@ -610,6 +612,32 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 		attrs["paused"] = false
 		return ""
 	}))
+
+	// Checking a domain's DNS records. Every domain verifies on its third
+	// check, except one named never.*, whose records are never created.
+	var domainSpec crudSpec
+	for _, s := range specs {
+		if s.typeName == "domain" {
+			domainSpec = s
+		}
+	}
+	mux.HandleFunc("POST /domains/{id}/verify", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		id := r.PathValue("id")
+		attrs, ok := f.objects["domain"][id]
+		if !ok {
+			writeError(w, http.StatusNotFound, fmt.Errorf("domain not found"))
+			return
+		}
+		if f.busy[id] > 0 {
+			f.busy[id]--
+		} else if name, _ := attrs["name"].(string); !strings.HasPrefix(name, "never.") {
+			attrs["stage"], attrs["action_required"] = "origin", nil
+			attrs["hostname_status"], attrs["ssl_status"], attrs["origin_status"] = "verified", "verified", "verified"
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": f.dataWithParent(domainSpec, id, attrs)})
+	})
 
 	// -------- bespoke endpoints --------
 

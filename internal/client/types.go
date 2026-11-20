@@ -476,7 +476,31 @@ type DomainAttributes struct {
 	// verify and serve. Without it there is no way to complete the domain
 	// workflow from Terraform.
 	DNSRecords DomainDNSRecords `json:"dns_records"`
-	CreatedAt  *string          `json:"created_at"`
+	// WWW is the www. subdomain Cloud attaches alongside a root domain that
+	// redirects to or from it, or nil when there is none. It has to verify
+	// too before the domain counts as verified.
+	WWW       *DomainHostStatus `json:"www"`
+	CreatedAt *string           `json:"created_at"`
+}
+
+// DomainHostStatus is the verification state of one hostname of a domain.
+type DomainHostStatus struct {
+	HostnameStatus string `json:"hostname_status"`
+	SSLStatus      string `json:"ssl_status"`
+	OriginStatus   string `json:"origin_status"`
+}
+
+// Verified reports whether the hostname, its certificate and its origin are
+// all verified.
+func (h DomainHostStatus) Verified() bool {
+	return h.HostnameStatus == "verified" && h.SSLStatus == "verified" && h.OriginStatus == "verified"
+}
+
+// Verified reports whether the domain is verified, as Cloud decides it: the
+// root hostname and, when there is one, its www. subdomain.
+func (a DomainAttributes) Verified() bool {
+	root := DomainHostStatus{HostnameStatus: a.HostnameStatus, SSLStatus: a.SSLStatus, OriginStatus: a.OriginStatus}
+	return root.Verified() && (a.WWW == nil || a.WWW.Verified())
 }
 
 // DomainDNSRecords is the dns_records object on a domain.
