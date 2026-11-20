@@ -49,7 +49,7 @@ resource "laravel_cloud_environment_variables" "example" {
 ### Required
 
 - `environment_id` (String) Environment ID.
-- `variables` (Map of String, Sensitive) Map of environment variable key-value pairs. Removing a key deletes that variable from the environment.
+- `variables` (Map of String, Sensitive) Map of environment variable key-value pairs. Removing a key deletes that variable from the environment. Laravel Cloud stores at most 210 variables per environment, including variables set outside Terraform.
 
 ### Read-Only
 

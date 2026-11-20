@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -16,7 +17,15 @@ import (
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
 
-var _ resource.Resource = &EnvironmentVariableResource{}
+var (
+	_ resource.Resource                   = &EnvironmentVariableResource{}
+	_ resource.ResourceWithValidateConfig = &EnvironmentVariableResource{}
+)
+
+// maxEnvironmentVariables is the most variables Laravel Cloud stores in one
+// environment, counting variables set outside Terraform. Its store endpoint
+// takes the same number per request, so batching cannot get past it.
+const maxEnvironmentVariables = 210
 
 type EnvironmentVariableResource struct {
 	client *client.Client
@@ -58,9 +67,29 @@ func (r *EnvironmentVariableResource) Schema(_ context.Context, _ resource.Schem
 				Required:    true,
 				ElementType: types.StringType,
 				Sensitive:   true,
-				Description: "Map of environment variable key-value pairs. Removing a key deletes that variable from the environment.",
+				Description: "Map of environment variable key-value pairs. Removing a key deletes that variable from the environment. Laravel Cloud stores at most 210 variables per environment, including variables set outside Terraform.",
 			},
 		},
+	}
+}
+
+// ValidateConfig rejects more variables than an environment can hold at plan
+// time. Without it the plan looked fine and the apply failed with a 422.
+func (r *EnvironmentVariableResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var vars types.Map
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("variables"), &vars)...)
+	if resp.Diagnostics.HasError() || vars.IsNull() || vars.IsUnknown() {
+		return
+	}
+	if n := len(vars.Elements()); n > maxEnvironmentVariables {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("variables"),
+			"Too many environment variables",
+			fmt.Sprintf("Laravel Cloud allows at most %d variables per environment, and this configuration sets %d. "+
+				"Remove at least %d, or move related values into fewer variables. "+
+				"Variables set outside Terraform also count toward the limit.",
+				maxEnvironmentVariables, n, n-maxEnvironmentVariables),
+		)
 	}
 }
 
@@ -219,6 +248,7 @@ func (r *EnvironmentVariableResource) Delete(ctx context.Context, req resource.D
 
 // setVariables writes vars to the environment. The API takes 1 to 210
 // variables per call and rejects an empty list, so an empty map sends nothing.
+// ValidateConfig keeps vars within one call.
 func (r *EnvironmentVariableResource) setVariables(ctx context.Context, envID string, vars map[string]types.String) error {
 	if len(vars) == 0 {
 		return nil

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -71,6 +72,39 @@ func TestAccEnvironmentVariables_destroyAfterExternalRemoval(t *testing.T) {
 				// The refresh after apply sees TFACC_TWO gone and plans to
 				// put it back; that is drift detection working.
 				ExpectNonEmptyPlan: true,
+			},
+		},
+	})
+}
+
+// TestAccEnvironmentVariables_limit checks that more than 210 variables, the
+// most an environment holds, fail at plan time instead of with a 422 on apply.
+// It first stores a large set in one request to show sizes below
+// the limit still apply. Not 210: a new environment already holds APP_KEY,
+// which Cloud sets, and that counts toward the limit.
+func TestAccEnvironmentVariables_limit(t *testing.T) {
+	name := testAccName()
+	addr := "laravel_cloud_environment_variables.test"
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccEnvironmentVariablesConfig(name, numberedVariables(200)),
+				Check:  resource.TestCheckResourceAttr(addr, "variables.%", "200"),
+			},
+			{
+				Config:      testAccEnvironmentVariablesConfig(name, numberedVariables(211)),
+				ExpectError: regexp.MustCompile(`(?s)at most 210 variables per environment.*sets 211`),
+			},
+			{
+				// The rejected plan changed nothing, and the test's destroy
+				// needs a configuration that validates.
+				Config: testAccEnvironmentVariablesConfig(name, numberedVariables(200)),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
 			},
 		},
 	})

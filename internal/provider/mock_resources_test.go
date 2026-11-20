@@ -3,6 +3,7 @@ package provider
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"sort"
 	"strings"
@@ -656,35 +657,50 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 	// so a test that drops a key from config only sees it disappear if the
 	// provider deletes it by name. The response is discarded by the provider
 	// (no GET endpoint exists); f.vars is what assertions read. Like the real
-	// API, an empty list is a 422: it takes 1 to 210 variables.
+	// API, an empty list is a 422: it takes 1 to 210 variables. The
+	// environment as a whole holds at most 210, and a write that would go over
+	// stores nothing.
 	mux.HandleFunc("POST /environments/{id}/variables", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		body := decodeBody(r)
-
-		if list, _ := body["variables"].([]any); len(list) == 0 {
+		invalid := func(msg string) {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-				"message": "The variables field is required.",
-				"errors":  map[string]any{"variables": []string{"The variables field is required."}},
+				"message": msg,
+				"errors":  map[string]any{"variables": []string{msg}},
 			})
+		}
+
+		list, _ := body["variables"].([]any)
+		switch {
+		case len(list) == 0:
+			invalid("The variables field is required.")
+			return
+		case len(list) > 210:
+			invalid("A maximum of 210 variables may be provided per request.")
 			return
 		}
 
 		f.mu.Lock()
-		if f.vars[id] == nil {
-			f.vars[id] = map[string]string{}
+		defer f.mu.Unlock()
+		merged := maps.Clone(f.vars[id])
+		if merged == nil {
+			merged = map[string]string{}
 		}
-		if list, ok := body["variables"].([]any); ok {
-			for _, item := range list {
-				v, ok := item.(map[string]any)
-				if !ok {
-					continue
-				}
-				key, _ := v["key"].(string)
-				value, _ := v["value"].(string)
-				f.vars[id][key] = value
+		for _, item := range list {
+			v, ok := item.(map[string]any)
+			if !ok {
+				continue
 			}
+			key, _ := v["key"].(string)
+			value, _ := v["value"].(string)
+			merged[key] = value
 		}
-		f.mu.Unlock()
+		if existing := len(f.vars[id]); len(merged) > 210 {
+			invalid(fmt.Sprintf("An environment may not have more than 210 variables. "+
+				"This environment has %d and you are trying to add %d.", existing, len(merged)-existing))
+			return
+		}
+		f.vars[id] = merged
 
 		writeJSON(w, http.StatusOK, jsonAPIObject(id, "environments", map[string]any{}))
 	})
