@@ -129,6 +129,80 @@ func TestAccInstance_fifoQueue(t *testing.T) {
 	})
 }
 
+// paused pauses and resumes a managed queue, and a queue created with
+// is_default = true takes the default over in the same apply, although the
+// API refuses both until the new queue is available.
+func TestAccInstance_pausedDefaultQueue(t *testing.T) {
+	name := testAccName()
+	const queue, second = "laravel_cloud_instance.queue", "laravel_cloud_instance.second"
+	config := func(paused bool) string {
+		// The helper's queue is the environment's first, which Cloud makes
+		// the default.
+		return testAccManagedQueueConfig(name, 2, fmt.Sprintf("paused = %t", paused)) + fmt.Sprintf(`
+resource "laravel_cloud_instance" "second" {
+  environment_id = laravel_cloud_environment.test.id
+  name           = "%[1]s-b"
+  type           = "managed_queue"
+  size           = "mq.flex.256mb"
+  scaling_type   = "custom"
+  min_replicas   = 0
+  max_replicas   = 2
+  is_default     = true
+  depends_on     = [laravel_cloud_instance.queue]
+}
+`, name)
+	}
+	apiState := func(addr string, wantPaused, wantDefault bool) resource.TestCheckFunc {
+		return func(s *terraform.State) error {
+			inst, err := testAccClient().GetInstance(context.Background(), s.RootModule().Resources[addr].Primary.ID)
+			if err != nil {
+				return err
+			}
+			if p := inst.Attributes.Paused; p == nil || *p != wantPaused {
+				return fmt.Errorf("%s: API paused = %v, want %t", addr, p, wantPaused)
+			}
+			if d := inst.Attributes.IsDefault; d == nil || *d != wantDefault {
+				return fmt.Errorf("%s: API is_default = %v, want %t", addr, d, wantDefault)
+			}
+			return nil
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config(true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(queue, "paused", "true"),
+					resource.TestCheckResourceAttr(second, "is_default", "true"),
+					apiState(queue, true, false),
+					apiState(second, false, true),
+				),
+			},
+			{
+				Config:           config(true),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+			{
+				Config: config(false),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(queue, plancheck.ResourceActionUpdate),
+				}},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(queue, "paused", "false"),
+					apiState(queue, false, false),
+				),
+			},
+			{
+				Config:           config(false),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+		},
+	})
+}
+
 // An automatically scaled instance must apply and converge, and its
 // CPU and memory thresholds must be changeable and clearable. The API reports
 // replica counts for "auto" (1 up to the plan's limit), which the provider

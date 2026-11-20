@@ -257,6 +257,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			patch: true, del: true,
 			relationshipName: "environment", relationshipType: "environments",
 			validateCreate: validateManagedQueueCreate,
+			afterCreate:    afterManagedQueueCreate,
 			seed: func(body map[string]any, _ string) map[string]any {
 				// Echo the body; managed-queue / status pointer fields are left
 				// absent so they decode to null (not zero values) -- except
@@ -269,7 +270,8 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 				// reports the queue's type; fifo itself is not an attribute.
 				delete(a, "fifo")
 				if a["type"] == "managed_queue" {
-					a["is_default"] = false
+					// A new queue's SQS queue is creating; see afterCreate.
+					a["is_default"], a["paused"], a["queue_status"] = false, false, "creating"
 					a["queue_type"] = "standard"
 					if body["fifo"] == true {
 						a["name"] = fmt.Sprint(a["name"]) + ".fifo"
@@ -548,24 +550,41 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 
 	registerDataSourceRoutes(mux)
 
-	// Making a managed queue the environment's default. It is refused for a
-	// queue that already is, and clears the flag on the environment's others.
-	mux.HandleFunc("POST /instances/{id}/default", func(w http.ResponseWriter, r *http.Request) {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		id := r.PathValue("id")
-		attrs, ok := f.objects["instance"][id]
-		if !ok {
-			writeError(w, http.StatusNotFound, fmt.Errorf("instance not found"))
-			return
+	// A managed queue's actions: making it the environment's default (which
+	// clears the flag on the environment's others), pausing and resuming. Each
+	// is refused while the queue is not available and when it would change
+	// nothing, and answers with the instance.
+	queueAction := func(action string, apply func(f *fakeCloud, id string, attrs map[string]any) string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			id := r.PathValue("id")
+			attrs, ok := f.objects["instance"][id]
+			if !ok {
+				writeError(w, http.StatusNotFound, fmt.Errorf("instance not found"))
+				return
+			}
+			if attrs["type"] != "managed_queue" {
+				writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("Only managed queues can be %s.", action))
+				return
+			}
+			if f.busy[id] > 0 {
+				if f.busy[id]--; f.busy[id] == 0 {
+					attrs["queue_status"] = "available"
+				}
+				writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("This queue is not available yet. Wait a few seconds and try again."))
+				return
+			}
+			if msg := apply(f, id, attrs); msg != "" {
+				writeError(w, http.StatusUnprocessableEntity, errors.New(msg))
+				return
+			}
+			writeJSON(w, http.StatusOK, jsonAPIObject(id, "instances", attrs))
 		}
-		if attrs["type"] != "managed_queue" {
-			writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("only managed queues can be the default"))
-			return
-		}
+	}
+	mux.HandleFunc("POST /instances/{id}/default", queueAction("set as the default", func(f *fakeCloud, id string, attrs map[string]any) string {
 		if attrs["is_default"] == true {
-			writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("this queue is already the default"))
-			return
+			return "This queue is already the default."
 		}
 		envID := f.parents["instance"][id]
 		for other, otherAttrs := range f.objects["instance"] {
@@ -574,8 +593,22 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			}
 		}
 		attrs["is_default"] = true
-		w.WriteHeader(http.StatusOK)
-	})
+		return ""
+	}))
+	mux.HandleFunc("POST /instances/{id}/pause", queueAction("paused", func(_ *fakeCloud, _ string, attrs map[string]any) string {
+		if attrs["paused"] == true {
+			return "This queue is already paused."
+		}
+		attrs["paused"] = true
+		return ""
+	}))
+	mux.HandleFunc("POST /instances/{id}/resume", queueAction("resumed", func(_ *fakeCloud, _ string, attrs map[string]any) string {
+		if attrs["paused"] != true {
+			return "This queue is not paused."
+		}
+		attrs["paused"] = false
+		return ""
+	}))
 
 	// -------- bespoke endpoints --------
 
@@ -846,6 +879,29 @@ func baseDatabaseType(t string) string {
 // with only the connection and queue, and rejects it with the error below.
 // Previous-generation ("mq-") sizes require polling_interval and reject
 // min_replicas.
+// managedQueueCreatingRefusals is how many action requests a new managed
+// queue refuses as not available yet. Live, its SQS queue is creating for a
+// second or more after the create request returns.
+const managedQueueCreatingRefusals = 2
+
+// afterManagedQueueCreate models what the API does when it creates a managed
+// queue: its SQS queue is creating for a while, and an environment's first
+// queue becomes its default.
+func afterManagedQueueCreate(f *fakeCloud, id string) {
+	attrs := f.objects["instance"][id]
+	if attrs["type"] != "managed_queue" {
+		return
+	}
+	f.busy[id] = managedQueueCreatingRefusals
+	envID := f.parents["instance"][id]
+	for other, otherAttrs := range f.objects["instance"] {
+		if other != id && f.parents["instance"][other] == envID && otherAttrs["is_default"] == true {
+			return
+		}
+	}
+	attrs["is_default"] = true
+}
+
 func validateManagedQueueCreate(body map[string]any) string {
 	if body["type"] != "managed_queue" {
 		if body["fifo"] == true {

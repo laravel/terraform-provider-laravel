@@ -136,6 +136,7 @@ resource "laravel_cloud_instance" "q" {
 			{Config: queue("mq-pro-256mb", "polling_interval = 5\n  min_replicas = 0"), ExpectError: regexp.MustCompile(`min_replicas does not apply to this queue`)},
 			{Config: strings.Replace(queue("mq.flex.256mb", "fifo = true"), `"jobs"`, `"`+strings.Repeat("j", 35)+`"`, 1), ExpectError: regexp.MustCompile(`name is too long for a FIFO queue`)},
 			{Config: strings.Replace(queue("flex-512mb", "fifo = true"), `"managed_queue"`, `"service"`, 1), ExpectError: regexp.MustCompile(`fifo is only for managed queues`)},
+			{Config: strings.Replace(queue("flex-512mb", "paused = true"), `"managed_queue"`, `"service"`, 1), ExpectError: regexp.MustCompile(`paused is only for managed queues`)},
 		},
 	})
 }
@@ -161,4 +162,74 @@ resource "laravel_cloud_instance" "legacy" {
   polling_interval = %d
 }
 `, pollingInterval)
+}
+
+// TestInstanceQueuePausedDefaultPlan: a queue created with
+// is_default = true or paused = true must get there in the same apply,
+// although the API refuses both while the new queue is still creating, and
+// paused must then pause and resume the queue in place.
+func TestInstanceQueuePausedDefaultPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	const first, second = "laravel_cloud_instance.first", "laravel_cloud_instance.second"
+	config := func(paused string) string {
+		return providerCfg(baseURL) + appEnvStack + fmt.Sprintf(`
+# The environment's first queue, which Cloud makes the default.
+resource "laravel_cloud_instance" "first" {
+  environment_id = laravel_cloud_environment.env.id
+  name           = "first"
+  type           = "managed_queue"
+  size           = "mq.flex.256mb"
+  scaling_type   = "custom"
+  max_replicas   = 2
+}
+
+resource "laravel_cloud_instance" "second" {
+  environment_id = laravel_cloud_environment.env.id
+  name           = "second"
+  type           = "managed_queue"
+  size           = "mq.flex.256mb"
+  scaling_type   = "custom"
+  max_replicas   = 2
+  is_default     = true
+  %s
+  depends_on     = [laravel_cloud_instance.first]
+}
+`, paused)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config("paused = true"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(second, tfjsonpath.New("is_default"), knownvalue.Bool(true)),
+					statecheck.ExpectKnownValue(second, tfjsonpath.New("paused"), knownvalue.Bool(true)),
+					statecheck.ExpectKnownValue(first, tfjsonpath.New("paused"), knownvalue.Bool(false)),
+				},
+			},
+			{
+				Config:           config("paused = true"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(first, tfjsonpath.New("is_default"), knownvalue.Bool(false)),
+				},
+			},
+			{
+				Config: config("paused = false"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(second, plancheck.ResourceActionUpdate),
+				}},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(second, tfjsonpath.New("paused"), knownvalue.Bool(false)),
+				},
+			},
+			{
+				// Leaving paused out keeps the queue as it is.
+				Config:           config(""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+			{ResourceName: second, ImportState: true, ImportStateVerify: true, ImportStateVerifyIgnore: []string{"is_default"}},
+		},
+	})
 }

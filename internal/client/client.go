@@ -275,6 +275,9 @@ func IsNotFound(err error) bool {
 // this WebSocket cluster." An environment refuses to attach a database or cache
 // that is creating or updating with "The selected cache is still being
 // provisioned. Try again in a few seconds." (or database, or database cluster).
+// A managed queue whose SQS queue is still creating or updating refuses to be
+// paused, resumed or made the default with "This queue is not available yet.
+// Wait a few seconds and try again."
 func IsBusy(err error) bool {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnprocessableEntity {
@@ -282,7 +285,8 @@ func IsBusy(err error) bool {
 	}
 	return strings.Contains(apiErr.Body, "already being updated") ||
 		strings.Contains(apiErr.Body, "already in progress") ||
-		strings.Contains(apiErr.Body, "still being provisioned")
+		strings.Contains(apiErr.Body, "still being provisioned") ||
+		strings.Contains(apiErr.Body, "not available yet")
 }
 
 // IsClusterNotEmpty returns true if the API refused to delete a database

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -206,8 +207,13 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"paused": schema.BoolAttribute{
-				Computed:    true,
-				Description: "Whether the instance is paused.",
+				Optional: true,
+				Computed: true,
+				Description: "Whether the managed queue is paused, which stops it dispatching jobs to its workers. " +
+					"Set true to pause it and false to resume it. Only for managed_queue instances; null for others.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"is_default": schema.BoolAttribute{
 				Optional: true,
@@ -365,6 +371,7 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 
 	configuredProbes := plan.Probes
 	configuredDefault := plan.IsDefault
+	configuredPaused := plan.Paused
 	mapInstanceToState(inst, &plan)
 	// The API ignores probes it cannot apply rather than rejecting them. The
 	// instance exists, so keep the configured value and let the next plan
@@ -373,17 +380,53 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		resp.Diagnostics.AddWarning("Health checks were not applied", probesNotAppliedDetail)
 		plan.Probes = configuredProbes
 	}
+	// A new queue is still creating, and the API makes it the default or
+	// pauses it only once it is available, so these wait for that. If one
+	// still fails, state records what the queue really is, so the next plan
+	// shows the change again and Update retries it.
 	if isSet(configuredDefault) && configuredDefault.ValueBool() && !plan.IsDefault.ValueBool() {
-		if err := r.client.SetDefaultInstance(ctx, inst.ID); err != nil {
+		if updated, err := queueActionWhenAvailable(ctx, r.client.SetDefaultInstance, inst.ID); err != nil {
 			resp.Diagnostics.AddWarning(
 				"Could not make the queue the default after creating it",
 				"The instance was created, but making it the environment's default queue failed: "+err.Error()+
-					". A queue can become the default only once it is available; run 'terraform apply' again to retry.",
+					". Run 'terraform apply' again to retry.",
 			)
+		} else {
+			plan.IsDefault = types.BoolPointerValue(updated.Attributes.IsDefault)
 		}
-		plan.IsDefault = configuredDefault
+	}
+	if isSet(configuredPaused) && configuredPaused.ValueBool() && !plan.Paused.ValueBool() {
+		if updated, err := queueActionWhenAvailable(ctx, r.client.PauseInstance, inst.ID); err != nil {
+			resp.Diagnostics.AddWarning(
+				"Could not pause the queue after creating it",
+				"The instance was created, but pausing it failed: "+err.Error()+". Run 'terraform apply' again to retry.",
+			)
+		} else {
+			plan.Paused = types.BoolPointerValue(updated.Attributes.Paused)
+		}
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// The API refuses to make a managed queue the default, pause it or resume it
+// while its SQS queue is creating or updating ("This queue is not available
+// yet"), as a queue is right after it is created or resized. These bound how
+// long that is retried. The interval is a variable so the plan tests need not
+// wait.
+const queueAvailableAttempts = 60
+
+var queueAvailableInterval = 5 * time.Second
+
+// queueActionWhenAvailable runs one of a managed queue's action routes,
+// retrying while the queue is not available yet.
+func queueActionWhenAvailable(ctx context.Context, action func(context.Context, string) (*client.InstanceData, error), id string) (*client.InstanceData, error) {
+	var inst *client.InstanceData
+	err := client.RetryOnConflict(ctx, queueAvailableAttempts, queueAvailableInterval, func() error {
+		var err error
+		inst, err = action(ctx, id)
+		return err
+	}, client.IsBusy)
+	return inst, err
 }
 
 // probesNotAppliedDetail explains a probes value the API accepted but ignored.
@@ -525,14 +568,29 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 	// the queue that already is.
 	configuredDefault := plan.IsDefault
 	if isSet(configuredDefault) && configuredDefault.ValueBool() && !state.IsDefault.ValueBool() {
-		if err := r.client.SetDefaultInstance(ctx, state.ID.ValueString()); err != nil {
+		if inst, err = queueActionWhenAvailable(ctx, r.client.SetDefaultInstance, state.ID.ValueString()); err != nil {
 			resp.Diagnostics.AddError("Error making the queue the default", err.Error())
+			return
+		}
+	}
+	// Pausing and resuming are their own calls too.
+	if isSet(plan.Paused) && !plan.Paused.Equal(state.Paused) {
+		action := r.client.ResumeInstance
+		if plan.Paused.ValueBool() {
+			action = r.client.PauseInstance
+		}
+		if inst, err = queueActionWhenAvailable(ctx, action, state.ID.ValueString()); err != nil {
+			resp.Diagnostics.AddError("Error pausing or resuming the queue", err.Error())
 			return
 		}
 	}
 
 	plan.EnvironmentID = state.EnvironmentID
+	configuredProbes := plan.Probes
 	mapInstanceToState(inst, &plan)
+	// The action routes answer without probes, which only the update
+	// response reports.
+	plan.Probes = configuredProbes
 	if isSet(configuredDefault) {
 		plan.IsDefault = configuredDefault
 	}
@@ -696,6 +754,10 @@ func (r *InstanceResource) ValidateConfig(ctx context.Context, req resource.Vali
 	if isSet(config.IsDefault) && isSet(config.Type) && config.Type.ValueString() != "managed_queue" {
 		resp.Diagnostics.AddAttributeError(path.Root("is_default"), "is_default is only for managed queues",
 			fmt.Sprintf("Only a managed_queue instance can be the default queue; this one is %q.", config.Type.ValueString()))
+	}
+	if isSet(config.Paused) && !config.Type.IsUnknown() && config.Type.ValueString() != "managed_queue" {
+		resp.Diagnostics.AddAttributeError(path.Root("paused"), "paused is only for managed queues",
+			fmt.Sprintf("Only a managed_queue instance can be paused; this one is %q.", config.Type.ValueString()))
 	}
 	validateProbesConfig(config, &resp.Diagnostics)
 	validateManagedQueueConfig(config, &resp.Diagnostics)

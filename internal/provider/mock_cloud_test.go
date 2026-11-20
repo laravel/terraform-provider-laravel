@@ -163,6 +163,9 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	envInterval := environmentBusyInterval
 	environmentBusyInterval = time.Millisecond
 	t.Cleanup(func() { environmentBusyInterval = envInterval })
+	queueInterval := queueAvailableInterval
+	queueAvailableInterval = time.Millisecond
+	t.Cleanup(func() { queueAvailableInterval = queueInterval })
 	cacheInterval := cacheBusyInterval
 	cacheBusyInterval = time.Millisecond
 	t.Cleanup(func() { cacheBusyInterval = cacheInterval })

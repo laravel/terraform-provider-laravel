@@ -58,6 +58,7 @@ resource "laravel_cloud_instance" "example" {
 - `is_default` (Boolean) Whether this managed queue is the environment's default, the one a job goes to when it names no queue. Set true to make it the default; only managed_queue instances can be. It cannot be set false: the default moves when another queue is made the default.
 - `max_replicas` (Number) Maximum number of replicas. Set it only for the "custom" scaling type: for "auto" the platform sets it to the plan's replica limit, and for "none" to 1.
 - `min_replicas` (Number) Minimum number of replicas. Set it only for the "custom" scaling type: for "auto" and "none" the platform sets it to 1. Required for custom scaling except on managed queues, where it is the minimum number of workers: optional on current-generation (mq.*) sizes, where 0 lets the queue scale to zero when idle, and rejected on previous-generation sizes, which always scale to zero.
+- `paused` (Boolean) Whether the managed queue is paused, which stops it dispatching jobs to its workers. Set true to pause it and false to resume it. Only for managed_queue instances; null for others.
 - `polling_interval` (Number) Queue polling interval in seconds (1-60). Only for previous-generation managed queues (sizes such as mq-pro-256mb), which require it; current-generation (mq.*) sizes have no polling interval.
 - `probes` (Attributes) Custom health checks for an app instance's web process. Only app instances accept them, and only on plans with health checks; manage one by importing the environment's app instance. The checks configured here replace all existing ones, and a check left out uses the platform default. When unset, Terraform leaves the instance's health checks alone, including any the platform set up itself; removing the attribute once set resets every check to the platform default. (see [below for nested schema](#nestedatt--probes))
 - `scaling_cpu_threshold_percentage` (Number) CPU usage, in percent (50-95), above which the instance scales out. Leave unset for the platform default. Not allowed with scaling_type "none".
@@ -74,7 +75,6 @@ resource "laravel_cloud_instance" "example" {
 
 - `created_at` (String)
 - `id` (String) The ID of this resource.
-- `paused` (Boolean) Whether the instance is paused.
 - `queue_status` (String) Raw queue status JSON (managed_queue).
 - `queue_type` (String) The managed queue's type: standard or fifo. Null for other instance types.
 - `retire_at` (String) When the instance's size is scheduled to be retired because it is being discontinued.
