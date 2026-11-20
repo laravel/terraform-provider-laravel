@@ -36,3 +36,15 @@ func (c *Client) UpdateWebsocketServer(ctx context.Context, id string, req Updat
 func (c *Client) DeleteWebsocketServer(ctx context.Context, id string) error {
 	return c.do(ctx, "DELETE", fmt.Sprintf("/websocket-servers/%s", id), nil, nil)
 }
+
+// ListWebsocketServerTypes returns the WebSocket server types with the
+// regions and connection tiers each supports.
+func (c *Client) ListWebsocketServerTypes(ctx context.Context) ([]WebsocketServerType, error) {
+	var resp struct {
+		Data []WebsocketServerType `json:"data"`
+	}
+	if err := c.do(ctx, "GET", "/websocket-servers/types", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
+}

@@ -231,5 +231,9 @@ func (p *LaravelCloudProvider) DataSources(_ context.Context) []func() datasourc
 		NewRegionsDataSource,
 		NewIPAddressesDataSource,
 		NewEdgeNetworksDataSource,
+		NewWebsocketServerTypesDataSource,
+		NewDatabasePresetsDataSource,
+		NewResendDomainsDataSource,
+		NewResendReusableKeysDataSource,
 	}
 }

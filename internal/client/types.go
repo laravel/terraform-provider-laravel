@@ -1360,3 +1360,69 @@ type DomainRelationships struct {
 type BackgroundProcessRelationships struct {
 	Instance Relationship `json:"instance"`
 }
+
+// ---------------------------------------------------------------------
+// WebSocket server types, database presets and Resend (read-only)
+// ---------------------------------------------------------------------
+
+// WebsocketServerType is one entry of GET /websocket-servers/types, a flat
+// {"data": [...]} document with no paginator.
+type WebsocketServerType struct {
+	Type           string                    `json:"type"`
+	Label          string                    `json:"label"`
+	Available      bool                      `json:"available"`
+	Regions        []string                  `json:"regions"`
+	MaxConnections []WebsocketConnectionTier `json:"max_connections"`
+}
+
+// WebsocketConnectionTier is a max_connections value a server can be given.
+// Available says whether the organization's plan includes it.
+type WebsocketConnectionTier struct {
+	Value     int64  `json:"value"`
+	Label     string `json:"label"`
+	Available bool   `json:"available"`
+}
+
+// DatabasePreset is one entry of GET /databases/presets. Config is a free-form
+// object whose keys depend on the database type; it can be sent as the
+// cluster's config.
+type DatabasePreset struct {
+	Key    string          `json:"key"`
+	Label  string          `json:"label"`
+	Config json.RawMessage `json:"config"`
+}
+
+type ResendDomainData struct {
+	ID         string                 `json:"id"`
+	Type       string                 `json:"type"`
+	Attributes ResendDomainAttributes `json:"attributes"`
+}
+
+type ResendDomainAttributes struct {
+	Name           string               `json:"name"`
+	Region         string               `json:"region"`
+	Status         string               `json:"status"`
+	Records        []ResendDomainRecord `json:"records"`
+	LastVerifiedAt *string              `json:"last_verified_at"`
+	CreatedAt      *string              `json:"created_at"`
+}
+
+// ResendDomainRecord is a DNS record a sending domain needs. TTL is a string
+// ("Auto"), and only MX records carry a priority.
+type ResendDomainRecord struct {
+	Record   string `json:"record"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	TTL      string `json:"ttl"`
+	Status   string `json:"status"`
+	Value    string `json:"value"`
+	Priority *int64 `json:"priority"`
+}
+
+// ReusableResendKey is one entry of GET /environments/{id}/resend/keys: a
+// sending key from another environment, and how many environments use it.
+type ReusableResendKey struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	EnvironmentCount int64  `json:"environment_count"`
+}

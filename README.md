@@ -98,9 +98,13 @@ token explicitly rather than guess which organization to manage.
 | `laravel_cloud_dedicated_clusters` | Available dedicated clusters |
 | `laravel_cloud_instance_sizes` | Available instance sizes |
 | `laravel_cloud_database_types` | Available database types |
+| `laravel_cloud_database_presets` | Database cluster presets for a type and region |
 | `laravel_cloud_cache_types` | Available cache types |
+| `laravel_cloud_websocket_server_types` | WebSocket server types, regions and connection tiers |
 | `laravel_cloud_regions` | Available regions |
 | `laravel_cloud_ip_addresses` | IP addresses for allowlisting |
+| `laravel_cloud_resend_domains` | Resend sending domains and their DNS records |
+| `laravel_cloud_resend_reusable_keys` | Resend sending keys an environment can reuse |
 | `laravel_cloud_edge_networks` | Edge networks (CDN zones) available to the organization |
 
 ## Development

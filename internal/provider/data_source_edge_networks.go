@@ -18,6 +18,9 @@ type EdgeNetworksDataSource struct {
 
 type EdgeNetworksDataSourceModel struct {
 	ID           types.String           `tfsdk:"id"`
+	Name         types.String           `tfsdk:"name"`
+	Domain       types.String           `tfsdk:"domain"`
+	Status       types.String           `tfsdk:"status"`
 	EdgeNetworks []EdgeNetworkItemModel `tfsdk:"edge_networks"`
 }
 
@@ -42,11 +45,24 @@ func (d *EdgeNetworksDataSource) Schema(_ context.Context, _ datasource.SchemaRe
 	resp.Schema = schema.Schema{
 		Description: "Lists the edge networks available to the organization. An edge network is a " +
 			"CDN zone; it carries no IP addresses. For egress IP ranges, use the " +
-			"laravel_cloud_ip_addresses data source instead.",
+			"laravel_cloud_ip_addresses data source instead. The list includes the shared edge network; " +
+			"filter by name, domain or status to pick one. Edge networks have no region or type to filter by.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
 				Description: "Identifier for this data source.",
+			},
+			"name": schema.StringAttribute{
+				Optional:    true,
+				Description: "Only list edge networks whose name contains this value. The API matches it as a substring.",
+			},
+			"domain": schema.StringAttribute{
+				Optional:    true,
+				Description: "Only list edge networks whose domain contains this value. The API matches it as a substring.",
+			},
+			"status": schema.StringAttribute{
+				Optional:    true,
+				Description: "Only list edge networks whose status contains this value, such as `available`. The API matches it as a substring.",
 			},
 			"edge_networks": schema.ListNestedAttribute{
 				Computed:    true,
@@ -100,19 +116,27 @@ func (d *EdgeNetworksDataSource) Configure(_ context.Context, req datasource.Con
 	d.client = c
 }
 
-func (d *EdgeNetworksDataSource) Read(ctx context.Context, _ datasource.ReadRequest, resp *datasource.ReadResponse) {
-	networks, err := d.client.ListEdgeNetworks(ctx)
+func (d *EdgeNetworksDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	var state EdgeNetworksDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	networks, err := d.client.ListEdgeNetworks(ctx, map[string]string{
+		"name":   state.Name.ValueString(),
+		"domain": state.Domain.ValueString(),
+		"status": state.Status.ValueString(),
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to read edge networks", err.Error())
 		return
 	}
 
-	state := EdgeNetworksDataSourceModel{
-		ID: types.StringValue("edge_networks"),
-		// An empty result must be an empty list, not a null one: a nil
-		// slice decodes to null and makes length()/for_each error.
-		EdgeNetworks: []EdgeNetworkItemModel{},
-	}
+	state.ID = types.StringValue("edge_networks")
+	// An empty result must be an empty list, not a null one: a nil
+	// slice decodes to null and makes length()/for_each error.
+	state.EdgeNetworks = []EdgeNetworkItemModel{}
 	for _, n := range networks {
 		state.EdgeNetworks = append(state.EdgeNetworks, EdgeNetworkItemModel{
 			ID:          types.StringValue(n.ID),
