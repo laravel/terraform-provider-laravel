@@ -453,10 +453,19 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 	// rest alone -- the upsert semantics the separate delete route implies --
 	// so a test that drops a key from config only sees it disappear if the
 	// provider deletes it by name. The response is discarded by the provider
-	// (no GET endpoint exists); f.vars is what assertions read.
+	// (no GET endpoint exists); f.vars is what assertions read. Like the real
+	// API, an empty list is a 422: it takes 1 to 210 variables.
 	mux.HandleFunc("POST /environments/{id}/variables", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		body := decodeBody(r)
+
+		if list, _ := body["variables"].([]any); len(list) == 0 {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"message": "The variables field is required.",
+				"errors":  map[string]any{"variables": []string{"The variables field is required."}},
+			})
+			return
+		}
 
 		f.mu.Lock()
 		if f.vars[id] == nil {
@@ -481,15 +490,30 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 		id := r.PathValue("id")
 		body := decodeBody(r)
 
+		// Like the real API, the delete is atomic: if any key is missing,
+		// nothing is deleted and the answer is a 422 naming the missing keys.
+		var keys, missing []string
+		list, _ := body["keys"].([]any)
 		f.mu.Lock()
-		if keys, ok := body["keys"].([]any); ok {
-			for _, k := range keys {
-				if key, ok := k.(string); ok {
-					delete(f.vars[id], key)
-				}
+		defer f.mu.Unlock()
+		for _, k := range list {
+			key, _ := k.(string)
+			keys = append(keys, key)
+			if _, ok := f.vars[id][key]; !ok {
+				missing = append(missing, key)
 			}
 		}
-		f.mu.Unlock()
+		if len(missing) > 0 {
+			msg := "The following keys were not found: " + strings.Join(missing, ", ")
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"message": msg,
+				"errors":  map[string]any{"keys": []string{msg}},
+			})
+			return
+		}
+		for _, key := range keys {
+			delete(f.vars[id], key)
+		}
 
 		w.WriteHeader(http.StatusNoContent)
 	})

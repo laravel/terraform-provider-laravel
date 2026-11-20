@@ -150,7 +150,10 @@ type EnvironmentAttributes struct {
 	// route answers 405 and accepts POST only -- so this is the only way to
 	// read them back, and the reason laravel_cloud_environment_variables can
 	// detect drift at all.
-	EnvironmentVariables []EnvironmentVariable `json:"environment_variables"`
+	//
+	// The API leaves the key out entirely when the token lacks the "View
+	// environment variables" permission, so nil means unknown, not empty.
+	EnvironmentVariables *[]EnvironmentVariable `json:"environment_variables,omitempty"`
 }
 
 // EnvironmentNetwork is the response-side network_settings object. The cache

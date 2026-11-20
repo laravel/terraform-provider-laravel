@@ -67,6 +67,10 @@ type fakeCloud struct {
 	// -> value. Modelled as an upsert store rather than a whole-set replace,
 	// because that is what the separate /variables/delete route implies.
 	vars map[string]map[string]string
+	// hideVariables makes environment responses leave out
+	// environment_variables, as the API does for a token without the "View
+	// environment variables" permission.
+	hideVariables bool
 
 	// secrets models the organization secrets API; see mock_secrets_test.go.
 	secrets *fakeSecrets
@@ -341,10 +345,13 @@ func (f *fakeCloud) getEnvironment(w http.ResponseWriter, r *http.Request) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	env.Attributes.EnvironmentVariables = nil
+	vars := make([]client.EnvironmentVariable, 0, len(keys))
 	for _, k := range keys {
-		env.Attributes.EnvironmentVariables = append(env.Attributes.EnvironmentVariables,
-			client.EnvironmentVariable{Key: k, Value: f.vars[id][k]})
+		vars = append(vars, client.EnvironmentVariable{Key: k, Value: f.vars[id][k]})
+	}
+	env.Attributes.EnvironmentVariables = &vars
+	if f.hideVariables {
+		env.Attributes.EnvironmentVariables = nil
 	}
 	writeJSON(w, http.StatusOK, f.withSecretsRelationship(r, id, environmentDoc(env)))
 }

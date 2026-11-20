@@ -2,8 +2,11 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -35,7 +38,7 @@ func (r *EnvironmentVariableResource) Metadata(_ context.Context, req resource.M
 
 func (r *EnvironmentVariableResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages environment variables for a Laravel Cloud environment. Keys in this map are written on every apply, and a key removed from the map is deleted from the environment. Variables set outside Terraform are left alone: they are neither read into state nor removed.",
+		Description: "Manages environment variables for a Laravel Cloud environment. Keys in this map are written on every apply, and a key removed from the map is deleted from the environment. Variables set outside Terraform are left alone: they are neither read into state nor removed. Detecting changes made outside Terraform needs a token with the \"View environment variables\" permission; without it, Terraform keeps the values from its state and warns on each refresh.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
@@ -80,15 +83,7 @@ func (r *EnvironmentVariableResource) Create(ctx context.Context, req resource.C
 		return
 	}
 
-	vars := buildVariablesList(plan.Variables)
-
-	setReq := client.AddEnvironmentVariablesRequest{
-		Method:    "set",
-		Variables: vars,
-	}
-
-	_, err := r.client.SetEnvironmentVariables(ctx, plan.EnvironmentID.ValueString(), setReq)
-	if err != nil {
+	if err := r.setVariables(ctx, plan.EnvironmentID.ValueString(), plan.Variables); err != nil {
 		resp.Diagnostics.AddError("Error setting environment variables", err.Error())
 		return
 	}
@@ -118,8 +113,23 @@ func (r *EnvironmentVariableResource) Read(ctx context.Context, req resource.Rea
 		return
 	}
 
-	remote := make(map[string]string, len(env.Attributes.EnvironmentVariables))
-	for _, v := range env.Attributes.EnvironmentVariables {
+	// Without the "View environment variables" permission the API leaves the
+	// key out of the response. Reading that as an empty list made every
+	// variable look deleted, so every apply rewrote them all. The values are
+	// unknown, not gone: keep what state says and say why drift is invisible.
+	if env.Attributes.EnvironmentVariables == nil {
+		resp.Diagnostics.AddWarning(
+			"Environment variables are not visible to this API token",
+			"The Laravel Cloud API did not return the variables of environment "+state.EnvironmentID.ValueString()+
+				", which it does when the token lacks the \"View environment variables\" permission. "+
+				"Terraform keeps the values from its state and cannot detect changes made outside Terraform. "+
+				"Grant the permission to the token to enable drift detection.",
+		)
+		return
+	}
+
+	remote := make(map[string]string, len(*env.Attributes.EnvironmentVariables))
+	for _, v := range *env.Attributes.EnvironmentVariables {
 		remote[v.Key] = v.Value
 	}
 
@@ -163,20 +173,12 @@ func (r *EnvironmentVariableResource) Update(ctx context.Context, req resource.U
 	// replacing the whole set -- without this, removing a variable took it out
 	// of state while leaving it live in the environment, which is the wrong
 	// direction to be wrong in for something that holds credentials.
-	if removed := removedVariableKeys(plan.Variables, state.Variables); len(removed) > 0 {
-		req := client.DeleteEnvironmentVariablesRequest{Keys: removed}
-		if err := r.client.DeleteEnvironmentVariables(ctx, envID, req); err != nil && !client.IsNotFound(err) {
-			resp.Diagnostics.AddError("Error removing environment variables", err.Error())
-			return
-		}
+	if err := r.deleteVariables(ctx, envID, removedVariableKeys(plan.Variables, state.Variables)); err != nil {
+		resp.Diagnostics.AddError("Error removing environment variables", err.Error())
+		return
 	}
 
-	setReq := client.AddEnvironmentVariablesRequest{
-		Method:    "set",
-		Variables: buildVariablesList(plan.Variables),
-	}
-
-	if _, err := r.client.SetEnvironmentVariables(ctx, envID, setReq); err != nil {
+	if err := r.setVariables(ctx, envID, plan.Variables); err != nil {
 		resp.Diagnostics.AddError("Error replacing environment variables", err.Error())
 		return
 	}
@@ -208,24 +210,62 @@ func (r *EnvironmentVariableResource) Delete(ctx context.Context, req resource.D
 	for k := range state.Variables {
 		keys = append(keys, k)
 	}
+	sort.Strings(keys)
 
-	if len(keys) > 0 {
-		deleteReq := client.DeleteEnvironmentVariablesRequest{
-			Keys: keys,
-		}
-		if err := r.client.DeleteEnvironmentVariables(ctx, state.EnvironmentID.ValueString(), deleteReq); err != nil {
-			resp.Diagnostics.AddError("Error deleting environment variables", err.Error())
-		}
+	if err := r.deleteVariables(ctx, state.EnvironmentID.ValueString(), keys); err != nil {
+		resp.Diagnostics.AddError("Error deleting environment variables", err.Error())
 	}
 }
 
-func buildVariablesList(vars map[string]types.String) []client.EnvironmentVariable {
-	result := make([]client.EnvironmentVariable, 0, len(vars))
-	for k, v := range vars {
-		result = append(result, client.EnvironmentVariable{
-			Key:   k,
-			Value: v.ValueString(),
-		})
+// setVariables writes vars to the environment. The API takes 1 to 210
+// variables per call and rejects an empty list, so an empty map sends nothing.
+func (r *EnvironmentVariableResource) setVariables(ctx context.Context, envID string, vars map[string]types.String) error {
+	if len(vars) == 0 {
+		return nil
 	}
-	return result
+	list := make([]client.EnvironmentVariable, 0, len(vars))
+	for k, v := range vars {
+		list = append(list, client.EnvironmentVariable{Key: k, Value: v.ValueString()})
+	}
+	_, err := r.client.SetEnvironmentVariables(ctx, envID, client.AddEnvironmentVariablesRequest{
+		Method:    "set",
+		Variables: list,
+	})
+	return err
+}
+
+// deleteVariables deletes keys from the environment, skipping keys that are
+// already gone. The API's delete is atomic: one missing key fails the whole
+// request with a 422 and deletes nothing. A key can be gone because someone
+// removed it outside Terraform and the run did not refresh, or because the
+// token cannot view variables, so Read could not notice. On that 422 the keys
+// are deleted one at a time and the missing ones are skipped.
+func (r *EnvironmentVariableResource) deleteVariables(ctx context.Context, envID string, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	err := r.client.DeleteEnvironmentVariables(ctx, envID, client.DeleteEnvironmentVariablesRequest{Keys: keys})
+	if err == nil || client.IsNotFound(err) {
+		return nil
+	}
+	if !isMissingVariableKeys(err) {
+		return err
+	}
+	if len(keys) == 1 {
+		return nil
+	}
+	for _, key := range keys {
+		if err := r.deleteVariables(ctx, envID, []string{key}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// isMissingVariableKeys reports the 422 the delete route answers when a key
+// does not exist: {"message":"The following keys were not found: KEY", ...}.
+func isMissingVariableKeys(err error) bool {
+	var apiErr *client.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity &&
+		strings.Contains(apiErr.Body, "keys were not found")
 }
