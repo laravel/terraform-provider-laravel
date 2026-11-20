@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
@@ -79,7 +81,10 @@ func (r *WebsocketServerResource) Schema(_ context.Context, _ resource.SchemaReq
 			},
 			"max_connections": schema.Int64Attribute{
 				Required:    true,
-				Description: "Maximum concurrent connections.",
+				Description: "Maximum concurrent connections: 100, 200, 500, 2000, 5000 or 10000. Changing it splits the connections evenly across the server's applications again.",
+				Validators: []validator.Int64{
+					int64validator.OneOf(100, 200, 500, 2000, 5000, 10000),
+				},
 			},
 			"status": schema.StringAttribute{
 				Computed:    true,

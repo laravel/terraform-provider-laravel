@@ -156,7 +156,7 @@ resource "laravel_cloud_websocket_application" "ledger" {
   ]
 
   ping_interval    = 30
-  activity_timeout = 120
+  activity_timeout = 60
 }
 
 # --- Wiring ----------------------------------------------------------------

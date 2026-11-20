@@ -31,7 +31,7 @@ resource "laravel_cloud_websocket_server" "example" {
 
 ### Required
 
-- `max_connections` (Number) Maximum concurrent connections.
+- `max_connections` (Number) Maximum concurrent connections: 100, 200, 500, 2000, 5000 or 10000. Changing it splits the connections evenly across the server's applications again.
 - `name` (String) Server name.
 - `region` (String) Cloud region.
 - `type` (String) Server type (e.g. reverb).

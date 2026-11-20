@@ -170,7 +170,7 @@ resource "laravel_cloud_websocket_server" "server" {
   name            = "reverb"
   type            = "reverb"
   region          = "us-east-1"
-  max_connections = 1000
+  max_connections = 2000
 }
 
 resource "laravel_cloud_websocket_application" "app" {

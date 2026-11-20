@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -12,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
@@ -100,7 +102,10 @@ func (r *WebsocketApplicationResource) Schema(_ context.Context, _ resource.Sche
 			"ping_interval": schema.Int64Attribute{
 				Optional:    true,
 				Computed:    true,
-				Description: "Ping interval in seconds.",
+				Description: "Ping interval in seconds, from 1 to 60.",
+				Validators: []validator.Int64{
+					int64validator.Between(1, 60),
+				},
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -108,7 +113,10 @@ func (r *WebsocketApplicationResource) Schema(_ context.Context, _ resource.Sche
 			"activity_timeout": schema.Int64Attribute{
 				Optional:    true,
 				Computed:    true,
-				Description: "Activity timeout in seconds.",
+				Description: "Activity timeout in seconds, from 1 to 60.",
+				Validators: []validator.Int64{
+					int64validator.Between(1, 60),
+				},
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},

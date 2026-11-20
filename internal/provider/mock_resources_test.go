@@ -447,7 +447,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 					a["ping_interval"] = 60
 				}
 				if _, ok := a["activity_timeout"]; !ok {
-					a["activity_timeout"] = 120
+					a["activity_timeout"] = 30
 				}
 				return a
 			},

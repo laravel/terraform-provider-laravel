@@ -42,9 +42,9 @@ resource "laravel_cloud_websocket_application" "example" {
 
 ### Optional
 
-- `activity_timeout` (Number) Activity timeout in seconds.
+- `activity_timeout` (Number) Activity timeout in seconds, from 1 to 60.
 - `allowed_origins` (List of String) Allowed origins for WebSocket connections. The API always returns a list here, empty when no origins are restricted, so this is Computed as well as Optional. Because it is computed, REMOVING this attribute from the configuration leaves the existing origins in place rather than clearing them -- assign an empty list to clear them.
-- `ping_interval` (Number) Ping interval in seconds.
+- `ping_interval` (Number) Ping interval in seconds, from 1 to 60.
 
 ### Read-Only
 
