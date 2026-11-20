@@ -19,8 +19,24 @@ resource "laravel_cloud_environment" "example" {
 resource "laravel_cloud_instance" "example" {
   environment_id = laravel_cloud_environment.example.id
   name           = "web"
-  size           = "flex.c-1vcpu-256mb"
+  size           = "flex-512mb"
   scaling_type   = "custom"
   min_replicas   = 1
   max_replicas   = 1
+}
+
+# Laravel Cloud creates an app instance with every environment. type = "app"
+# takes it over instead of creating another, and destroy leaves it to the
+# environment.
+resource "laravel_cloud_instance" "app" {
+  environment_id = laravel_cloud_environment.example.id
+  name           = "App"
+  type           = "app"
+  size           = "flex-512mb"
+  scaling_type   = "none"
+  min_replicas   = 1
+  max_replicas   = 1
+
+  uses_octane         = true
+  hibernation_timeout = 0 # never hibernate
 }

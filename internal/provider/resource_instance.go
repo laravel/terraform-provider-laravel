@@ -106,17 +106,19 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"type": schema.StringAttribute{
-				Optional:    true,
-				Computed:    true,
-				Default:     stringdefault.StaticString("service"),
-				Description: "Instance type (service or managed_queue). Defaults to service when not set. An environment's app instance, which can only be imported, is app.",
+				Optional: true,
+				Computed: true,
+				Default:  stringdefault.StaticString("service"),
+				Description: "Instance type (service, managed_queue or app). Defaults to service when not set. Laravel Cloud " +
+					"creates an environment's app instance with the environment, so app takes over that instance instead " +
+					"of creating one, and destroy leaves it to the environment.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
 			"size": schema.StringAttribute{
 				Required:    true,
-				Description: "Instance size (e.g. flex.c-1vcpu-256mb).",
+				Description: "Instance size (e.g. flex-512mb).",
 			},
 			"scaling_type": schema.StringAttribute{
 				Required:    true,
@@ -194,7 +196,7 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Optional: true,
 				Computed: true,
 				Description: "Whether the app is served by Laravel Octane. Only for app instances, which Laravel Cloud " +
-					"creates with the environment, so manage one by importing it. The same setting as the " +
+					"creates with the environment: set type = \"app\" to manage it. The same setting as the " +
 					"environment's uses_octane: set it in one place.",
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
@@ -204,7 +206,7 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Optional: true,
 				Computed: true,
 				Description: "Whether the app runs an Inertia SSR server. Only for app instances, which Laravel Cloud " +
-					"creates with the environment, so manage one by importing it. Changing it also changes the " +
+					"creates with the environment: set type = \"app\" to manage it. Changing it also changes the " +
 					"environment's build command.",
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
@@ -215,7 +217,8 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Computed: true,
 				Description: "Minutes of inactivity (1-60) before the app hibernates (scales to zero). Set 0 to turn " +
 					"hibernation off. Only for app instances, which Laravel Cloud creates with the environment, so " +
-					"manage one by importing it. The environment's sleep_timeout writes the same setting: set only one.",
+					"set type = \"app\" to manage it. Use it instead of the environment's deprecated sleep_timeout, " +
+					"which writes the same setting but cannot turn hibernation off.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -292,6 +295,10 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 	var plan InstanceResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	if plan.Type.ValueString() == "app" {
+		r.adoptAppInstance(ctx, plan, resp)
 		return
 	}
 
@@ -422,6 +429,50 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
+// adoptAppInstance takes over the app instance Laravel Cloud creates with
+// every environment, which the API cannot create, and applies the configured
+// settings to it. Nothing is created, so a failure leaves nothing behind and
+// the next apply tries again.
+func (r *InstanceResource) adoptAppInstance(ctx context.Context, plan InstanceResourceModel, resp *resource.CreateResponse) {
+	envID := plan.EnvironmentID.ValueString()
+	instances, err := r.client.ListInstances(ctx, envID)
+	if err != nil {
+		resp.Diagnostics.AddError("Error finding the environment's app instance", err.Error())
+		return
+	}
+	var inst *client.InstanceData
+	for i := range instances {
+		if instances[i].Attributes.InstanceType == "app" {
+			inst = &instances[i]
+			break
+		}
+	}
+	if inst == nil {
+		resp.Diagnostics.AddAttributeError(path.Root("type"), "Environment has no app instance",
+			fmt.Sprintf("An app instance cannot be created: Laravel Cloud creates one with each environment, and "+
+				"environment %s has none.", envID))
+		return
+	}
+
+	var current InstanceResourceModel
+	mapInstanceToState(inst, &current)
+	if updateReq := instanceUpdateRequest(plan, current); updateReq != (client.UpdateInstanceRequest{}) {
+		if inst, err = r.client.UpdateInstance(ctx, inst.ID, updateReq); err != nil {
+			resp.Diagnostics.AddError("Error updating the environment's app instance", err.Error())
+			return
+		}
+	}
+	configuredProbes := plan.Probes
+	if probes, _ := probesFromObject(configuredProbes); probes != nil && inst.Attributes.Probes == nil {
+		resp.Diagnostics.AddAttributeError(path.Root("probes"), "Health checks were not applied", probesNotAppliedDetail)
+		return
+	}
+	mapInstanceToState(inst, &plan)
+	plan.EnvironmentID = types.StringValue(envID)
+	plan.Probes = configuredProbes
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
 // The API refuses to make a managed queue the default, pause it or resume it
 // while its SQS queue is creating or updating ("This queue is not available
 // yet"), as a queue is right after it is created or resized. These bound how
@@ -495,6 +546,54 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
+	updateReq := instanceUpdateRequest(plan, state)
+	planProbes, _ := probesFromObject(plan.Probes)
+
+	inst, err := r.client.UpdateInstance(ctx, state.ID.ValueString(), updateReq)
+	if err != nil {
+		resp.Diagnostics.AddError("Error updating instance", err.Error())
+		return
+	}
+	if planProbes != nil && inst.Attributes.Probes == nil {
+		resp.Diagnostics.AddAttributeError(path.Root("probes"), "Health checks were not applied", probesNotAppliedDetail)
+		return
+	}
+
+	// Making a queue the default is its own call, and the API refuses it for
+	// the queue that already is.
+	configuredDefault := plan.IsDefault
+	if isSet(configuredDefault) && configuredDefault.ValueBool() && !state.IsDefault.ValueBool() {
+		if inst, err = queueActionWhenAvailable(ctx, r.client.SetDefaultInstance, state.ID.ValueString()); err != nil {
+			resp.Diagnostics.AddError("Error making the queue the default", err.Error())
+			return
+		}
+	}
+	if isSet(plan.Paused) && !plan.Paused.Equal(state.Paused) {
+		action := r.client.ResumeInstance
+		if plan.Paused.ValueBool() {
+			action = r.client.PauseInstance
+		}
+		if inst, err = queueActionWhenAvailable(ctx, action, state.ID.ValueString()); err != nil {
+			resp.Diagnostics.AddError("Error pausing or resuming the queue", err.Error())
+			return
+		}
+	}
+
+	plan.EnvironmentID = state.EnvironmentID
+	configuredProbes := plan.Probes
+	mapInstanceToState(inst, &plan)
+	// The action routes answer without probes, which only the update
+	// response reports.
+	plan.Probes = configuredProbes
+	if isSet(configuredDefault) {
+		plan.IsDefault = configuredDefault
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// instanceUpdateRequest builds the PATCH that moves an instance from state to
+// plan, sending only what changed.
+func instanceUpdateRequest(plan, state InstanceResourceModel) client.UpdateInstanceRequest {
 	updateReq := client.UpdateInstanceRequest{}
 	if !plan.Name.Equal(state.Name) {
 		v := plan.Name.ValueString()
@@ -567,48 +666,7 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 	if !probesEqual(planProbes, stateProbes) {
 		updateReq.Probes = probesRequest(planProbes)
 	}
-
-	inst, err := r.client.UpdateInstance(ctx, state.ID.ValueString(), updateReq)
-	if err != nil {
-		resp.Diagnostics.AddError("Error updating instance", err.Error())
-		return
-	}
-	if planProbes != nil && inst.Attributes.Probes == nil {
-		resp.Diagnostics.AddAttributeError(path.Root("probes"), "Health checks were not applied", probesNotAppliedDetail)
-		return
-	}
-
-	// Making a queue the default is its own call, and the API refuses it for
-	// the queue that already is.
-	configuredDefault := plan.IsDefault
-	if isSet(configuredDefault) && configuredDefault.ValueBool() && !state.IsDefault.ValueBool() {
-		if inst, err = queueActionWhenAvailable(ctx, r.client.SetDefaultInstance, state.ID.ValueString()); err != nil {
-			resp.Diagnostics.AddError("Error making the queue the default", err.Error())
-			return
-		}
-	}
-	// Pausing and resuming are their own calls too.
-	if isSet(plan.Paused) && !plan.Paused.Equal(state.Paused) {
-		action := r.client.ResumeInstance
-		if plan.Paused.ValueBool() {
-			action = r.client.PauseInstance
-		}
-		if inst, err = queueActionWhenAvailable(ctx, action, state.ID.ValueString()); err != nil {
-			resp.Diagnostics.AddError("Error pausing or resuming the queue", err.Error())
-			return
-		}
-	}
-
-	plan.EnvironmentID = state.EnvironmentID
-	configuredProbes := plan.Probes
-	mapInstanceToState(inst, &plan)
-	// The action routes answer without probes, which only the update
-	// response reports.
-	plan.Probes = configuredProbes
-	if isSet(configuredDefault) {
-		plan.IsDefault = configuredDefault
-	}
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	return updateReq
 }
 
 func (r *InstanceResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -618,9 +676,9 @@ func (r *InstanceResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	// The API refuses to delete an environment's app instance, which can only
-	// have been imported. Deleting the environment deletes it, so it is only
-	// dropped from state here.
+	// The API refuses to delete an environment's app instance, which this
+	// resource took over or imported. Deleting the environment deletes it, so
+	// it is only dropped from state here.
 	if state.Type.ValueString() == "app" {
 		resp.Diagnostics.AddWarning(
 			"App instance not deleted",
@@ -843,8 +901,8 @@ func validateAppInstanceConfig(config InstanceResourceModel, diags *diag.Diagnos
 		} {
 			if !v.IsNull() {
 				diags.AddAttributeError(path.Root(name), name+" is only for app instances",
-					fmt.Sprintf("Only an environment's app instance has %s; this one is %q. Import the app instance "+
-						"to manage it.", name, instanceType))
+					fmt.Sprintf("Only an environment's app instance has %s; this one is %q. Set type = \"app\" "+
+						"to manage the environment's app instance.", name, instanceType))
 			}
 		}
 	}
