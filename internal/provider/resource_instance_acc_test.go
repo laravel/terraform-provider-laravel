@@ -2,7 +2,9 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -54,6 +56,68 @@ func TestAccInstance_managedQueue(t *testing.T) {
 					},
 				},
 				Check: resource.TestCheckResourceAttr(addr, "max_replicas", "3"),
+			},
+		},
+	})
+}
+
+// Renaming a managed queue must replace it. The API renames the
+// instance in place but keeps its SQS queue and worker on the old name, so
+// the provider used to leave the app and worker pointed at the wrong queue.
+func TestAccInstance_managedQueueRename(t *testing.T) {
+	name := testAccName()
+	renamed := name + "-b"
+	const addr = "laravel_cloud_instance.queue"
+	var oldID string
+	renamedConfig := strings.Replace(testAccManagedQueueConfig(name, 2, ""),
+		fmt.Sprintf("name           = %q\n  type           = \"managed_queue\"", name),
+		fmt.Sprintf("name           = %q\n  type           = \"managed_queue\"", renamed), 1)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccManagedQueueConfig(name, 2, ""),
+				Check: func(s *terraform.State) error {
+					oldID = s.RootModule().Resources[addr].Primary.ID
+					return nil
+				},
+			},
+			{
+				Config: renamedConfig,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionReplace)},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(addr, "name", renamed),
+					func(s *terraform.State) error {
+						newID := s.RootModule().Resources[addr].Primary.ID
+						if newID == oldID {
+							return fmt.Errorf("queue %s was renamed in place, want a new queue", oldID)
+						}
+						// The new queue's worker must listen on the new name.
+						processes, err := testAccClient().ListBackgroundProcesses(context.Background(), newID)
+						if err != nil {
+							return err
+						}
+						if len(processes) != 1 {
+							return fmt.Errorf("queue has %d background processes, want 1", len(processes))
+						}
+						var config struct{ Queue string }
+						if err := json.Unmarshal(processes[0].Attributes.Config, &config); err != nil {
+							return err
+						}
+						if config.Queue != renamed {
+							return fmt.Errorf("worker config.queue = %q, want %q", config.Queue, renamed)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config:           renamedConfig,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
 			},
 		},
 	})
