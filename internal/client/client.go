@@ -217,7 +217,10 @@ func IsNotFound(err error) bool {
 // wording differs by route: "This database cluster is already being updated.
 // Try again shortly." when creating or deleting a database, and "An update is
 // already in progress for this database. Try again in a few seconds." when
-// deleting a cluster or restoring one.
+// deleting a cluster or restoring one. A WebSocket server that is creating or
+// updating answers "An update operation is already in progress for this
+// WebSocket cluster." or, on delete, "An operation is already in progress for
+// this WebSocket cluster."
 func IsBusy(err error) bool {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnprocessableEntity {

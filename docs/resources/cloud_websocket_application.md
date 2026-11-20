@@ -37,7 +37,7 @@ resource "laravel_cloud_websocket_application" "example" {
 
 ### Required
 
-- `name` (String) Application name.
+- `name` (String) Application name. Every server already has an application named `production`, which Laravel Cloud creates with it, so that name cannot be used.
 - `server_id` (String) Parent WebSocket server ID.
 
 ### Optional

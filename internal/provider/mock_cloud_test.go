@@ -75,9 +75,10 @@ type fakeCloud struct {
 	// secrets models the organization secrets API; see mock_secrets_test.go.
 	secrets *fakeSecrets
 
-	// clusterBusy counts, per database cluster, how many more requests that
-	// change it are refused as busy -- see mock_resources_test.go.
-	clusterBusy map[string]int
+	// busy counts, per database cluster or WebSocket server, how many more
+	// requests that change it are refused as busy -- see
+	// mock_resources_test.go.
+	busy map[string]int
 }
 
 // newFakeCloud starts an httptest.Server backed by a fresh in-memory store and
@@ -96,7 +97,7 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 		vars:     map[string]map[string]string{},
 		secrets:  newFakeSecrets(),
 
-		clusterBusy: map[string]int{},
+		busy: map[string]int{},
 	}
 
 	// The fake answers busy for a request or two, not twenty minutes, so the
@@ -104,6 +105,9 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	interval := databaseBusyInterval
 	databaseBusyInterval = time.Millisecond
 	t.Cleanup(func() { databaseBusyInterval = interval })
+	wsInterval := websocketBusyInterval
+	websocketBusyInterval = time.Millisecond
+	t.Cleanup(func() { websocketBusyInterval = wsInterval })
 
 	mux := http.NewServeMux()
 	// Applications

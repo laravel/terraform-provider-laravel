@@ -66,8 +66,9 @@ func (r *WebsocketApplicationResource) Schema(_ context.Context, _ resource.Sche
 				},
 			},
 			"name": schema.StringAttribute{
-				Required:    true,
-				Description: "Application name.",
+				Required: true,
+				Description: "Application name. Every server already has an application named " +
+					"`production`, which Laravel Cloud creates with it, so that name cannot be used.",
 			},
 			"app_id": schema.StringAttribute{
 				Computed:    true,
@@ -169,7 +170,15 @@ func (r *WebsocketApplicationResource) Create(ctx context.Context, req resource.
 		createReq.ActivityTimeout = &v
 	}
 
-	wsApp, err := r.client.CreateWebsocketApplication(ctx, plan.ServerID.ValueString(), createReq)
+	// The server refuses new applications while it is busy: while it is still
+	// being created, and for a few seconds after any application on it is
+	// created or deleted, so sibling applications created in parallel queue up.
+	var wsApp *client.WebsocketApplicationData
+	err := client.RetryOnConflict(ctx, websocketBusyAttempts, websocketBusyInterval, func() error {
+		var err error
+		wsApp, err = r.client.CreateWebsocketApplication(ctx, plan.ServerID.ValueString(), createReq)
+		return err
+	}, client.IsBusy)
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating websocket application", err.Error())
 		return
@@ -240,7 +249,12 @@ func (r *WebsocketApplicationResource) Update(ctx context.Context, req resource.
 		updateReq.ActivityTimeout = &v
 	}
 
-	wsApp, err := r.client.UpdateWebsocketApplication(ctx, state.ID.ValueString(), updateReq)
+	var wsApp *client.WebsocketApplicationData
+	err := client.RetryOnConflict(ctx, websocketBusyAttempts, websocketBusyInterval, func() error {
+		var err error
+		wsApp, err = r.client.UpdateWebsocketApplication(ctx, state.ID.ValueString(), updateReq)
+		return err
+	}, client.IsBusy)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating websocket application", err.Error())
 		return
@@ -257,7 +271,10 @@ func (r *WebsocketApplicationResource) Delete(ctx context.Context, req resource.
 		return
 	}
 
-	if err := r.client.DeleteWebsocketApplication(ctx, state.ID.ValueString()); err != nil {
+	err := client.RetryOnConflict(ctx, websocketBusyAttempts, websocketBusyInterval, func() error {
+		return r.client.DeleteWebsocketApplication(ctx, state.ID.ValueString())
+	}, client.IsBusy)
+	if err != nil {
 		resp.Diagnostics.AddError("Error deleting websocket application", err.Error())
 	}
 }

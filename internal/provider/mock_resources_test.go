@@ -70,7 +70,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 				// A create-only request field: never reported back.
 				delete(attrs, "create_default_database")
 				// A new cluster is "creating", which the API counts as busy.
-				f.clusterBusy[clusterID] = clusterCreatingRefusals
+				f.busy[clusterID] = clusterCreatingRefusals
 				if sent && createDefault == false {
 					return
 				}
@@ -173,10 +173,25 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			patch: true, del: true,
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
-				a["status"] = "available"
+				a["status"] = "creating"
 				a["hostname"] = "ws.test.local"
 				a["connection_distribution_strategy"] = "round_robin"
 				return a
+			},
+			// A new server is "creating", which the API counts as busy, for
+			// two requests; reading it uses those up, like time passing.
+			afterCreate: func(f *fakeCloud, id string) { f.busy[id] = 2 },
+			beforeGet: func(f *fakeCloud, id string) {
+				f.refuseIfBusy(id)
+				if f.busy[id] == 0 {
+					f.objects["websocket_server"][id]["status"] = "available"
+				}
+			},
+			beforeDelete: func(f *fakeCloud, id string) string {
+				if f.refuseIfBusy(id) {
+					return websocketDeleteBusyMessage
+				}
+				return ""
 			},
 		},
 		// -------- environment-nested --------
@@ -323,7 +338,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 				if f.refuseIfBusy(clusterID) {
 					return databaseClusterBusyMessage
 				}
-				f.clusterBusy[clusterID] = 1
+				f.busy[clusterID] = 1
 				return ""
 			},
 			seed: func(body map[string]any, _ string) map[string]any {
@@ -404,6 +419,23 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			// key and secret are merged into the create response only; every
 			// later read omits them.
 			createOnlyAttrs: []string{"key", "secret"},
+			// Creating or deleting an application is refused while its server
+			// is busy, and starts an update of the server.
+			beforeCreate: func(f *fakeCloud, serverID string) string {
+				if f.refuseIfBusy(serverID) {
+					return websocketUpdateBusyMessage
+				}
+				f.markWebsocketServerBusy(serverID)
+				return ""
+			},
+			beforeDelete: func(f *fakeCloud, id string) string {
+				serverID := f.parents["websocket_application"][id]
+				if f.refuseIfBusy(serverID) {
+					return websocketDeleteBusyMessage
+				}
+				f.markWebsocketServerBusy(serverID)
+				return ""
+			},
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
 				a["app_id"] = "wsapp-0001"
@@ -600,7 +632,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 		for _, dbID := range f.clusterDatabaseIDs(sourceID) {
 			f.addClusterDatabase(id, f.objects["database"][dbID]["name"])
 		}
-		f.clusterBusy[id] = clusterCreatingRefusals
+		f.busy[id] = clusterCreatingRefusals
 		writeJSON(w, http.StatusCreated, jsonAPIObject(id, clusterType, attrs))
 	})
 }
@@ -616,13 +648,30 @@ const (
 // refuses as busy before it becomes available.
 const clusterCreatingRefusals = 2
 
-// refuseIfBusy reports whether the cluster is busy, and uses up one refusal.
-func (f *fakeCloud) refuseIfBusy(clusterID string) bool {
-	if f.clusterBusy[clusterID] == 0 {
+// refuseIfBusy reports whether the database cluster or WebSocket server is
+// busy, and uses up one refusal.
+func (f *fakeCloud) refuseIfBusy(id string) bool {
+	if f.busy[id] == 0 {
 		return false
 	}
-	f.clusterBusy[clusterID]--
+	f.busy[id]--
 	return true
+}
+
+// The API's 422 messages for a WebSocket server that is creating or updating:
+// one from creating or changing an application or the server, another from
+// deleting either.
+const (
+	websocketUpdateBusyMessage = "An update operation is already in progress for this WebSocket cluster."
+	websocketDeleteBusyMessage = "An operation is already in progress for this WebSocket cluster."
+)
+
+// markWebsocketServerBusy starts an update of the server, as creating or
+// deleting an application on it does. The server refuses the next request that
+// changes it, and reports "updating" until then.
+func (f *fakeCloud) markWebsocketServerBusy(serverID string) {
+	f.busy[serverID] = 1
+	f.objects["websocket_server"][serverID]["status"] = "updating"
 }
 
 // addClusterDatabase stores a database inside a cluster, as the platform does

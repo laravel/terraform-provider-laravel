@@ -84,6 +84,10 @@ type crudSpec struct {
 	// API answers with a 422, given the stored attributes and the body.
 	validatePatch func(attrs, patch map[string]any) string
 
+	// beforeGet, if set, runs before an object is read -- to move a status on,
+	// as time passing does on the real API.
+	beforeGet func(f *fakeCloud, id string)
+
 	// beforeDelete, if set, can refuse a DELETE by returning the message the
 	// API answers with a 422 -- a bucket that still has keys, for example.
 	beforeDelete func(f *fakeCloud, id string) string
@@ -198,6 +202,9 @@ func (f *fakeCloud) genGet(s crudSpec) http.HandlerFunc {
 		if !ok {
 			writeError(w, http.StatusNotFound, fmt.Errorf("%s not found", s.typeName))
 			return
+		}
+		if s.beforeGet != nil {
+			s.beforeGet(f, id)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": f.dataWithParent(s, id, s.withoutCreateOnly(attrs))})
 	}

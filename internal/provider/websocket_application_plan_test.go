@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 )
 
@@ -116,6 +117,42 @@ func TestWebsocketApplicationClearOriginsPlan(t *testing.T) {
 				Config: websocketAppConfig(baseURL, `allowed_origins = []`),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+		},
+	})
+}
+
+// TestWebsocketServerBusyPlan is the fast counterpart of
+// TestAccWebsocketApplication_createWithServer: two applications
+// created in the same apply as their server, then everything destroyed. The
+// fake refuses each change while the server is creating or updating, with the
+// API's real 422 messages, so a provider that neither waits nor retries fails
+// here.
+func TestWebsocketServerBusyPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy: func(*terraform.State) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if n := len(f.objects["websocket_server"]); n != 0 {
+				return fmt.Errorf("want every websocket server deleted, %d left", n)
+			}
+			return nil
+		},
+		Steps: []resource.TestStep{
+			{
+				Config: websocketAppConfig(baseURL, "") + `
+resource "laravel_cloud_websocket_application" "sibling" {
+  server_id = laravel_cloud_websocket_server.server.id
+  name      = "sibling"
+}
+`,
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("laravel_cloud_websocket_server.server",
+						tfjsonpath.New("status"), knownvalue.StringExact("available")),
 				},
 			},
 		},
