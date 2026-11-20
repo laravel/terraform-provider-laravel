@@ -182,7 +182,7 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"php_version": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
-				Description: "PHP version to run, in the API's \"major:minor\" form (e.g. \"8.4:1\"). " +
+				Description: "PHP version to run, in the API's \"major:minor\" form (such as \"8.4:1\"). " +
 					"The API reports only the major version (see php_major_version), so an import " +
 					"derives this from it. A version changed outside Terraform is not detected.",
 				PlanModifiers: []planmodifier.String{
@@ -191,7 +191,7 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 			"php_major_version": schema.StringAttribute{
 				Computed:    true,
-				Description: "Major PHP version reported by the API (e.g. \"8.4\").",
+				Description: "Major PHP version reported by the API (such as \"8.4\").",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -270,14 +270,14 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 			"framework": schema.StringAttribute{
 				Computed:    true,
-				Description: "Framework Laravel Cloud detected in the branch (e.g. laravel, nextjs).",
+				Description: "Framework Laravel Cloud detected in the branch (such as laravel, nextjs).",
 				PlanModifiers: []planmodifier.String{
 					followsAttributes{"branch"},
 				},
 			},
 			"language": schema.StringAttribute{
 				Computed:    true,
-				Description: "Language of the environment (e.g. php, javascript).",
+				Description: "Language of the environment (such as php, javascript).",
 				PlanModifiers: []planmodifier.String{
 					followsAttributes{"branch"},
 				},
@@ -473,7 +473,7 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"start_command": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
-				Description: "Command that starts a dynamic application that is not PHP, e.g. \"gunicorn myproject.wsgi\" " +
+				Description: "Command that starts a dynamic application that is not PHP, such as \"gunicorn myproject.wsgi\" " +
 					"(max 255 chars). Required by the API for dynamic JavaScript, Python, Ruby, Go, Rust and Java " +
 					"applications, and rejected for PHP and static ones.",
 				Validators: []validator.String{
@@ -643,7 +643,7 @@ func (r *EnvironmentResource) Configure(_ context.Context, req resource.Configur
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected resource configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	r.client = c
@@ -677,7 +677,7 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		resp.Diagnostics.AddError(
 			"Error listing existing environments",
 			"Laravel Cloud creates a default environment alongside an application, so the existing "+
-				"environments must be checked before creating one -- otherwise a duplicate is created. "+
+				"environments must be checked before creating one. Otherwise the provider creates a duplicate. "+
 				"Listing them failed: "+err.Error(),
 		)
 		return

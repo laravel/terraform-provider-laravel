@@ -105,7 +105,7 @@ func (r *CommandResource) Configure(_ context.Context, req resource.ConfigureReq
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected resource configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	r.client = c
@@ -162,7 +162,7 @@ func (r *CommandResource) Delete(_ context.Context, _ resource.DeleteRequest, re
 	resp.Diagnostics.AddWarning(
 		"Command not deleted from Laravel Cloud",
 		"The Laravel Cloud API does not support deleting commands. "+
-			"The resource has been removed from Terraform state.",
+			"Terraform removed the resource from its state.",
 	)
 }
 

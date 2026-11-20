@@ -118,7 +118,7 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			},
 			"size": schema.StringAttribute{
 				Required:    true,
-				Description: "Instance size (e.g. flex-512mb).",
+				Description: "Instance size (such as flex-512mb).",
 			},
 			"scaling_type": schema.StringAttribute{
 				Required:    true,
@@ -285,7 +285,7 @@ func (r *InstanceResource) Configure(_ context.Context, req resource.ConfigureRe
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected resource configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	r.client = c

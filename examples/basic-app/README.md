@@ -37,5 +37,5 @@ cd examples/basic-app
 terraform plan
 ```
 
-No `terraform init` is needed while a `dev_overrides` block is active —
+No `terraform init` is needed while a `dev_overrides` block is active.
 Terraform prints a warning saying so, which is expected.

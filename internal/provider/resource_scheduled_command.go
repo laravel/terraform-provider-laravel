@@ -67,7 +67,7 @@ func (r *ScheduledCommandResource) Schema(_ context.Context, _ resource.SchemaRe
 			},
 			"command": schema.StringAttribute{
 				Required: true,
-				Description: "The command to run (max 500 chars), e.g. \"php artisan reports:send\". " +
+				Description: "The command to run (max 500 chars), such as \"php artisan reports:send\". " +
 					"Each command can be scheduled only once per instance.",
 				Validators: []validator.String{
 					stringvalidator.LengthBetween(1, 500),
@@ -75,7 +75,7 @@ func (r *ScheduledCommandResource) Schema(_ context.Context, _ resource.SchemaRe
 			},
 			"schedule": schema.StringAttribute{
 				Required: true,
-				Description: "A five-field cron expression, evaluated in UTC (e.g. \"0 3 * * *\"). " +
+				Description: "A five-field cron expression, evaluated in UTC (such as \"0 3 * * *\"). " +
 					"The @yearly, @annually, @monthly, @weekly, @daily, @midnight and @hourly descriptors are also accepted.",
 				Validators: []validator.String{
 					stringvalidator.LengthBetween(1, 255),
@@ -97,7 +97,7 @@ func (r *ScheduledCommandResource) Configure(_ context.Context, req resource.Con
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected resource configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	r.client = c

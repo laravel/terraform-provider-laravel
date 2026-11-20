@@ -1,5 +1,5 @@
 # ===========================================================================
-# Tier 2 -- side-effecting resources (4)
+# Tier 2: side-effecting resources (2, plus 2 commented out)
 #
 # These do more than CRUD and are OFF by default. Enable with:
 #
@@ -15,7 +15,7 @@
 #    run against.
 #  - database_snapshot creates a real snapshot (slow, but harmless).
 #  - database_restore restores from the snapshot above. The snapshot must be
-#    finished before the restore call succeeds -- a single apply may race it.
+#    finished before the restore call succeeds, so a single apply may race it.
 #    Re-run apply once the snapshot reports available, or restore from a PITR
 #    timestamp instead (set restore_time to a moment inside the cluster's live
 #    retention window; the snapshot reference below is usually more reliable).

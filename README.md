@@ -2,9 +2,8 @@
 
 Manage [Laravel Cloud](https://cloud.laravel.com) infrastructure as code.
 
-> **BETA RELEASE**: The Terraform Provider for the Laravel Cloud API is in Early Access and
-> subject to change, so provider resources and attributes may change between
-> releases.
+> **Beta release.** The provider is in early access. Its resources and attributes
+> may change between releases.
 
 ## Requirements
 
@@ -26,7 +25,7 @@ terraform {
 }
 
 provider "laravel" {
-  # Set token here or via the LARAVEL_CLOUD_API_TOKEN env var
+  # Set the token here or in the LARAVEL_CLOUD_API_TOKEN environment variable
 }
 ```
 
@@ -40,13 +39,13 @@ terraform plan
 
 ## Authentication
 
-The provider requires a Laravel Cloud API token. Set it via environment variable:
+The provider needs a Laravel Cloud API token. Set it in an environment variable:
 
 ```sh
 export LARAVEL_CLOUD_API_TOKEN="your-token-here"
 ```
 
-Or configure it directly in the provider block:
+Or set it in the provider block:
 
 ```hcl
 provider "laravel" {
@@ -60,8 +59,8 @@ If neither is set, the provider falls back to the token saved by the
 The token is read from `~/.config/cloud/config.json`, or from
 `~/.config/cloud/<host>-config.json` when `base_url` points at another host,
 matching where the CLI keeps it. If you are logged in to more than one
-organization the CLI holds several tokens, and the provider asks you to set the
-token explicitly rather than guess which organization to manage.
+organization, the CLI holds several tokens, and the provider asks you to set the
+token instead of guessing which organization to manage.
 
 ## Resources
 
@@ -92,9 +91,9 @@ token explicitly rather than guess which organization to manage.
 | `laravel_cloud_websocket_server` | WebSocket server |
 | `laravel_cloud_websocket_application` | WebSocket application |
 
-## Data Sources
+## Data sources
 
-| Data Source | Description |
+| Data source | Description |
 |---|---|
 | `laravel_cloud_organization` | Current organization details |
 | `laravel_cloud_dedicated_clusters` | Available dedicated clusters |

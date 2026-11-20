@@ -29,6 +29,6 @@ data "laravel_cloud_regions" "available" {}
 
 Read-Only:
 
-- `flag` (String) Country identifier for the region's flag, e.g. `us` or `germany`. Not an emoji.
+- `flag` (String) Country identifier for the region's flag, such as `us` or `germany`. Not an emoji.
 - `label` (String) Human-readable region label.
-- `name` (String) Region identifier (e.g. us-east-1).
+- `name` (String) Region identifier (such as us-east-1).

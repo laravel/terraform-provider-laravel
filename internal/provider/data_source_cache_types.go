@@ -60,7 +60,7 @@ func (d *CacheTypesDataSource) Schema(_ context.Context, _ datasource.SchemaRequ
 					Attributes: map[string]schema.Attribute{
 						"type": schema.StringAttribute{
 							Computed:    true,
-							Description: "Type identifier (e.g. upstash_redis, laravel_valkey).",
+							Description: "Type identifier (such as upstash_redis, laravel_valkey).",
 						},
 						"label": schema.StringAttribute{
 							Computed:    true,
@@ -91,7 +91,7 @@ func (d *CacheTypesDataSource) Schema(_ context.Context, _ datasource.SchemaRequ
 								Attributes: map[string]schema.Attribute{
 									"value": schema.StringAttribute{
 										Computed:    true,
-										Description: "Size value (e.g. 250mb).",
+										Description: "Size value (such as 250mb).",
 									},
 									"label": schema.StringAttribute{
 										Computed:    true,
@@ -117,7 +117,7 @@ func (d *CacheTypesDataSource) Configure(_ context.Context, req datasource.Confi
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Data Source Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected data source configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	d.client = c

@@ -35,7 +35,7 @@ Read-Only:
 - `supports_auto_upgrade` (Boolean) Whether this type supports automatic upgrades.
 - `supports_eviction_policy` (Boolean) Whether this type accepts an eviction_policy.
 - `supports_hibernation` (Boolean) Whether this type can scale to zero. Only the sizes whose own supports_hibernation is true accept uses_hibernation.
-- `type` (String) Type identifier (e.g. upstash_redis, laravel_valkey).
+- `type` (String) Type identifier (such as upstash_redis, laravel_valkey).
 
 <a id="nestedatt--types--sizes"></a>
 ### Nested Schema for `types.sizes`
@@ -44,4 +44,4 @@ Read-Only:
 
 - `label` (String) Human-friendly label.
 - `supports_hibernation` (Boolean) Whether a cache of this size accepts uses_hibernation (scale to zero).
-- `value` (String) Size value (e.g. 250mb).
+- `value` (String) Size value (such as 250mb).

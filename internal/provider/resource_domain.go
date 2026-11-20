@@ -122,7 +122,7 @@ func (r *DomainResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			},
 			"verification_method": schema.StringAttribute{
 				Optional:    true,
-				Description: "Verification method (pre_verification, real_time). Editable in place via the API's update endpoint.",
+				Description: "Verification method (pre_verification, real_time). Changing it updates the domain in place.",
 			},
 			"cloudflare_strategy": schema.StringAttribute{
 				Optional: true,
@@ -218,7 +218,7 @@ func (r *DomainResource) Configure(_ context.Context, req resource.ConfigureRequ
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected resource configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	r.client = c

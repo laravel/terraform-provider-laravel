@@ -31,8 +31,9 @@ resource "laravel_cloud_environment" "example" {
   uses_push_to_deploy = true
 }
 
-# One resource manages the full variable set for an environment. Variables not
-# listed here are removed on apply.
+# The keys listed here are written on every apply, and a key removed from the
+# map is deleted from the environment. Variables set outside Terraform are
+# left alone.
 resource "laravel_cloud_environment_variables" "example" {
   environment_id = laravel_cloud_environment.example.id
 

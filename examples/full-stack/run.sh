@@ -6,10 +6,10 @@
 #   ./run.sh                 # terraform plan (core tier only)
 #   ./run.sh apply           # create the core resources
 #   ./run.sh destroy         # tear them down
-#   SIDE_EFFECTING=1 ./run.sh plan     # also include the 4 tier-2 resources
+#   SIDE_EFFECTING=1 ./run.sh plan     # also include the 2 tier-2 resources
 #   SIDE_EFFECTING=1 ./run.sh apply    # ...and actually run them
 #
-# Any extra args are passed straight through to terraform, e.g.
+# Extra arguments pass through to terraform, for example:
 #   ./run.sh apply -auto-approve
 set -euo pipefail
 

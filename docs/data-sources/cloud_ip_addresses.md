@@ -22,7 +22,7 @@ data "laravel_cloud_ip_addresses" "egress" {}
 
 ### Optional
 
-- `region` (String) Limit the result to a single region, e.g. "us-east-1". Omit to return the addresses for every region. An unknown region is rejected by the API.
+- `region` (String) Limit the result to a single region, such as "us-east-1". Omit to return the addresses for every region. An unknown region is rejected by the API.
 
 ### Read-Only
 

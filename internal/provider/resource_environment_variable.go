@@ -99,7 +99,7 @@ func (r *EnvironmentVariableResource) Configure(_ context.Context, req resource.
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected resource configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	r.client = c
@@ -152,7 +152,7 @@ func (r *EnvironmentVariableResource) Read(ctx context.Context, req resource.Rea
 			"The Laravel Cloud API did not return the variables of environment "+state.EnvironmentID.ValueString()+
 				", which it does when the token lacks the \"View environment variables\" permission. "+
 				"Terraform keeps the values from its state and cannot detect changes made outside Terraform. "+
-				"Grant the permission to the token to enable drift detection.",
+				"Grant the token that permission so Terraform can detect those changes.",
 		)
 		return
 	}

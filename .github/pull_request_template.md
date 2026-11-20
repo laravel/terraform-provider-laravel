@@ -10,7 +10,7 @@ Use `feat!:` or a BREAKING CHANGE footer for breaking changes. See RELEASE.md.
 
 <!--- Describe the change and why it's needed. -->
 
-### Type of Change
+### Type of change
 
 - [ ] Bug fix
 - [ ] New resource/data source
