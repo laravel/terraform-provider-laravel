@@ -222,6 +222,7 @@ func (r *ApplicationResource) Create(ctx context.Context, req resource.CreateReq
 	}
 
 	plan.ID = types.StringValue(app.ID)
+	rememberAppRepository(app.ID, plan.Repository)
 	if !isSet(plan.Slug) {
 		plan.Slug = types.StringValue(app.Attributes.Slug)
 	}
@@ -250,6 +251,13 @@ func (r *ApplicationResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
+	// Read keeps the configured repository string, which may differ from the
+	// reported one in form, but records a lost one: Laravel Cloud can leave an
+	// application with no repository, and the next apply sets it again.
+	rememberAppRepository(state.ID.ValueString(), state.Repository)
+	if app.Attributes.Repository == nil {
+		state.Repository = types.StringNull()
+	}
 	state.Name = types.StringValue(app.Attributes.Name)
 	state.Slug = types.StringValue(app.Attributes.Slug)
 	state.Region = types.StringValue(app.Attributes.Region)
@@ -309,6 +317,7 @@ func (r *ApplicationResource) Update(ctx context.Context, req resource.UpdateReq
 	}
 
 	plan.ID = state.ID
+	rememberAppRepository(plan.ID.ValueString(), plan.Repository)
 	plan.Slug = types.StringValue(app.Attributes.Slug)
 	plan.SlackChannel = types.StringPointerValue(app.Attributes.SlackChannel)
 	plan.AvatarURL = types.StringPointerValue(app.Attributes.AvatarURL)

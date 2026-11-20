@@ -289,6 +289,18 @@ func IsBusy(err error) bool {
 		strings.Contains(apiErr.Body, "not available yet")
 }
 
+// IsBranchUnavailable returns true if the API refused to create an environment
+// because Laravel Cloud's own record of the application's branches has no row
+// for the requested branch: `422 {"branch": ["The selected branch is no longer
+// available."]}`. Cloud answers this while it has not yet synced a non-default
+// branch of a newly connected repository, and also for an application whose
+// repository is null.
+func IsBranchUnavailable(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity &&
+		strings.Contains(apiErr.Body, "The selected branch is no longer available")
+}
+
 // IsClusterNotEmpty returns true if the API refused to delete a database
 // cluster because it still has databases.
 func IsClusterNotEmpty(err error) bool {
