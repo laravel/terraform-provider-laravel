@@ -252,8 +252,11 @@ func (r *CacheResource) Create(ctx context.Context, req resource.CreateRequest, 
 	// The create response describes a cache that is still provisioning: its
 	// connection block comes back empty (null hostname, zero port, no
 	// password). Storing that would hand every downstream reference an empty
-	// password with no error, so wait for the API to fill it in.
-	if !cache.Attributes.Connection.IsReady() {
+	// password with no error, so wait for the API to fill it in. ElastiCache
+	// is the exception: the API never reports its hostname, even once the
+	// cache is available, so waiting would only add five minutes.
+	elasticache := isElastiCacheType(plan.Type.ValueString())
+	if !elasticache && !cache.Attributes.Connection.IsReady() {
 		if ready := waitForCacheConnection(ctx, r.client, cache.ID); ready != nil {
 			cache = ready
 		} else {
@@ -275,8 +278,14 @@ func (r *CacheResource) Create(ctx context.Context, req resource.CreateRequest, 
 
 	// The connection details arrive about a minute before the cache leaves
 	// "creating", and until then the API refuses to attach it to an
-	// environment, which is usually the next thing in the same apply.
-	cache, err = waitForCacheAvailable(ctx, r.client, cache.ID)
+	// environment, which is usually the next thing in the same apply. An
+	// ElastiCache cache provisions an AWS replication group, which takes
+	// over ten minutes.
+	attempts := cacheBusyAttempts
+	if elasticache {
+		attempts = elastiCacheCreateAttempts
+	}
+	cache, err = waitForCacheAvailable(ctx, r.client, cache.ID, attempts)
 	if err != nil {
 		resp.Diagnostics.AddError("Error waiting for cache to become available", err.Error())
 		return
@@ -533,15 +542,19 @@ func mapCacheToState(c *client.CacheData, state *CacheResourceModel) {
 // plan tests need not wait.
 const cacheBusyAttempts = 30
 
+// elastiCacheCreateAttempts bounds Create's wait for a new ElastiCache cache,
+// 30 minutes at cacheBusyInterval.
+const elastiCacheCreateAttempts = 180
+
 var cacheBusyInterval = 10 * time.Second
 
 var errCacheBusy = errors.New("cache is still provisioning")
 
 // waitForCacheAvailable polls the cache until it is no longer creating or
 // updating, and returns it.
-func waitForCacheAvailable(ctx context.Context, c *client.Client, id string) (*client.CacheData, error) {
+func waitForCacheAvailable(ctx context.Context, c *client.Client, id string, attempts int) (*client.CacheData, error) {
 	var cache *client.CacheData
-	err := client.RetryOnConflict(ctx, cacheBusyAttempts, cacheBusyInterval, func() error {
+	err := client.RetryOnConflict(ctx, attempts, cacheBusyInterval, func() error {
 		var err error
 		cache, err = c.GetCache(ctx, id)
 		if err != nil {

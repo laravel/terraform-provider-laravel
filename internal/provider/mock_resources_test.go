@@ -54,9 +54,11 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 					a["uses_hibernation"] = false
 					a["hibernation_timeout"] = nil
 				}
-				// ElastiCache caches are always private, whatever is sent.
+				// ElastiCache caches are always private, whatever is sent,
+				// and never report a hostname, even once available.
 				if t, _ := a["type"].(string); strings.HasPrefix(t, "aws_elasticache_") {
 					a["is_public"] = false
+					a["connection"].(map[string]any)["hostname"] = nil
 				}
 				return a
 			},
