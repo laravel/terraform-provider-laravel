@@ -322,19 +322,8 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			collectionPattern: "/environments/{eid}/deployments", itemPattern: "/deployments/{id}",
 			relationshipName: "environment", relationshipType: "environments",
 			// No PATCH, no DELETE (deployments are immutable and cannot be undone).
-			seed: func(_ map[string]any, _ string) map[string]any {
-				return map[string]any{
-					"status":            "pending",
-					"branch_name":       "main",
-					"commit_hash":       "abc1234",
-					"commit_message":    "Initial deploy",
-					"commit_author":     "tester",
-					"php_major_version": "8.4",
-					"build_command":     "",
-					"node_version":      "20",
-					"uses_octane":       false,
-				}
-			},
+			seed:       seedDeployment,
+			wrapCreate: queueDeploymentCreate,
 		},
 		{
 			typeName: "command", idPrefix: "command", parentWildcard: "eid",

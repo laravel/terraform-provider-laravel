@@ -3,12 +3,12 @@
 page_title: "laravel_cloud_deployment Resource - Laravel Cloud"
 subcategory: ""
 description: |-
-  Initiates a deployment on a Laravel Cloud environment.
+  Initiates a deployment on a Laravel Cloud environment. While the environment's resources (such as a cache or database) are still provisioning, Laravel Cloud queues the deployment instead of starting it; Terraform waits for it to start, for up to the 30 minutes Laravel Cloud keeps it queued, and records the deployment it started.
 ---
 
 # laravel_cloud_deployment (Resource)
 
-Initiates a deployment on a Laravel Cloud environment.
+Initiates a deployment on a Laravel Cloud environment. While the environment's resources (such as a cache or database) are still provisioning, Laravel Cloud queues the deployment instead of starting it; Terraform waits for it to start, for up to the 30 minutes Laravel Cloud keeps it queued, and records the deployment it started.
 
 ## Example Usage
 

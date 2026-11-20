@@ -98,6 +98,10 @@ type crudSpec struct {
 	// what makes it possible to catch a provider that treats their absence as
 	// an empty value and overwrites the stored secret.
 	createOnlyAttrs []string
+
+	// wrapCreate, if set, wraps the generic POST handler, to answer some
+	// requests another way -- a deployment the API queues, for example.
+	wrapCreate func(f *fakeCloud, create http.HandlerFunc) http.HandlerFunc
 }
 
 // withoutCreateOnly returns a copy of attrs with the create-only attributes
@@ -115,7 +119,11 @@ func (s crudSpec) withoutCreateOnly(attrs map[string]any) map[string]any {
 
 // registerCRUD wires a crudSpec's handlers onto the mux.
 func (f *fakeCloud) registerCRUD(mux *http.ServeMux, s crudSpec) {
-	mux.HandleFunc("POST "+s.collectionPattern, f.genCreate(s))
+	create := f.genCreate(s)
+	if s.wrapCreate != nil {
+		create = s.wrapCreate(f, create)
+	}
+	mux.HandleFunc("POST "+s.collectionPattern, create)
 	mux.HandleFunc("GET "+s.itemPattern, f.genGet(s))
 	if s.list {
 		mux.HandleFunc("GET "+s.collectionPattern, f.genList(s))

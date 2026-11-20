@@ -921,6 +921,35 @@ type DeploymentAttributes struct {
 	FinishedAt      *string `json:"finished_at"`
 }
 
+// QueuedDeploymentType is the JSON:API type of a queued deployment.
+const QueuedDeploymentType = "queuedDeployments"
+
+// QueuedDeploymentData is a deployment requested while the environment's
+// resources were still provisioning. Cloud promotes it into a real deployment
+// once they are ready.
+type QueuedDeploymentData struct {
+	ID            string                        `json:"id"`
+	Type          string                        `json:"type"`
+	Attributes    QueuedDeploymentAttributes    `json:"attributes"`
+	Relationships QueuedDeploymentRelationships `json:"relationships"`
+}
+
+type QueuedDeploymentAttributes struct {
+	// Status is pending while it waits, promoted once it started a
+	// deployment, failed or expired when it could not, and cancelled when a
+	// newer request replaced it.
+	Status        string  `json:"status"`
+	FailureReason *string `json:"failure_reason"`
+}
+
+// QueuedDeploymentRelationships are the relationships on a queued deployment.
+// Deployment is the deployment it started, or for a failed or expired one the
+// failed deployment recorded in its place.
+type QueuedDeploymentRelationships struct {
+	Environment Relationship `json:"environment"`
+	Deployment  Relationship `json:"deployment"`
+}
+
 // ---------------------------------------------------------------------
 // Database Snapshot
 // ---------------------------------------------------------------------

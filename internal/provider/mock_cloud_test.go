@@ -86,6 +86,12 @@ type fakeCloud struct {
 	// requests that change it are refused as busy -- see
 	// mock_resources_test.go.
 	busy map[string]int
+
+	// queueDeployments is how many of the next deployment requests the API
+	// queues, as it does while the environment's resources are provisioning;
+	// queued holds those queued deployments. See mock_deployments_test.go.
+	queueDeployments int
+	queued           map[string]*fakeQueuedDeployment
 }
 
 // newFakeCloud starts an httptest.Server backed by a fresh in-memory store and
@@ -104,7 +110,8 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 		vars:     map[string]map[string]string{},
 		secrets:  newFakeSecrets(),
 
-		busy: map[string]int{},
+		busy:   map[string]int{},
+		queued: map[string]*fakeQueuedDeployment{},
 	}
 
 	// The fake answers busy for a request or two, not twenty minutes, so the
@@ -112,6 +119,9 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	interval := databaseBusyInterval
 	databaseBusyInterval = time.Millisecond
 	t.Cleanup(func() { databaseBusyInterval = interval })
+	queuedInterval := queuedDeploymentPollInterval
+	queuedDeploymentPollInterval = time.Millisecond
+	t.Cleanup(func() { queuedDeploymentPollInterval = queuedInterval })
 	wsInterval := websocketBusyInterval
 	websocketBusyInterval = time.Millisecond
 	t.Cleanup(func() { websocketBusyInterval = wsInterval })
@@ -132,6 +142,7 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	mux.HandleFunc("PATCH /environments/{id}", f.updateEnvironment)
 	mux.HandleFunc("PUT /environments/{id}/vanity-domain", f.setVanityDomain)
 	mux.HandleFunc("DELETE /environments/{id}", f.deleteEnvironment)
+	mux.HandleFunc("GET /queued-deployments/{id}", f.getQueuedDeployment)
 
 	// All other resources are served by the generic JSON:API engine.
 	f.registerGenericResources(mux)
