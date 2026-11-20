@@ -725,9 +725,8 @@ type BackgroundProcessAttributes struct {
 	ProcessType string  `json:"type"`
 	Processes   int     `json:"processes"`
 	Command     *string `json:"command"`
-	// Config is returned by the API as an array of objects (the request
-	// body sends it as a single object), so it is captured as raw JSON to
-	// tolerate either shape rather than forcing a map decode.
+	// Config is the object that was sent, but an empty one comes back as []
+	// (a PHP empty array), so it is captured as raw JSON to tolerate both.
 	Config            json.RawMessage `json:"config"`
 	StrategyType      string          `json:"strategy_type"`
 	StrategyThreshold *int            `json:"strategy_threshold"`
@@ -742,6 +741,7 @@ type CreateBackgroundProcessRequest struct {
 }
 
 type UpdateBackgroundProcessRequest struct {
+	Type      *string        `json:"type,omitempty"`
 	Processes *int           `json:"processes,omitempty"`
 	Command   *string        `json:"command,omitempty"`
 	Config    map[string]any `json:"config,omitempty"`

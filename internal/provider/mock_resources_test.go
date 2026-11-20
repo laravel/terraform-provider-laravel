@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -336,8 +337,29 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			collectionPattern: "/instances/{iid}/background-processes", itemPattern: "/background-processes/{id}",
 			patch: true, del: true,
 			relationshipName: "instance", relationshipType: "instances",
+			// The API generates a worker's command from its config and ignores
+			// any command sent, stores no config for a custom process (an empty
+			// config comes back as []), and regenerates the command whenever a
+			// worker's type or config is written. A PATCH replaces the whole
+			// config, so keys sent as null are stored and reported as null.
 			seed: func(body map[string]any, _ string) map[string]any {
-				return cloneMap(body) // config is ignored on read-back by the provider
+				a := cloneMap(body)
+				if a["type"] == "custom" {
+					a["config"] = []any{}
+				} else {
+					a["command"] = fakeWorkerCommand(a["config"])
+				}
+				return a
+			},
+			patchFn: func(attrs, patch map[string]any) {
+				for k, v := range patch {
+					attrs[k] = v
+				}
+				_, typeSent := patch["type"]
+				_, configSent := patch["config"]
+				if attrs["type"] == "worker" && (typeSent || configSent) {
+					attrs["command"] = fakeWorkerCommand(attrs["config"])
+				}
 			},
 		},
 		{
@@ -704,4 +726,25 @@ func validateManagedQueueCreate(body map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// fakeWorkerCommand builds a worker command the way the API does, such as
+// "php artisan queue:work --queue=default --tries=3 --quiet".
+func fakeWorkerCommand(config any) string {
+	cfg, _ := config.(map[string]any)
+	parts := []string{"php artisan queue:work"}
+	if c, ok := cfg["connection"].(string); ok {
+		parts = append(parts, c)
+	}
+	keys := make([]string, 0, len(cfg))
+	for k := range cfg {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if v := cfg[k]; v != nil && k != "connection" {
+			parts = append(parts, fmt.Sprintf("--%s=%v", k, v))
+		}
+	}
+	return strings.Join(append(parts, "--quiet"), " ")
 }
