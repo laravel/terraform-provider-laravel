@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -44,6 +46,7 @@ type EnvironmentResourceModel struct {
 	PHPVersion                 types.String `tfsdk:"php_version"`
 	PHPMajorVersion            types.String `tfsdk:"php_major_version"`
 	VanityDomain               types.String `tfsdk:"vanity_domain"`
+	VanityHostname             types.String `tfsdk:"vanity_hostname"`
 	NodeVersion                types.String `tfsdk:"node_version"`
 	BuildCommand               types.String `tfsdk:"build_command"`
 	DeployCommand              types.String `tfsdk:"deploy_command"`
@@ -175,9 +178,24 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"vanity_domain": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
-				Description: "Vanity domain hostname for the environment (3-100 characters). " +
-					"Set through the API's dedicated vanity-domain endpoint rather than the " +
-					"environment update body. Leave unset to keep the assigned default.",
+				Description: "Subdomain label of the environment's vanity domain, such as \"my-app\" " +
+					"for my-app.laravel.cloud: 3 to 63 lowercase letters, numbers and dashes, not " +
+					"starting or ending with a dash. The full hostname is in vanity_hostname. " +
+					"Leave unset to keep the assigned default. The API allows one change every 30 minutes.",
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(3, 63),
+					stringvalidator.RegexMatches(vanityLabelPattern,
+						"must be a single subdomain label (lowercase letters, numbers and dashes, "+
+							"not starting or ending with a dash), such as \"my-app\", not a full hostname"),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"vanity_hostname": schema.StringAttribute{
+				Computed:    true,
+				Description: "Full vanity domain hostname, such as \"my-app.laravel.cloud\".",
+				// ModifyPlan marks it unknown when vanity_domain changes.
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -590,7 +608,7 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	plan.Slug = types.StringValue(env.Attributes.Slug)
 	plan.Status = types.StringValue(env.Attributes.Status)
 	plan.PHPMajorVersion = types.StringValue(env.Attributes.PHPMajorVersion)
-	plan.VanityDomain = types.StringPointerValue(env.Attributes.VanityDomain)
+	setVanityFromAPI(&plan, env)
 	plan.CreatedAt = types.StringPointerValue(env.Attributes.CreatedAt)
 
 	// Snapshot the plan BEFORE filling unknowns. We use origPlan to decide
@@ -634,12 +652,15 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	// retries it, so this is a warning -- matching how the settings PATCH below
 	// already handles the same situation.
 	if !configuredVanity.IsNull() && !configuredVanity.IsUnknown() {
-		if err := applyVanityDomain(ctx, r.client, env.ID, configuredVanity); err != nil {
+		updated, err := applyVanityDomain(ctx, r.client, env.ID, configuredVanity)
+		if err != nil {
 			resp.Diagnostics.AddWarning(
 				"Could not set the vanity domain after creating the environment",
 				"The environment was created, but setting its vanity domain failed: "+err.Error()+
 					". The configured value is kept in state; run 'terraform apply' again to retry.",
 			)
+		} else if updated != nil {
+			setVanityFromAPI(&plan, updated)
 		}
 		plan.VanityDomain = configuredVanity
 	}
@@ -788,10 +809,19 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 	// On update the resource is already in state, so Terraform keeps the prior
 	// state when this errors and nothing is orphaned -- a failure here is fatal.
 	if !plan.VanityDomain.Equal(state.VanityDomain) {
-		if err := applyVanityDomain(ctx, r.client, state.ID.ValueString(), plan.VanityDomain); err != nil {
+		updated, err := applyVanityDomain(ctx, r.client, state.ID.ValueString(), plan.VanityDomain)
+		if err != nil {
 			resp.Diagnostics.AddError("Error setting vanity domain", err.Error())
 			return
 		}
+		if updated != nil {
+			setVanityFromAPI(&plan, updated)
+		}
+	}
+	// Only a vanity domain change leaves the hostname unknown, and it was
+	// resolved above; this covers an update that sent nothing.
+	if plan.VanityHostname.IsUnknown() {
+		plan.VanityHostname = state.VanityHostname
 	}
 
 	updateReq := buildEnvironmentUpdateFromStateDiff(plan, state)
@@ -1022,6 +1052,20 @@ func (r *EnvironmentResource) ModifyPlan(ctx context.Context, req resource.Modif
 		return
 	}
 
+	// vanity_hostname follows vanity_domain, so a new label means a new
+	// hostname, which only the API can say.
+	if !req.State.Raw.IsNull() {
+		var planVanity, stateVanity types.String
+		resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("vanity_domain"), &planVanity)...)
+		resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("vanity_domain"), &stateVanity)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if !planVanity.Equal(stateVanity) {
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("vanity_hostname"), types.StringUnknown())...)
+		}
+	}
+
 	var dbID, schemaID types.String
 	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("database_id"), &dbID)...)
 	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("database_schema_id"), &schemaID)...)
@@ -1206,7 +1250,7 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 	// major version is surfaced via php_major_version instead. An import
 	// seeds it, see ImportState.
 	state.PHPMajorVersion = types.StringValue(env.Attributes.PHPMajorVersion)
-	state.VanityDomain = types.StringPointerValue(env.Attributes.VanityDomain)
+	setVanityFromAPI(state, env)
 	state.NodeVersion = types.StringValue(env.Attributes.NodeVersion)
 	state.UsesPushToDeploy = types.BoolValue(env.Attributes.UsesPushToDeploy)
 	state.UsesDeployHook = types.BoolValue(env.Attributes.UsesDeployHook)
@@ -1259,18 +1303,38 @@ func resolveUnknownInt64ToNull(v *types.Int64) {
 	}
 }
 
-// applyVanityDomain points the environment at the configured vanity hostname.
+// vanityLabelPattern is the API's rule for a vanity domain name: one
+// lowercase DNS label.
+var vanityLabelPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// setVanityFromAPI records the environment's vanity domain. The API takes a
+// subdomain label but reports the full hostname, whose zone differs between
+// organizations (laravel.cloud, laravel-demo.cloud, ...), so vanity_domain is
+// the hostname's first label and vanity_hostname the whole of it.
+func setVanityFromAPI(m *EnvironmentResourceModel, env *client.EnvironmentData) {
+	host := env.Attributes.VanityDomain
+	if host == nil || *host == "" {
+		m.VanityDomain = types.StringNull()
+		m.VanityHostname = types.StringNull()
+		return
+	}
+	label, _, _ := strings.Cut(*host, ".")
+	m.VanityDomain = types.StringValue(label)
+	m.VanityHostname = types.StringValue(*host)
+}
+
+// applyVanityDomain points the environment at the configured vanity domain
+// label and returns the environment the API reported back.
 //
 // The API exposes this as PUT /environments/{id}/vanity-domain rather than a
 // field on the environment update body, so it is a separate call. A null value
 // means "keep whatever the platform assigned" -- there is no endpoint to clear
 // one, so nothing is sent.
-func applyVanityDomain(ctx context.Context, c *client.Client, environmentID string, vanity types.String) error {
+func applyVanityDomain(ctx context.Context, c *client.Client, environmentID string, vanity types.String) (*client.EnvironmentData, error) {
 	if vanity.IsNull() || vanity.IsUnknown() || vanity.ValueString() == "" {
-		return nil
+		return nil, nil
 	}
-	_, err := c.SetVanityDomain(ctx, environmentID, client.UpdateVanityDomainRequest{
+	return c.SetVanityDomain(ctx, environmentID, client.UpdateVanityDomainRequest{
 		Name: vanity.ValueString(),
 	})
-	return err
 }

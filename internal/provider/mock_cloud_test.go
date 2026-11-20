@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -242,6 +243,9 @@ func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 	appID := r.PathValue("id")
 	f.seq++
 	id := fmt.Sprintf("env-%d", f.seq)
+	// Like the real API, every new environment gets a generated vanity
+	// hostname in the organization's zone.
+	vanity := fmt.Sprintf("%s-%s-%d.%s", appID, slugify(req.Name), f.seq, fakeVanityZone)
 	// Defaults model a freshly-created environment before any settings PATCH.
 	env := &client.EnvironmentData{
 		ID:   id,
@@ -252,6 +256,7 @@ func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 			Status:          "active",
 			PHPMajorVersion: "8.4",
 			NodeVersion:     "20",
+			VanityDomain:    &vanity,
 			NetworkSettings: newEnvironmentNetwork("default"),
 			Serving:         &client.EnvironmentServing{Mode: "process"},
 		},
@@ -275,6 +280,11 @@ func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, environmentDoc(env))
 }
 
+// fakeVanityZone is the zone vanity hostnames live in. An organization's zone
+// can be laravel-demo.cloud rather than laravel.cloud, so the provider must
+// not assume either.
+const fakeVanityZone = "laravel-demo.cloud"
+
 func (f *fakeCloud) setVanityDomain(w http.ResponseWriter, r *http.Request) {
 	var req client.UpdateVanityDomainRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -290,11 +300,13 @@ func (f *fakeCloud) setVanityDomain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("environment not found"))
 		return
 	}
-	if req.Name == "" {
-		writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("name is required"))
+	// The real API takes one DNS label and reports the full hostname.
+	if !regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`).MatchString(req.Name) || len(req.Name) < 3 {
+		writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("the domain must have 63 characters or fewer, contain only lowercase letters, numbers, and dashes"))
 		return
 	}
-	env.Attributes.VanityDomain = &req.Name
+	host := req.Name + "." + fakeVanityZone
+	env.Attributes.VanityDomain = &host
 	writeJSON(w, http.StatusOK, environmentDoc(env))
 }
 

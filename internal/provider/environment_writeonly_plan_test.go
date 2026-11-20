@@ -152,8 +152,9 @@ resource "laravel_cloud_environment" "minimal" {
 
 // TestEnvironmentVanityDomainPlan covers the vanity domain, which the API
 // exposes as its own PUT /environments/{id}/vanity-domain route rather than a
-// field on the environment update body. It was previously Computed-only, so
-// the hostname could not be set from Terraform at all.
+// field on the environment update body. The API takes a subdomain label and
+// reports the full hostname, so the label must plan empty after apply,
+// and a full hostname is rejected before it reaches the API.
 func TestEnvironmentVanityDomainPlan(t *testing.T) {
 	_, baseURL := newFakeCloud(t)
 	config := environmentVanityConfig(baseURL, "my-app-staging")
@@ -164,10 +165,16 @@ func TestEnvironmentVanityDomainPlan(t *testing.T) {
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
+				Config:      environmentVanityConfig(baseURL, "my-app.laravel.cloud"),
+				ExpectError: regexp.MustCompile(`single subdomain label`),
+			},
+			{
 				Config: config,
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(envAddr, tfjsonpath.New("vanity_domain"),
 						knownvalue.StringExact("my-app-staging")),
+					statecheck.ExpectKnownValue(envAddr, tfjsonpath.New("vanity_hostname"),
+						knownvalue.StringExact("my-app-staging."+fakeVanityZone)),
 				},
 			},
 			{
@@ -177,18 +184,30 @@ func TestEnvironmentVanityDomainPlan(t *testing.T) {
 				},
 			},
 			// Renaming it must go through the dedicated endpoint in place,
-			// not force a replacement.
+			// not force a replacement, and the hostname follows.
 			{
 				Config: environmentVanityConfig(baseURL, "my-app-prod"),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						plancheck.ExpectResourceAction(envAddr, plancheck.ResourceActionUpdate),
+						plancheck.ExpectUnknownValue(envAddr, tfjsonpath.New("vanity_hostname")),
 					},
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(envAddr, tfjsonpath.New("vanity_domain"),
 						knownvalue.StringExact("my-app-prod")),
+					statecheck.ExpectKnownValue(envAddr, tfjsonpath.New("vanity_hostname"),
+						knownvalue.StringExact("my-app-prod."+fakeVanityZone)),
 				},
+			},
+			// An import reads the label back from the hostname.
+			{
+				ResourceName:      envAddr,
+				ImportState:       true,
+				ImportStateVerify: true,
+				// php_version is not configured; an import rebuilds it from
+				// the reported major version.
+				ImportStateVerifyIgnore: []string{"application_id", "branch", "php_version"},
 			},
 		},
 	})

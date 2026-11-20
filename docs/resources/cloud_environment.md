@@ -80,7 +80,7 @@ resource "laravel_cloud_environment" "example" {
 - `uses_purge_edge_cache_on_deploy` (Boolean) Whether a deploy purges the edge cache. Write-only: the API accepts this but never reports it back, so drift cannot be detected.
 - `uses_push_to_deploy` (Boolean)
 - `uses_vanity_domain` (Boolean)
-- `vanity_domain` (String) Vanity domain hostname for the environment (3-100 characters). Set through the API's dedicated vanity-domain endpoint rather than the environment update body. Leave unset to keep the assigned default.
+- `vanity_domain` (String) Subdomain label of the environment's vanity domain, such as "my-app" for my-app.laravel.cloud: 3 to 63 lowercase letters, numbers and dashes, not starting or ending with a dash. The full hostname is in vanity_hostname. Leave unset to keep the assigned default. The API allows one change every 30 minutes.
 - `websocket_application_id` (String) WebSocket application (laravel_cloud_websocket_application) to attach. Removing it detaches the application.
 
 ### Read-Only
@@ -90,6 +90,7 @@ resource "laravel_cloud_environment" "example" {
 - `php_major_version` (String) Major PHP version reported by the API (e.g. "8.4").
 - `serving_mode` (String) How the environment is served: "process" (an application server) or "static" (files served directly). Fixed when the environment is created. Null when the API does not report it.
 - `status` (String) Current environment status.
+- `vanity_hostname` (String) Full vanity domain hostname, such as "my-app.laravel.cloud".
 
 <a id="nestedatt--filesystem_keys"></a>
 ### Nested Schema for `filesystem_keys`

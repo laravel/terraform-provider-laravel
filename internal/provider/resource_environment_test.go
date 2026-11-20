@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -64,6 +65,56 @@ func TestAccEnvironmentResource_update(t *testing.T) {
 			},
 		},
 	})
+}
+
+// TestAccEnvironmentResource_vanityDomain sets a vanity domain on a real
+// environment. The API takes a single label and reports the full
+// hostname, so a configured label must still plan empty after apply. It sets
+// the domain only once: the API allows one change per environment every
+// 30 minutes.
+func TestAccEnvironmentResource_vanityDomain(t *testing.T) {
+	appName := testAccName()
+	vanity := testAccName()
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccEnvironmentVanityConfig(appName, vanity),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("laravel_cloud_environment.test", "vanity_domain", vanity),
+					resource.TestMatchResourceAttr("laravel_cloud_environment.test", "vanity_hostname",
+						regexp.MustCompile(`^`+regexp.QuoteMeta(vanity)+`\.[a-z0-9.-]+$`)),
+				),
+			},
+			{
+				ResourceName:      "laravel_cloud_environment.test",
+				ImportState:       true,
+				ImportStateVerify: true,
+				// php_version is not configured here; an import rebuilds it
+				// from the reported major version.
+				ImportStateVerifyIgnore: []string{"application_id", "branch", "php_version"},
+			},
+		},
+	})
+}
+
+func testAccEnvironmentVanityConfig(appName, vanity string) string {
+	return fmt.Sprintf(`
+resource "laravel_cloud_application" "test" {
+  name       = %[1]q
+  repository = %[2]q
+  region     = "us-east-2"
+}
+
+resource "laravel_cloud_environment" "test" {
+  application_id = laravel_cloud_application.test.id
+  name           = "production"
+  branch         = %[3]q
+  vanity_domain  = %[4]q
+}
+`, appName, testAccRepository(), testAccBranch(), vanity)
 }
 
 func testAccEnvironmentConfig(appName string) string {
