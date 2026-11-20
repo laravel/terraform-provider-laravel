@@ -32,9 +32,13 @@ resource "laravel_cloud_application" "example" {
 
 ### Optional
 
+- `build_command` (String) Build command of a static default environment (max 2000 chars). Leave unset to build nothing. Laravel Cloud uses it only with serving_mode = "static"; other applications get a build command for their framework. Used only when the application is created: change it afterwards with build_command on laravel_cloud_environment. Changing it here only records the new value. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
 - `cluster_id` (String) Dedicated cluster ID. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
+- `default_environment_id` (String) ID of the application's default (production) environment, which Laravel Cloud cannot delete. Leave unset to keep the one the application was created with. It must be an environment of this application that is not a preview. A laravel_cloud_environment of this application cannot be referenced here, because the environment depends on the application; use its ID instead.
 - `root_directory` (String) Subdirectory of the repository the application lives in, for a repository that holds more than one project (max 255 chars). Leave unset for the repository root. It cannot be changed after creation, so changing it forces a new application. Laravel Cloud clears it when repository changes to one without that directory; the apply then fails and asks for it to be removed from the configuration, rather than replacing the application.
-- `slack_channel` (String) Slack channel for application notifications.
+- `serving_mode` (String) How the default environment is served: "process" (an application server) or "static" (files served directly, for a static site). Leave unset to let Laravel Cloud detect it. It cannot be changed after creation, so changing it forces a new application. New environments of an application with a static environment are static too. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
+- `serving_root` (String) Directory a static default environment serves, relative to the repository ("." for the top level). Requires serving_mode = "static". Used only when the application is created: change it afterwards with serving_root on laravel_cloud_environment. Changing it here only records the new value. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
+- `slack_channel` (String) Slack channel for application notifications. The organization must have Slack connected. Removing it turns Slack notifications off.
 - `slug` (String) URL-friendly slug.
 - `source_control_provider_type` (String) Source control provider type (github, gitlab, gitlab_self_hosted, or bitbucket). Becomes required by the API on March 9, 2026. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
 - `starter_kit` (String) Create the repository from a starter kit instead of using an existing one: laravel, laravel-react, laravel-vue, laravel-livewire, laravel-svelte, nextjs, nuxt, express, go, django, fastapi, rails or astro. repository then names a new GitHub repository (owner/name) to create, which must not exist yet, and source_control_provider_type must be github. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
@@ -43,7 +47,11 @@ resource "laravel_cloud_application" "example" {
 
 - `avatar_url` (String) Application avatar URL.
 - `created_at` (String) Creation timestamp.
+- `framework` (String) Framework of the default environment, as Laravel Cloud detected it (e.g. laravel, nextjs).
 - `id` (String) Application ID.
+- `language` (String) Language of the default environment (e.g. php, javascript).
+- `notes` (String) Notes on the application, set in the dashboard. Null when there are none or the API token cannot view them.
+- `repository_default_branch` (String) Default branch of the repository.
 
 ## Import
 

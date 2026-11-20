@@ -45,7 +45,7 @@ resource "laravel_cloud_environment" "example" {
 
 > **NOTE**: [Write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) are supported in Terraform 1.11 and later.
 
-- `build_command` (String) Custom build command (max 2000 chars).
+- `build_command` (String) Custom build command (max 2000 chars). Leave unset to keep the framework's default, or for a static site to build nothing.
 - `cache_id` (String) Cache to attach. Removing it detaches the cache. A detach or another cache attached outside Terraform shows in the next plan; left unset, the attachment is not managed.
 - `cache_strategy` (String) Cache strategy (default, bypass).
 - `cluster_id` (String) Dedicated cluster ID. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
@@ -63,6 +63,7 @@ resource "laravel_cloud_environment" "example" {
 - `nightwatch_token_wo_version` (Number) Version of nightwatch_token_wo. Changing it sends the current nightwatch_token_wo.
 - `node_version` (String) Node.js version.
 - `php_version` (String) PHP version to run, in the API's "major:minor" form (e.g. "8.4:1"). The API reports only the major version (see php_major_version), so an import derives this from it. A version changed outside Terraform is not detected.
+- `post_deploy_command` (String) Commands that run after a deployment goes live, one per line, such as "php artisan queue:restart" (max 2000 chars). A failure does not roll the deployment back. Only organizations with post-deploy commands enabled can set it, and not on preview or static environments; where Laravel Cloud does not offer it, the plan warns and the apply fails. Null when not reported.
 - `response_headers_content_type` (String) X-Content-Type-Options response header: nosniff or none.
 - `response_headers_frame` (String) X-Frame-Options response header: deny, sameorigin or all.
 - `response_headers_hsts_include_subdomains` (Boolean) Whether HSTS also covers subdomains.
@@ -70,6 +71,7 @@ resource "laravel_cloud_environment" "example" {
 - `response_headers_hsts_preload` (Boolean) Whether the HSTS header asks for preloading. Needs include_subdomains and a max_age of at least 31536000.
 - `response_headers_robots_tag` (String) X-Robots-Tag response header: "index, follow" or "noindex, nofollow".
 - `running` (Boolean) Whether the environment is running. Set false to stop it, which cancels a deployment in progress, and true to start it again, which deploys the latest commit; Terraform waits for that deployment to succeed. Only an environment that has been deployed can be stopped. Leave unset to leave it as it is.
+- `serving_mode` (String) How the environment is served: "process" (an application server) or "static" (files served directly, for a static site). Leave unset to let Laravel Cloud decide: a new environment of an application that already has a static environment is static too. It cannot be changed after creation, so changing it forces a new environment. Null when the API does not report it.
 - `serving_root` (String) Directory a static environment serves, relative to the repository ("." for the top level). Only static environments accept it.
 - `shutdown_timeout` (Number) Seconds to wait before stopping the previous deployment's instances, so they can finish their requests and jobs (1-600). Applies on the next deployment. Leave unset to keep the platform default.
 - `sleep_timeout` (Number) Minutes without requests before the environment hibernates (1-60). Only instance sizes that can hibernate (Flex) take it: on a Pro size Laravel Cloud turns hibernation off instead, and the apply fails. The API reports whether hibernation is on but not this value, so hibernation turned off outside Terraform shows in the next plan, and a changed value does not. It is the same setting as the app instance's hibernation_timeout (laravel_cloud_instance), so set it in only one place. The API cannot turn hibernation off through the environment; use the instance for that.
@@ -87,11 +89,16 @@ resource "laravel_cloud_environment" "example" {
 ### Read-Only
 
 - `created_at` (String)
+- `created_from_automation` (Boolean) Whether the environment is a preview environment created for a pull request.
 - `deploy_hook_url` (String, Sensitive) URL that deploys the environment when it receives a POST request, such as from CI. Null while uses_deploy_hook is false, or when the API token lacks permission to edit deploy hooks. Anyone with the URL can deploy.
+- `display_name` (String) Name shown in the dashboard: the name, or a preview environment's pull request title.
+- `framework` (String) Framework Laravel Cloud detected in the branch (e.g. laravel, nextjs).
 - `id` (String) The ID of this resource.
+- `language` (String) Language of the environment (e.g. php, javascript).
 - `php_major_version` (String) Major PHP version reported by the API (e.g. "8.4").
-- `serving_mode` (String) How the environment is served: "process" (an application server) or "static" (files served directly). Fixed when the environment is created. Null when the API does not report it.
+- `pull_request` (Attributes) The pull request a preview environment deploys. Null for other environments. (see [below for nested schema](#nestedatt--pull_request))
 - `status` (String) Current environment status.
+- `uses_hibernation` (Boolean) Whether the environment hibernates when idle. Set it with sleep_timeout here, or hibernation_timeout on the app instance (laravel_cloud_instance), which also turns it off.
 - `vanity_hostname` (String) Full vanity domain hostname, such as "my-app.laravel.cloud".
 
 <a id="nestedatt--filesystem_keys"></a>
@@ -105,6 +112,20 @@ Required:
 Optional:
 
 - `is_default_disk` (Boolean) Whether this is the default disk. At most one attachment can be. Defaults to false.
+
+
+<a id="nestedatt--pull_request"></a>
+### Nested Schema for `pull_request`
+
+Read-Only:
+
+- `draft` (Boolean) Whether the pull request is a draft.
+- `number` (Number) Pull request number.
+- `source_branch` (String) Branch the pull request merges from.
+- `status` (String) open, closed or merged.
+- `target_branch` (String) Branch the pull request merges into.
+- `title` (String) Pull request title.
+- `url` (String) Pull request URL.
 
 ## Import
 
