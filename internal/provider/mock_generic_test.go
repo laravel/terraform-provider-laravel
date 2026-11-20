@@ -72,6 +72,10 @@ type crudSpec struct {
 	// auto-creating a database inside itself.
 	afterCreate func(f *fakeCloud, id string)
 
+	// validateCreate, if set, can refuse a POST by returning the message the
+	// API answers with a 422.
+	validateCreate func(body map[string]any) string
+
 	// beforeDelete, if set, can refuse a DELETE by returning the message the
 	// API answers with a 422 -- a bucket that still has keys, for example.
 	beforeDelete func(f *fakeCloud, id string) string
@@ -119,6 +123,12 @@ func (f *fakeCloud) registerCRUD(mux *http.ServeMux, s crudSpec) {
 func (f *fakeCloud) genCreate(s crudSpec) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body := decodeBody(r)
+		if s.validateCreate != nil {
+			if msg := s.validateCreate(body); msg != "" {
+				writeError(w, http.StatusUnprocessableEntity, errors.New(msg))
+				return
+			}
+		}
 
 		f.mu.Lock()
 		defer f.mu.Unlock()

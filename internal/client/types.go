@@ -377,8 +377,13 @@ type CreateInstanceRequest struct {
 	SleepWithApp                     *bool `json:"sleep_with_app,omitempty"`
 	VisibilityTimeout                *int  `json:"visibility_timeout,omitempty"`
 	ShutdownTimeout                  *int  `json:"shutdown_timeout,omitempty"`
-	// polling_interval is deliberately absent: it appears in neither the
-	// create nor the update request schema. It is read-only.
+	// PollingInterval is required for previous-generation managed queues and
+	// ignored for current-generation (mq.*) ones. The OpenAPI spec omits it.
+	PollingInterval *int `json:"polling_interval,omitempty"`
+	// BackgroundProcesses must hold exactly one worker for a managed queue,
+	// although the OpenAPI spec does not say so. Left out, the API fills in an
+	// entry with no type or process count and then rejects it.
+	BackgroundProcesses []CreateBackgroundProcessRequest `json:"background_processes,omitempty"`
 }
 
 type UpdateInstanceRequest struct {
@@ -396,7 +401,9 @@ type UpdateInstanceRequest struct {
 	HibernationTimeout               *int    `json:"hibernation_timeout,omitempty"`
 	VisibilityTimeout                *int    `json:"visibility_timeout,omitempty"`
 	ShutdownTimeout                  *int    `json:"shutdown_timeout,omitempty"`
-	// polling_interval is read-only; see CreateInstanceRequest.
+	// PollingInterval applies to previous-generation managed queues only; see
+	// CreateInstanceRequest.
+	PollingInterval *int `json:"polling_interval,omitempty"`
 
 	// Probes replaces every health check at once: a check or field left out
 	// returns to the platform default, and an empty object clears them all.

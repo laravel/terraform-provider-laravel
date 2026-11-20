@@ -160,13 +160,22 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			collectionPattern: "/environments/{eid}/instances", itemPattern: "/instances/{id}",
 			patch: true, del: true,
 			relationshipName: "environment", relationshipType: "environments",
+			validateCreate: validateManagedQueueCreate,
 			seed: func(body map[string]any, _ string) map[string]any {
 				// Echo the body; managed-queue / status pointer fields are left
 				// absent so they decode to null (not zero values) -- except
 				// is_default, which a new managed queue reports as false.
 				a := cloneMap(body)
+				// The worker is a background process of its own, not an
+				// attribute of the instance.
+				delete(a, "background_processes")
 				if a["type"] == "managed_queue" {
 					a["is_default"] = false
+					// Current-generation queues have no polling interval; the
+					// API ignores one and reports null.
+					if size, _ := a["size"].(string); strings.HasPrefix(size, "mq.") {
+						delete(a, "polling_interval")
+					}
 				}
 				return a
 			},
@@ -543,4 +552,34 @@ func baseDatabaseType(t string) string {
 		}
 	}
 	return t
+}
+
+// validateManagedQueueCreate applies the API's managed-queue create rules. A
+// managed queue needs exactly one worker with one process on the cloud
+// connection; when background_processes is left out the API fills in an entry
+// with only the connection and queue, and rejects it with the error below.
+// Previous-generation ("mq-") sizes require polling_interval and reject
+// min_replicas.
+func validateManagedQueueCreate(body map[string]any) string {
+	if body["type"] != "managed_queue" {
+		return ""
+	}
+	procs, _ := body["background_processes"].([]any)
+	if len(procs) != 1 {
+		return "The type value is invalid. (and 1 more error)"
+	}
+	p, _ := procs[0].(map[string]any)
+	cfg, _ := p["config"].(map[string]any)
+	if p["type"] != "worker" || p["processes"] != float64(1) || cfg["connection"] != "cloud" {
+		return "Managed queue background processes must be workers with exactly one process on the cloud connection."
+	}
+	if size, _ := body["size"].(string); strings.HasPrefix(size, "mq-") {
+		if _, ok := body["polling_interval"]; !ok {
+			return "The queue polling interval must be an integer between 1 and 60 seconds."
+		}
+		if _, ok := body["min_replicas"]; ok {
+			return "The min_replicas field cannot be set for previous-generation managed queues, which always scale to zero when idle."
+		}
+	}
+	return ""
 }

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -105,8 +106,10 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Optional: true,
 				Computed: true,
 				Description: "Minimum number of replicas. Only applicable to the \"custom\" " +
-					"scaling type; the API rejects it for \"auto\", and it does not apply to " +
-					"managed queues, which always scale to zero when idle.",
+					"scaling type; the API rejects it for \"auto\". Required for custom scaling " +
+					"except on managed queues, where it is the minimum number of workers: optional " +
+					"on current-generation (mq.*) sizes, where 0 lets the queue scale to zero when " +
+					"idle, and rejected on previous-generation sizes, which always scale to zero.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -150,10 +153,11 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"polling_interval": schema.Int64Attribute{
+				Optional: true,
 				Computed: true,
-				Description: "Queue polling interval in seconds (managed_queue). Read-only: " +
-					"the API reports this value but accepts it in neither the create nor the " +
-					"update request, so it is managed by the platform.",
+				Description: "Queue polling interval in seconds (1-60). Only for previous-generation " +
+					"managed queues (sizes such as mq-pro-256mb), which require it; current-generation " +
+					"(mq.*) sizes have no polling interval.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -265,6 +269,19 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 	if !plan.ShutdownTimeout.IsNull() && !plan.ShutdownTimeout.IsUnknown() {
 		v := int(plan.ShutdownTimeout.ValueInt64())
 		createReq.ShutdownTimeout = &v
+	}
+	if !plan.PollingInterval.IsNull() && !plan.PollingInterval.IsUnknown() {
+		v := int(plan.PollingInterval.ValueInt64())
+		createReq.PollingInterval = &v
+	}
+	// A managed queue runs exactly one worker with one process on the cloud
+	// connection, as the CLI creates it. Without it the API answers 422.
+	if plan.Type.ValueString() == "managed_queue" {
+		createReq.BackgroundProcesses = []client.CreateBackgroundProcessRequest{{
+			Type:      "worker",
+			Processes: 1,
+			Config:    map[string]any{"connection": "cloud", "queue": plan.Name.ValueString()},
+		}}
 	}
 
 	inst, err := r.client.CreateInstance(ctx, plan.EnvironmentID.ValueString(), createReq)
@@ -422,6 +439,10 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 	if !plan.ShutdownTimeout.IsUnknown() && !plan.ShutdownTimeout.Equal(state.ShutdownTimeout) {
 		v := int(plan.ShutdownTimeout.ValueInt64())
 		updateReq.ShutdownTimeout = &v
+	}
+	if !plan.PollingInterval.IsUnknown() && !plan.PollingInterval.IsNull() && !plan.PollingInterval.Equal(state.PollingInterval) {
+		v := int(plan.PollingInterval.ValueInt64())
+		updateReq.PollingInterval = &v
 	}
 	// Update-only behavioral fields: not returned by the API, so send them
 	// whenever they are set in the plan.
@@ -586,6 +607,7 @@ func (r *InstanceResource) ValidateConfig(ctx context.Context, req resource.Vali
 			fmt.Sprintf("Only a managed_queue instance can be the default queue; this one is %q.", config.Type.ValueString()))
 	}
 	validateProbesConfig(config, &resp.Diagnostics)
+	validateManagedQueueConfig(config, &resp.Diagnostics)
 
 	if got, ok := validateHibernationTimeout(config.HibernationTimeout); !ok {
 		resp.Diagnostics.AddAttributeError(
@@ -616,8 +638,10 @@ func (r *InstanceResource) ValidateConfig(ctx context.Context, req resource.Vali
 		return
 	}
 
-	// Outside "auto", min_replicas is a required field of the create request.
-	if config.ScalingType.ValueString() == "custom" && !isSet(config.MinReplicas) {
+	// Outside "auto", min_replicas is a required field of the create request,
+	// except for managed queues, where it is optional or prohibited by size.
+	isQueue := config.Type.ValueString() == "managed_queue"
+	if config.ScalingType.ValueString() == "custom" && !isSet(config.MinReplicas) && !isQueue && !config.Type.IsUnknown() {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("min_replicas"),
 			"min_replicas is required for custom scaling",
@@ -682,6 +706,26 @@ func (r *InstanceResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 	}
 	if changed {
 		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+	}
+}
+
+// validateManagedQueueConfig catches what the API would reject or ignore by
+// queue generation, which the size names: current-generation sizes start with
+// "mq.", previous-generation ones with "mq-", such as "mq-pro-256mb".
+func validateManagedQueueConfig(config InstanceResourceModel, diags *diag.Diagnostics) {
+	if config.Type.IsUnknown() || config.Size.IsUnknown() {
+		return
+	}
+	legacyQueue := config.Type.ValueString() == "managed_queue" && strings.HasPrefix(config.Size.ValueString(), "mq-")
+	if isSet(config.PollingInterval) && !legacyQueue {
+		diags.AddAttributeError(path.Root("polling_interval"), "polling_interval does not apply",
+			fmt.Sprintf("Only previous-generation managed queues have a polling interval; the API ignores it for this "+
+				"instance (type %q, size %q). Remove polling_interval.", config.Type.ValueString(), config.Size.ValueString()))
+	}
+	if legacyQueue && isSet(config.MinReplicas) {
+		diags.AddAttributeError(path.Root("min_replicas"), "min_replicas does not apply to this queue",
+			fmt.Sprintf("Previous-generation managed queues such as size %q always scale to zero when idle, and the API "+
+				"rejects min_replicas for them. Remove min_replicas.", config.Size.ValueString()))
 	}
 }
 

@@ -56,7 +56,8 @@ resource "laravel_cloud_instance" "example" {
 - `hibernation_timeout` (Number) Hibernation timeout in seconds (1-60). The create route ignores it, so on create the provider applies it with a follow-up update.
 - `is_default` (Boolean) Whether this managed queue is the environment's default, the one a job goes to when it names no queue. Set true to make it the default; only managed_queue instances can be. It cannot be set false: the default moves when another queue is made the default.
 - `max_replicas` (Number) Maximum number of replicas. Only applicable to the "custom" scaling type; the API rejects it for "auto".
-- `min_replicas` (Number) Minimum number of replicas. Only applicable to the "custom" scaling type; the API rejects it for "auto", and it does not apply to managed queues, which always scale to zero when idle.
+- `min_replicas` (Number) Minimum number of replicas. Only applicable to the "custom" scaling type; the API rejects it for "auto". Required for custom scaling except on managed queues, where it is the minimum number of workers: optional on current-generation (mq.*) sizes, where 0 lets the queue scale to zero when idle, and rejected on previous-generation sizes, which always scale to zero.
+- `polling_interval` (Number) Queue polling interval in seconds (1-60). Only for previous-generation managed queues (sizes such as mq-pro-256mb), which require it; current-generation (mq.*) sizes have no polling interval.
 - `probes` (Attributes) Custom health checks for an app instance's web process. Only app instances accept them, and only on plans with health checks; manage one by importing the environment's app instance. The checks configured here replace all existing ones, and a check left out uses the platform default. When unset, Terraform leaves the instance's health checks alone, including any the platform set up itself; removing the attribute once set resets every check to the platform default. (see [below for nested schema](#nestedatt--probes))
 - `scaling_cpu_threshold_percentage` (Number) CPU scaling threshold (50-95).
 - `scaling_memory_threshold_percentage` (Number) Memory scaling threshold (50-95).
@@ -73,7 +74,6 @@ resource "laravel_cloud_instance" "example" {
 - `created_at` (String)
 - `id` (String) The ID of this resource.
 - `paused` (Boolean) Whether the instance is paused.
-- `polling_interval` (Number) Queue polling interval in seconds (managed_queue). Read-only: the API reports this value but accepts it in neither the create nor the update request, so it is managed by the platform.
 - `queue_status` (String) Raw queue status JSON (managed_queue).
 
 <a id="nestedatt--probes"></a>
