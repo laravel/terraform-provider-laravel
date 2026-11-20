@@ -83,6 +83,7 @@ token explicitly rather than guess which organization to manage.
 | `laravel_cloud_background_process` | Background worker process |
 | `laravel_cloud_scheduled_command` | Command run on a cron schedule on an instance |
 | `laravel_cloud_environment_variables` | Environment variables for an environment |
+| `laravel_cloud_environment_internal_networking` | Internal networking for an environment on a dedicated cluster |
 | `laravel_cloud_secret` | Organization secret, encrypted before it is sent |
 | `laravel_cloud_environment_secret` | Attach a secret to an environment |
 | `laravel_cloud_environment_resend` | Resend email sending for an environment |

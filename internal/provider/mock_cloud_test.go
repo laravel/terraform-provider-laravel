@@ -102,6 +102,9 @@ type fakeCloud struct {
 	// edgeRules models the rulesets of the dedicated edge network; see
 	// mock_edge_network_rules_test.go.
 	edgeRules *fakeEdgeRules
+	// internalNetworkingWrites counts the internal networking writes by
+	// method.
+	internalNetworkingWrites map[string]int
 }
 
 // throttle wraps the fake's routes with Laravel Cloud's rate-limit responses
@@ -206,6 +209,7 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	f.registerDatabaseUserRoutes(mux)
 	f.registerEnvironmentExtraRoutes(mux)
 	f.registerEdgeNetworkRuleRoutes(mux)
+	f.registerInternalNetworkingRoutes(mux)
 
 	// Pacing would only slow the fake down; TestRateLimitedReadsPlan covers
 	// what the provider does when Laravel Cloud's limits are reached.
