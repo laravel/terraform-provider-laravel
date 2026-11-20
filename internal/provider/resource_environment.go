@@ -624,7 +624,7 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		}
 		createReq.EdgeNetworkID = plan.EdgeNetworkID.ValueStringPointer()
 
-		created, err := r.client.CreateEnvironment(ctx, appID, createReq)
+		created, err := createEnvironment(ctx, r.client, appID, createReq)
 		if err != nil {
 			resp.Diagnostics.AddError("Error creating environment", err.Error())
 			return

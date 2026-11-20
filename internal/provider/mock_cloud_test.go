@@ -105,6 +105,16 @@ type fakeCloud struct {
 	// internalNetworkingWrites counts the internal networking writes by
 	// method.
 	internalNetworkingWrites map[string]int
+
+	// loseRepositories is how many of the next created applications Laravel
+	// Cloud leaves with no repository, as it does when another application on
+	// the same repository is deleted while they are created. The
+	// create response still reports the repository; later reads do not.
+	loseRepositories int
+	// unsyncedBranches is how many of the next environment creates are
+	// refused with the same 422 for an application that still has its
+	// repository, as before Laravel Cloud's queued branch sync has run.
+	unsyncedBranches int
 }
 
 // throttle wraps the fake's routes with Laravel Cloud's rate-limit responses
@@ -179,6 +189,9 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	queueInterval := queueAvailableInterval
 	queueAvailableInterval = time.Millisecond
 	t.Cleanup(func() { queueAvailableInterval = queueInterval })
+	branchInterval := branchUnavailableInterval
+	branchUnavailableInterval = time.Millisecond
+	t.Cleanup(func() { branchUnavailableInterval = branchInterval })
 	cacheInterval := cacheBusyInterval
 	cacheBusyInterval = time.Millisecond
 	t.Cleanup(func() { cacheBusyInterval = cacheInterval })
@@ -258,7 +271,12 @@ func (f *fakeCloud) createApplication(w http.ResponseWriter, r *http.Request) {
 	app.Relationships.DefaultEnvironment = client.Relationship{
 		Data: &client.ResourceIdentifier{Type: "environments", ID: env.ID},
 	}
-	writeJSON(w, http.StatusCreated, client.Document[client.ApplicationData]{Data: f.applicationView(r, app)})
+	view := f.applicationView(r, app)
+	if f.loseRepositories > 0 {
+		f.loseRepositories--
+		app.Attributes.Repository = nil
+	}
+	writeJSON(w, http.StatusCreated, client.Document[client.ApplicationData]{Data: view})
 }
 
 // fakeDefaultBranch is the default branch of a repository. laravel/laravel's
@@ -405,6 +423,20 @@ func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	// Laravel Cloud checks the branch against its record of the application's
+	// repository, so an application without one refuses every branch, and so
+	// does one whose branches are not synced yet.
+	app, ok := f.apps[r.PathValue("id")]
+	if ok && (app.Attributes.Repository == nil || f.unsyncedBranches > 0) {
+		if app.Attributes.Repository != nil {
+			f.unsyncedBranches--
+		}
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"message": "The selected branch is no longer available.",
+			"errors":  map[string][]string{"branch": {"The selected branch is no longer available."}},
+		})
+		return
+	}
 	env := f.newEnvironment(r.PathValue("id"), req.Name, req.Branch)
 	writeJSON(w, http.StatusCreated, environmentDoc(env))
 }
