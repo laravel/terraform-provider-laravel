@@ -74,7 +74,7 @@ resource "laravel_cloud_environment" "example" {
 - `serving_mode` (String) How the environment is served: "process" (an application server) or "static" (files served directly, for a static site). Leave unset to let Laravel Cloud decide: a new environment of an application that already has a static environment is static too. It cannot be changed after creation, so changing it forces a new environment. Null when the API does not report it.
 - `serving_root` (String) Directory a static environment serves, relative to the repository ("." for the top level). Only static environments accept it.
 - `shutdown_timeout` (Number) Seconds to wait before stopping the previous deployment's instances, so they can finish their requests and jobs (1-600). Applies on the next deployment. Leave unset to keep the platform default.
-- `sleep_timeout` (Number) Minutes without requests before the environment hibernates (1-60). Only instance sizes that can hibernate (Flex) take it: on a Pro size Laravel Cloud turns hibernation off instead, and the apply fails. The API reports whether hibernation is on but not this value, so hibernation turned off outside Terraform shows in the next plan, and a changed value does not. It is the same setting as the app instance's hibernation_timeout (laravel_cloud_instance), so set it in only one place. The API cannot turn hibernation off through the environment; use the instance for that.
+- `sleep_timeout` (Number, Deprecated) Minutes without requests before the environment hibernates (1-60). Only instance sizes that can hibernate (Flex) take it: on a Pro size Laravel Cloud turns hibernation off instead, and the apply fails. The API reports whether hibernation is on but not this value, so hibernation turned off outside Terraform shows in the next plan, and a changed value does not. It is the same setting as the app instance's hibernation_timeout (laravel_cloud_instance), so set it in only one place. The API cannot turn hibernation off through the environment; use the instance for that. Deprecated: use hibernation_timeout on a laravel_cloud_instance with type = "app".
 - `slug` (String)
 - `start_command` (String) Command that starts a dynamic application that is not PHP, e.g. "gunicorn myproject.wsgi" (max 255 chars). Required by the API for dynamic JavaScript, Python, Ruby, Go, Rust and Java applications, and rejected for PHP and static ones.
 - `timeout` (Number) Seconds the environment waits for the application to respond before timing out (5-60). Applies on the next deployment. Leave unset to keep the platform default.
@@ -98,7 +98,7 @@ resource "laravel_cloud_environment" "example" {
 - `php_major_version` (String) Major PHP version reported by the API (e.g. "8.4").
 - `pull_request` (Attributes) The pull request a preview environment deploys. Null for other environments. (see [below for nested schema](#nestedatt--pull_request))
 - `status` (String) Current environment status.
-- `uses_hibernation` (Boolean) Whether the environment hibernates when idle. Set it with sleep_timeout here, or hibernation_timeout on the app instance (laravel_cloud_instance), which also turns it off.
+- `uses_hibernation` (Boolean) Whether the environment hibernates when idle. Set it with hibernation_timeout on the app instance (laravel_cloud_instance with type = "app"), which also turns it off, or the deprecated sleep_timeout here.
 - `vanity_hostname` (String) Full vanity domain hostname, such as "my-app.laravel.cloud".
 
 <a id="nestedatt--filesystem_keys"></a>
