@@ -3,6 +3,7 @@ package provider
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -48,6 +49,69 @@ func TestInstanceManagedQueuePlan(t *testing.T) {
 	})
 }
 
+// TestInstanceFifoQueuePlan: a FIFO queue's name comes back
+// with the ".fifo" suffix the API adds, which must not show as a diff, and
+// fifo must survive an import, where only queue_type tells it apart.
+func TestInstanceFifoQueuePlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	const fifo, standard = "laravel_cloud_instance.fifo", "laravel_cloud_instance.standard"
+	config := func(isFifo bool) string {
+		return providerCfg(baseURL) + appEnvStack + fmt.Sprintf(`
+resource "laravel_cloud_instance" "fifo" {
+  environment_id = laravel_cloud_environment.env.id
+  name           = "orders"
+  type           = "managed_queue"
+  size           = "mq.flex.256mb"
+  scaling_type   = "custom"
+  max_replicas   = 2
+  fifo           = %t
+}
+
+resource "laravel_cloud_instance" "standard" {
+  environment_id = laravel_cloud_environment.env.id
+  name           = "jobs"
+  type           = "managed_queue"
+  size           = "mq.flex.256mb"
+  scaling_type   = "custom"
+  max_replicas   = 2
+}
+`, isFifo)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config(true),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(fifo, tfjsonpath.New("name"), knownvalue.StringExact("orders")),
+					statecheck.ExpectKnownValue(fifo, tfjsonpath.New("fifo"), knownvalue.Bool(true)),
+					statecheck.ExpectKnownValue(fifo, tfjsonpath.New("queue_type"), knownvalue.StringExact("fifo")),
+					statecheck.ExpectKnownValue(standard, tfjsonpath.New("fifo"), knownvalue.Bool(false)),
+					statecheck.ExpectKnownValue(standard, tfjsonpath.New("queue_type"), knownvalue.StringExact("standard")),
+					statecheck.ExpectKnownValue(standard, tfjsonpath.New("retired_at"), knownvalue.Null()),
+				},
+			},
+			{
+				Config:           config(true),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+			{ResourceName: fifo, ImportState: true, ImportStateVerify: true},
+			{
+				// The API cannot change a queue's type in place.
+				Config: config(false),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(fifo, plancheck.ResourceActionReplace),
+					plancheck.ExpectResourceAction(standard, plancheck.ResourceActionNoop),
+				}},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(fifo, tfjsonpath.New("queue_type"), knownvalue.StringExact("standard")),
+				},
+			},
+		},
+	})
+}
+
 // TestInstanceManagedQueueValidationPlan rejects settings the API ignores or
 // refuses for a queue's generation.
 func TestInstanceManagedQueueValidationPlan(t *testing.T) {
@@ -70,6 +134,8 @@ resource "laravel_cloud_instance" "q" {
 		Steps: []resource.TestStep{
 			{Config: queue("mq.flex.256mb", "polling_interval = 5"), ExpectError: regexp.MustCompile(`polling_interval does not apply`)},
 			{Config: queue("mq-pro-256mb", "polling_interval = 5\n  min_replicas = 0"), ExpectError: regexp.MustCompile(`min_replicas does not apply to this queue`)},
+			{Config: strings.Replace(queue("mq.flex.256mb", "fifo = true"), `"jobs"`, `"`+strings.Repeat("j", 35)+`"`, 1), ExpectError: regexp.MustCompile(`name is too long for a FIFO queue`)},
+			{Config: strings.Replace(queue("flex-512mb", "fifo = true"), `"managed_queue"`, `"service"`, 1), ExpectError: regexp.MustCompile(`fifo is only for managed queues`)},
 		},
 	})
 }

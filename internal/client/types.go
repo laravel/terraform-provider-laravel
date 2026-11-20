@@ -359,7 +359,13 @@ type InstanceAttributes struct {
 	// QueueStatusValue rather than a plain *string so that a non-string
 	// payload degrades to raw JSON instead of failing the whole decode.
 	QueueStatus QueueStatusValue `json:"queue_status"`
-	CreatedAt   *string          `json:"created_at"`
+	// QueueType is "standard" or "fifo", and null for non-queue instances.
+	QueueType *string `json:"queue_type"`
+	// RetireAt is when the instance's size is scheduled to be retired, and
+	// RetiredAt when it was: a retired queue stops processing jobs.
+	RetireAt  *string `json:"retire_at"`
+	RetiredAt *string `json:"retired_at"`
+	CreatedAt *string `json:"created_at"`
 	// Probes holds the health checks configured on an app instance. Only the
 	// checks and fields that were set are reported; null when none are.
 	Probes *InstanceProbes `json:"probes"`
@@ -402,6 +408,9 @@ type CreateInstanceRequest struct {
 	// PollingInterval is required for previous-generation managed queues and
 	// ignored for current-generation (mq.*) ones. The OpenAPI spec omits it.
 	PollingInterval *int `json:"polling_interval,omitempty"`
+	// Fifo creates a FIFO managed queue. The API appends ".fifo" to the name,
+	// and declines it for any other instance type.
+	Fifo *bool `json:"fifo,omitempty"`
 	// BackgroundProcesses must hold exactly one worker for a managed queue,
 	// although the OpenAPI spec does not say so. Left out, the API fills in an
 	// entry with no type or process count and then rejects it.

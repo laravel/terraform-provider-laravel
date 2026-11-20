@@ -34,7 +34,7 @@ func TestAccInstance_managedQueue(t *testing.T) {
 		},
 		Steps: []resource.TestStep{
 			{
-				Config: testAccManagedQueueConfig(name, 2),
+				Config: testAccManagedQueueConfig(name, 2, ""),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr(addr, "type", "managed_queue"),
 					resource.TestCheckResourceAttr(addr, "name", name),
@@ -47,7 +47,7 @@ func TestAccInstance_managedQueue(t *testing.T) {
 				),
 			},
 			{
-				Config: testAccManagedQueueConfig(name, 3),
+				Config: testAccManagedQueueConfig(name, 3, ""),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
@@ -59,7 +59,7 @@ func TestAccInstance_managedQueue(t *testing.T) {
 	})
 }
 
-func testAccManagedQueueConfig(name string, maxReplicas int) string {
+func testAccManagedQueueConfig(name string, maxReplicas int, extra string) string {
 	return fmt.Sprintf(`
 resource "laravel_cloud_application" "test" {
   name       = %[1]q
@@ -83,8 +83,50 @@ resource "laravel_cloud_instance" "queue" {
   scaling_type   = "custom"
   min_replicas   = 0
   max_replicas   = %[4]d
+  %[5]s
 }
-`, name, testAccRepository(), testAccBranch(), maxReplicas)
+`, name, testAccRepository(), testAccBranch(), maxReplicas, extra)
+}
+
+// A FIFO managed queue must be creatable. The API appends ".fifo" to
+// the queue's name, which must read back without it, so the queue converges,
+// and fifo must come back on import from queue_type.
+func TestAccInstance_fifoQueue(t *testing.T) {
+	name := testAccName()
+	const addr = "laravel_cloud_instance.queue"
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccManagedQueueConfig(name, 2, "fifo = true"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(addr, "name", name),
+					resource.TestCheckResourceAttr(addr, "fifo", "true"),
+					resource.TestCheckResourceAttr(addr, "queue_type", "fifo"),
+					resource.TestCheckNoResourceAttr(addr, "retired_at"),
+					func(s *terraform.State) error {
+						id := s.RootModule().Resources[addr].Primary.ID
+						inst, err := testAccClient().GetInstance(context.Background(), id)
+						if err != nil {
+							return err
+						}
+						if want := name + ".fifo"; inst.Attributes.Name != want {
+							return fmt.Errorf("API name = %q, want %q", inst.Attributes.Name, want)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config:           testAccManagedQueueConfig(name, 2, "fifo = true"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+			// queue_status can move on between the apply and the import.
+			{ResourceName: addr, ImportState: true, ImportStateVerify: true, ImportStateVerifyIgnore: []string{"queue_status"}},
+		},
+	})
 }
 
 // An automatically scaled instance must apply and converge, and its

@@ -265,8 +265,16 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 				// The worker is a background process of its own, not an
 				// attribute of the instance.
 				delete(a, "background_processes")
+				// The API stores a FIFO queue's name with a ".fifo" suffix and
+				// reports the queue's type; fifo itself is not an attribute.
+				delete(a, "fifo")
 				if a["type"] == "managed_queue" {
 					a["is_default"] = false
+					a["queue_type"] = "standard"
+					if body["fifo"] == true {
+						a["name"] = fmt.Sprint(a["name"]) + ".fifo"
+						a["queue_type"] = "fifo"
+					}
 					// Current-generation queues have no polling interval; the
 					// API ignores one and reports null.
 					if size, _ := a["size"].(string); strings.HasPrefix(size, "mq.") {
@@ -840,7 +848,13 @@ func baseDatabaseType(t string) string {
 // min_replicas.
 func validateManagedQueueCreate(body map[string]any) string {
 	if body["type"] != "managed_queue" {
+		if body["fifo"] == true {
+			return "FIFO is only available for managed queues."
+		}
 		return ""
+	}
+	if name, _ := body["name"].(string); body["fifo"] == true && len(name) > 34 {
+		return "The queue name may have at most 34 characters and contain only alphanumeric characters, hyphens, and underscores."
 	}
 	procs, _ := body["background_processes"].([]any)
 	if len(procs) != 1 {

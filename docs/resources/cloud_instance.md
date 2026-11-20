@@ -53,6 +53,7 @@ resource "laravel_cloud_instance" "example" {
 
 ### Optional
 
+- `fifo` (Boolean) Whether the managed queue is a FIFO queue, which delivers jobs exactly once and in order. Only for managed queues, on organizations with current-generation queues. Laravel Cloud adds a ".fifo" suffix to the queue's name, which can then have at most 34 characters; name is set without it. Changing it replaces the queue.
 - `hibernation_timeout` (Number) Minutes of inactivity (1-60) before the app hibernates (scales to zero). Set 0 to turn hibernation off. Only for app instances, which Laravel Cloud creates with the environment, so manage one by importing it. The environment's sleep_timeout writes the same setting: set only one.
 - `is_default` (Boolean) Whether this managed queue is the environment's default, the one a job goes to when it names no queue. Set true to make it the default; only managed_queue instances can be. It cannot be set false: the default moves when another queue is made the default.
 - `max_replicas` (Number) Maximum number of replicas. Set it only for the "custom" scaling type: for "auto" the platform sets it to the plan's replica limit, and for "none" to 1.
@@ -75,6 +76,9 @@ resource "laravel_cloud_instance" "example" {
 - `id` (String) The ID of this resource.
 - `paused` (Boolean) Whether the instance is paused.
 - `queue_status` (String) Raw queue status JSON (managed_queue).
+- `queue_type` (String) The managed queue's type: standard or fifo. Null for other instance types.
+- `retire_at` (String) When the instance's size is scheduled to be retired because it is being discontinued.
+- `retired_at` (String) When the instance was retired because its size is no longer supported. A retired queue stops processing jobs until its size is upgraded.
 
 <a id="nestedatt--probes"></a>
 ### Nested Schema for `probes`

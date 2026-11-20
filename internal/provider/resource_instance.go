@@ -54,6 +54,10 @@ type InstanceResourceModel struct {
 	IsDefault                        types.Bool   `tfsdk:"is_default"`
 	Probes                           types.Object `tfsdk:"probes"`
 	QueueStatus                      types.String `tfsdk:"queue_status"`
+	Fifo                             types.Bool   `tfsdk:"fifo"`
+	QueueType                        types.String `tfsdk:"queue_type"`
+	RetireAt                         types.String `tfsdk:"retire_at"`
+	RetiredAt                        types.String `tfsdk:"retired_at"`
 	CreatedAt                        types.String `tfsdk:"created_at"`
 }
 
@@ -217,6 +221,34 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Computed:    true,
 				Description: "Raw queue status JSON (managed_queue).",
 			},
+			"fifo": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+				Description: "Whether the managed queue is a FIFO queue, which delivers jobs exactly once and in order. " +
+					"Only for managed queues, on organizations with current-generation queues. Laravel Cloud adds a \".fifo\" suffix to the " +
+					"queue's name, which can then have at most 34 characters; name is set without it. Changing it " +
+					"replaces the queue.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.RequiresReplace(),
+				},
+			},
+			"queue_type": schema.StringAttribute{
+				Computed:    true,
+				Description: "The managed queue's type: standard or fifo. Null for other instance types.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"retire_at": schema.StringAttribute{
+				Computed:    true,
+				Description: "When the instance's size is scheduled to be retired because it is being discontinued.",
+			},
+			"retired_at": schema.StringAttribute{
+				Computed: true,
+				Description: "When the instance was retired because its size is no longer supported. A retired queue " +
+					"stops processing jobs until its size is upgraded.",
+			},
 			"created_at": schema.StringAttribute{
 				Computed: true,
 			},
@@ -292,6 +324,11 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 	if !plan.PollingInterval.IsNull() && !plan.PollingInterval.IsUnknown() {
 		v := int(plan.PollingInterval.ValueInt64())
 		createReq.PollingInterval = &v
+	}
+	// fifo is declined for anything but a managed queue.
+	if plan.Type.ValueString() == "managed_queue" && plan.Fifo.ValueBool() {
+		v := true
+		createReq.Fifo = &v
 	}
 	// A managed queue runs exactly one worker with one process on the cloud
 	// connection, as the CLI creates it. Without it the API answers 422.
@@ -538,7 +575,17 @@ func mapInstanceToState(inst *client.InstanceData, state *InstanceResourceModel)
 		state.EnvironmentID = types.StringValue(envID)
 	}
 	state.ID = types.StringValue(inst.ID)
-	state.Name = types.StringValue(inst.Attributes.Name)
+	// The API stores a FIFO queue's name with the ".fifo" suffix it adds on
+	// create, which the configuration leaves out.
+	state.QueueType = types.StringPointerValue(inst.Attributes.QueueType)
+	state.Fifo = types.BoolValue(state.QueueType.ValueString() == "fifo")
+	name := inst.Attributes.Name
+	if state.Fifo.ValueBool() {
+		name = strings.TrimSuffix(name, fifoQueueSuffix)
+	}
+	state.Name = types.StringValue(name)
+	state.RetireAt = types.StringPointerValue(inst.Attributes.RetireAt)
+	state.RetiredAt = types.StringPointerValue(inst.Attributes.RetiredAt)
 	state.Type = types.StringValue(inst.Attributes.InstanceType)
 	state.Size = types.StringValue(inst.Attributes.Size)
 	state.ScalingType = types.StringValue(inst.Attributes.ScalingType)
@@ -775,6 +822,13 @@ func (r *InstanceResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
+// fifoQueueSuffix is what the API appends to a FIFO queue's name. A queue
+// name may have at most 39 characters including it.
+const (
+	fifoQueueSuffix     = ".fifo"
+	maxFifoQueueNameLen = 39 - len(fifoQueueSuffix)
+)
+
 // validateManagedQueueConfig catches what the API would reject or ignore by
 // queue generation, which the size names: current-generation sizes start with
 // "mq.", previous-generation ones with "mq-", such as "mq-pro-256mb".
@@ -782,7 +836,19 @@ func validateManagedQueueConfig(config InstanceResourceModel, diags *diag.Diagno
 	if config.Type.IsUnknown() || config.Size.IsUnknown() {
 		return
 	}
-	legacyQueue := config.Type.ValueString() == "managed_queue" && strings.HasPrefix(config.Size.ValueString(), "mq-")
+	isQueue := config.Type.ValueString() == "managed_queue"
+	legacyQueue := isQueue && strings.HasPrefix(config.Size.ValueString(), "mq-")
+	if isSet(config.Fifo) && config.Fifo.ValueBool() {
+		if !isQueue {
+			diags.AddAttributeError(path.Root("fifo"), "fifo is only for managed queues",
+				fmt.Sprintf("Only a managed_queue instance can be a FIFO queue; this one is %q.", config.Type.ValueString()))
+		}
+		if n := config.Name.ValueString(); isQueue && isSet(config.Name) && len(n) > maxFifoQueueNameLen {
+			diags.AddAttributeError(path.Root("name"), "name is too long for a FIFO queue",
+				fmt.Sprintf("Laravel Cloud adds %q to a FIFO queue's name, which can then have at most %d characters; "+
+					"%q has %d.", fifoQueueSuffix, maxFifoQueueNameLen, n, len(n)))
+		}
+	}
 	if isSet(config.PollingInterval) && !legacyQueue {
 		diags.AddAttributeError(path.Root("polling_interval"), "polling_interval does not apply",
 			fmt.Sprintf("Only previous-generation managed queues have a polling interval; the API ignores it for this "+
