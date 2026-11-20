@@ -85,6 +85,14 @@ type EnvironmentResourceModel struct {
 	ResponseHeadersHSTSPreload           types.Bool           `tfsdk:"response_headers_hsts_preload"`
 	FirewallBlockPath                    types.Bool           `tfsdk:"firewall_block_path"`
 	FirewallBrowserIntegrityCheck        types.Bool           `tfsdk:"firewall_browser_integrity_check"`
+
+	PostDeployCommand     types.String `tfsdk:"post_deploy_command"`
+	DisplayName           types.String `tfsdk:"display_name"`
+	Framework             types.String `tfsdk:"framework"`
+	Language              types.String `tfsdk:"language"`
+	UsesHibernation       types.Bool   `tfsdk:"uses_hibernation"`
+	CreatedFromAutomation types.Bool   `tfsdk:"created_from_automation"`
+	PullRequest           types.Object `tfsdk:"pull_request"`
 }
 
 // FilesystemKeyModel attaches a bucket to the environment through one of its
@@ -222,9 +230,10 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"build_command": schema.StringAttribute{
-				Optional:    true,
-				Computed:    true,
-				Description: "Custom build command (max 2000 chars).",
+				Optional: true,
+				Computed: true,
+				Description: "Custom build command (max 2000 chars). Leave unset to keep the framework's default, or for a " +
+					"static site to build nothing.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -235,6 +244,74 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Description: "Custom deploy command (max 2000 chars).",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"post_deploy_command": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				Description: "Commands that run after a deployment goes live, one per line, such as " +
+					"\"php artisan queue:restart\" (max 2000 chars). A failure does not roll the deployment back. " +
+					"Only organizations with post-deploy commands enabled can set it, and not on preview or static " +
+					"environments; where Laravel Cloud does not offer it, the plan warns and the apply fails. Null when not reported.",
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 2000),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+					postDeployAvailable{},
+				},
+			},
+			"display_name": schema.StringAttribute{
+				Computed:    true,
+				Description: "Name shown in the dashboard: the name, or a preview environment's pull request title.",
+				PlanModifiers: []planmodifier.String{
+					followsAttributes{"name"},
+				},
+			},
+			"framework": schema.StringAttribute{
+				Computed:    true,
+				Description: "Framework Laravel Cloud detected in the branch (e.g. laravel, nextjs).",
+				PlanModifiers: []planmodifier.String{
+					followsAttributes{"branch"},
+				},
+			},
+			"language": schema.StringAttribute{
+				Computed:    true,
+				Description: "Language of the environment (e.g. php, javascript).",
+				PlanModifiers: []planmodifier.String{
+					followsAttributes{"branch"},
+				},
+			},
+			"uses_hibernation": schema.BoolAttribute{
+				Computed: true,
+				Description: "Whether the environment hibernates when idle. Set it with sleep_timeout here, or " +
+					"hibernation_timeout on the app instance (laravel_cloud_instance), which also turns it off.",
+				PlanModifiers: []planmodifier.Bool{
+					followsAttributes{"sleep_timeout"},
+				},
+			},
+			"created_from_automation": schema.BoolAttribute{
+				Computed:    true,
+				Description: "Whether the environment is a preview environment created for a pull request.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"pull_request": schema.SingleNestedAttribute{
+				Computed:    true,
+				Description: "The pull request a preview environment deploys. Null for other environments.",
+				Attributes: map[string]schema.Attribute{
+					"number":        schema.Int64Attribute{Computed: true, Description: "Pull request number."},
+					"url":           schema.StringAttribute{Computed: true, Description: "Pull request URL."},
+					"title":         schema.StringAttribute{Computed: true, Description: "Pull request title."},
+					"source_branch": schema.StringAttribute{Computed: true, Description: "Branch the pull request merges from."},
+					"target_branch": schema.StringAttribute{Computed: true, Description: "Branch the pull request merges into."},
+					"status":        schema.StringAttribute{Computed: true, Description: "open, closed or merged."},
+					"draft":         schema.BoolAttribute{Computed: true, Description: "Whether the pull request is a draft."},
+				},
+				PlanModifiers: []planmodifier.Object{
+					// Follows nothing: keeps the prior value, like UseStateForUnknown.
+					followsAttributes{},
 				},
 			},
 			"uses_push_to_deploy": schema.BoolAttribute{
@@ -363,11 +440,18 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"serving_mode": schema.StringAttribute{
+				Optional: true,
 				Computed: true,
 				Description: "How the environment is served: \"process\" (an application server) or \"static\" " +
-					"(files served directly). Fixed when the environment is created. Null when the API does not report it.",
+					"(files served directly, for a static site). Leave unset to let Laravel Cloud decide: a new environment " +
+					"of an application that already has a static environment is static too. It cannot be changed after " +
+					"creation, so changing it forces a new environment. Null when the API does not report it.",
+				Validators: []validator.String{
+					stringvalidator.OneOf("process", "static"),
+				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+					stringplanmodifier.RequiresReplaceIfConfigured(),
 				},
 			},
 			"serving_root": schema.StringAttribute{
@@ -613,10 +697,26 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		)
 	}
 
+	// Nothing is created yet, so an adopted environment served differently
+	// from the configuration is an error rather than a replacement later.
+	if adopted && isSet(plan.ServingMode) && !plan.ServingMode.Equal(servingModeFromAPI(env)) {
+		resp.Diagnostics.AddAttributeError(path.Root("serving_mode"), "serving_mode cannot be applied to the existing environment",
+			fmt.Sprintf("An environment named %q already exists, served as %q, and the serving mode can only be chosen when "+
+				"an environment is created. For the application's default environment, set serving_mode on "+
+				"laravel_cloud_application instead.", wantName, servingModeFromAPI(env).ValueString()))
+		return
+	}
+
 	if env == nil {
 		createReq := client.CreateEnvironmentRequest{
 			Name:   wantName,
 			Branch: plan.Branch.ValueString(),
+		}
+		if isSet(plan.ServingMode) {
+			createReq.Serving = &client.ServingRequest{Mode: plan.ServingMode.ValueString(), Root: *nullableStringRequest(resolvedNull(plan.ServingRoot))}
+		}
+		if isSet(plan.BuildCommand) {
+			createReq.BuildCommand = plan.BuildCommand.ValueStringPointer()
 		}
 		if !plan.ClusterID.IsNull() {
 			v := plan.ClusterID.ValueString()
@@ -661,6 +761,7 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	setUnknownInt64PtrFromAPI(&plan.Timeout, env.Attributes.Timeout)
 	setUnknownInt64PtrFromAPI(&plan.ShutdownTimeout, env.Attributes.ShutdownTimeout)
 	setUnknownSettingsFromAPI(&plan, env)
+	setUnknownDetailsFromAPI(&plan, env)
 
 	// The remaining Optional+Computed attributes are write-only: the API
 	// accepts them on PATCH but never returns them, so there is no value to
@@ -720,6 +821,14 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 			setUnknownStringPtrFromAPI(&plan.BuildCommand, patched.Attributes.BuildCommand)
 			setUnknownStringPtrFromAPI(&plan.DeployCommand, patched.Attributes.DeployCommand)
 			setUnknownStringPtrFromAPI(&plan.DeployHookURL, patched.Attributes.DeployHookURL)
+			if patched.Attributes.UsesHibernation != nil {
+				plan.UsesHibernation = types.BoolPointerValue(patched.Attributes.UsesHibernation)
+			}
+			// The configured value stays in state for now; the next refresh
+			// records null, so the next plan shows it and the update fails.
+			if patchReq.PostDeployCommand != nil && !patched.Attributes.PostDeployCommand.Reported {
+				resp.Diagnostics.AddAttributeWarning(path.Root("post_deploy_command"), postDeployIgnoredSummary, postDeployIgnoredDetail)
+			}
 			// The environment exists, so this is a warning: an error would
 			// taint it and the next apply would replace it, to the same end.
 			// The next refresh drops sleep_timeout, so the plan shows it again
@@ -837,6 +946,7 @@ func (r *EnvironmentResource) Read(ctx context.Context, req resource.ReadRequest
 	}
 
 	mapEnvironmentToState(env, &state)
+	resp.Diagnostics.Append(setPostDeployUnavailable(ctx, resp.Private, env)...)
 	// Settings that never reached the API after create are dropped from state,
 	// so the next plan shows them being added and sends them.
 	if pending, d := req.Private.GetKey(ctx, unsentWriteOnlyKey); d.HasError() {
@@ -922,6 +1032,7 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 		if plan.DeployHookURL.IsUnknown() {
 			plan.DeployHookURL = state.DeployHookURL
 		}
+		keepUnknownDetails(&plan, state)
 		if applyRunning(ctx, r.client, state.ID.ValueString(), &plan, state.Running.ValueBool(), &resp.Diagnostics) {
 			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		}
@@ -939,6 +1050,10 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 		resp.Diagnostics.AddAttributeError(path.Root("sleep_timeout"), hibernationRefusedSummary, hibernationRefusedDetail)
 		return
 	}
+	if updateReq.PostDeployCommand != nil && !updated.Attributes.PostDeployCommand.Reported {
+		resp.Diagnostics.AddAttributeError(path.Root("post_deploy_command"), postDeployIgnoredSummary, postDeployIgnoredDetail)
+		return
+	}
 	resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentWriteOnlyKey, nil)...)
 
 	// Keep plan values in state rather than overwriting from the API
@@ -951,6 +1066,7 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 	plan.Slug = types.StringValue(updated.Attributes.Slug)
 	// Turning the deploy hook on or off creates or drops its URL.
 	setUnknownStringPtrFromAPI(&plan.DeployHookURL, updated.Attributes.DeployHookURL)
+	setUnknownDetailsFromAPI(&plan, updated)
 	// Started after the update, so its deployment has the new settings.
 	if !applyRunning(ctx, r.client, state.ID.ValueString(), &plan, state.Running.ValueBool(), &resp.Diagnostics) {
 		return
@@ -1104,6 +1220,11 @@ func buildEnvironmentUpdateFromStateDiff(plan, state EnvironmentResourceModel) *
 	if !plan.DeployCommand.Equal(state.DeployCommand) {
 		v := plan.DeployCommand.ValueString()
 		req.DeployCommand = &v
+		hasUpdates = true
+	}
+	// Unset keeps what Laravel Cloud has, like the other commands.
+	if isSet(plan.PostDeployCommand) && !plan.PostDeployCommand.Equal(state.PostDeployCommand) {
+		req.PostDeployCommand = nullableStringRequest(plan.PostDeployCommand)
 		hasUpdates = true
 	}
 	if !plan.UsesPushToDeploy.Equal(state.UsesPushToDeploy) {
@@ -1339,6 +1460,10 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 			hasUpdates = true
 		}
 	}
+	if isSet(plan.PostDeployCommand) && !plan.PostDeployCommand.Equal(types.StringPointerValue(env.Attributes.PostDeployCommand.Value)) {
+		req.PostDeployCommand = nullableStringRequest(plan.PostDeployCommand)
+		hasUpdates = true
+	}
 	if dbID := databaseID(plan); !dbID.IsNull() && !dbID.IsUnknown() {
 		req.DatabaseSchemaID = client.AttachID(dbID.ValueString())
 		hasUpdates = true
@@ -1429,6 +1554,7 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 		state.SleepTimeout = types.Int64Null()
 	}
 	mapSettingsToState(env, state)
+	mapDetailsToState(env, state)
 
 	// sleep_timeout, uses_purge_edge_cache_on_deploy and uses_vanity_domain
 	// are write-only: PATCH accepts them but the response never carries them

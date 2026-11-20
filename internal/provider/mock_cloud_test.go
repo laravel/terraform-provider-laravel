@@ -57,6 +57,9 @@ type fakeCloud struct {
 	// cannotHibernate marks environments whose app instance has a size that
 	// cannot hibernate (a Pro size), by environment ID.
 	cannotHibernate map[string]bool
+	// postDeploy is whether the organization has post-deploy commands. Without
+	// them the API ignores post_deploy_command and never reports it.
+	postDeploy bool
 
 	// Generic JSON:API store used by every resource other than applications
 	// and environments (which have bespoke handlers above). Keyed by
@@ -256,7 +259,7 @@ func (f *fakeCloud) createApplication(w http.ResponseWriter, r *http.Request) {
 			Name:          req.Name,
 			Slug:          slugify(req.Name),
 			Region:        req.Region,
-			Repository:    &client.ApplicationRepository{FullName: req.Repository},
+			Repository:    &client.ApplicationRepository{FullName: req.Repository, DefaultBranch: ptr(fakeDefaultBranch(req.Repository))},
 			RootDirectory: req.RootDirectory,
 		},
 	}
@@ -268,6 +271,7 @@ func (f *fakeCloud) createApplication(w http.ResponseWriter, r *http.Request) {
 	// the repository's default branch, which the API refuses to delete.
 	branch := fakeDefaultBranch(req.Repository)
 	env := f.newEnvironment(id, defaultEnvironmentName(branch), branch)
+	f.serveEnvironment(env, req.Serving, req.BuildCommand)
 	app.Relationships.DefaultEnvironment = client.Relationship{
 		Data: &client.ResourceIdentifier{Type: "environments", ID: env.ID},
 	}
@@ -304,6 +308,11 @@ func defaultEnvironmentName(branch string) string {
 // when the request includes them.
 func (f *fakeCloud) applicationView(r *http.Request, app *client.ApplicationData) client.ApplicationData {
 	out := *app
+	// framework and language are the default environment's.
+	if env := f.envs[app.Relationships.DefaultEnvironment.RelatedID()]; env != nil {
+		out.Attributes.Framework = env.Attributes.Framework
+		out.Attributes.Language = env.Attributes.Language
+	}
 	if !strings.Contains(r.URL.Query().Get("include"), "defaultEnvironment") {
 		out.Relationships = client.ApplicationRelationships{}
 	}
@@ -323,10 +332,21 @@ func (f *fakeCloud) getApplication(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeCloud) updateApplication(w http.ResponseWriter, r *http.Request) {
-	var req client.UpdateApplicationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	var req client.UpdateApplicationRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	// A JSON null leaves the pointer nil; the API reads it as "turn off".
+	var body map[string]any
+	_ = json.Unmarshal(raw, &body)
+	if v, ok := body["slack_channel"]; ok && v == nil {
+		req.SlackChannel = &client.NullableString{Null: true}
 	}
 
 	f.mu.Lock()
@@ -345,7 +365,11 @@ func (f *fakeCloud) updateApplication(w http.ResponseWriter, r *http.Request) {
 		app.Attributes.Slug = *req.Slug
 	}
 	if req.SlackChannel != nil {
-		app.Attributes.SlackChannel = req.SlackChannel
+		// null turns Slack notifications off.
+		app.Attributes.SlackChannel = nil
+		if !req.SlackChannel.Null {
+			app.Attributes.SlackChannel = ptr(req.SlackChannel.Value)
+		}
 	}
 	if req.Repository != nil {
 		// Laravel Cloud clears root_directory when the new repository lacks
@@ -426,7 +450,8 @@ func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 	// Laravel Cloud checks the branch against its record of the application's
 	// repository, so an application without one refuses every branch, and so
 	// does one whose branches are not synced yet.
-	app, ok := f.apps[r.PathValue("id")]
+	appID := r.PathValue("id")
+	app, ok := f.apps[appID]
 	if ok && (app.Attributes.Repository == nil || f.unsyncedBranches > 0) {
 		if app.Attributes.Repository != nil {
 			f.unsyncedBranches--
@@ -437,7 +462,22 @@ func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	env := f.newEnvironment(r.PathValue("id"), req.Name, req.Branch)
+	// Without a serving mode, a new environment of an application that has a
+	// static one is static too, with its build command.
+	serving, build := req.Serving, req.BuildCommand
+	if serving == nil {
+		for _, id := range f.appEnvs[appID] {
+			if e := f.envs[id]; e != nil && e.Attributes.Serving.Mode == "static" {
+				serving = &client.ServingRequest{Mode: "static", Root: client.NullableString{Value: ptrValue(e.Attributes.Serving.Root), Null: e.Attributes.Serving.Root == nil}}
+				if build == nil {
+					build = e.Attributes.BuildCommand
+				}
+				break
+			}
+		}
+	}
+	env := f.newEnvironment(appID, req.Name, req.Branch)
+	f.serveEnvironment(env, serving, build)
 	writeJSON(w, http.StatusCreated, environmentDoc(env))
 }
 
@@ -462,12 +502,17 @@ func (f *fakeCloud) newEnvironment(appID, name, branch string) *client.Environme
 			ShutdownTimeout: ptr(int64(30)),
 			// A new environment's app instance is the smallest Flex size,
 			// which hibernates.
-			UsesHibernation: ptr(true),
-			PHPMajorVersion: "8.4",
-			NodeVersion:     "20",
-			VanityDomain:    &vanity,
-			NetworkSettings: newEnvironmentNetwork("default"),
-			Serving:         &client.EnvironmentServing{Mode: "process"},
+			UsesHibernation:   ptr(true),
+			PHPMajorVersion:   "8.4",
+			NodeVersion:       "20",
+			VanityDomain:      &vanity,
+			NetworkSettings:   newEnvironmentNetwork("default"),
+			Serving:           &client.EnvironmentServing{Mode: "process"},
+			BuildCommand:      ptr("composer install --no-dev"),
+			DisplayName:       ptr(name),
+			Framework:         ptr("laravel"),
+			Language:          ptr("php"),
+			PostDeployCommand: client.ReportedString{Reported: f.postDeploy},
 		},
 		// The real API reports the owning application under
 		// relationships.application when include=application is requested.
@@ -487,6 +532,29 @@ func (f *fakeCloud) newEnvironment(appID, name, branch string) *client.Environme
 	f.envs[id] = env
 	f.appEnvs[appID] = append(f.appEnvs[appID], id)
 	return env
+}
+
+// serveEnvironment applies the serving mode and build command an environment
+// is created with. Like Cloud, it uses the build command only for a static
+// site, which builds nothing without one and has no post-deploy command.
+func (f *fakeCloud) serveEnvironment(env *client.EnvironmentData, serving *client.ServingRequest, build *string) {
+	if serving == nil || serving.Mode != "static" {
+		return
+	}
+	root := ptr(serving.Root.Value)
+	if serving.Root.Null {
+		root = nil
+	}
+	env.Attributes.Serving = &client.EnvironmentServing{Mode: "static", Root: root}
+	env.Attributes.BuildCommand = build
+	env.Attributes.PostDeployCommand = client.ReportedString{}
+}
+
+func ptrValue(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // fakeVanityZone is the zone vanity hostnames live in. An organization's zone
@@ -606,9 +674,17 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 	a := &env.Attributes
 	if req.Name != nil {
 		a.Name = *req.Name
+		a.DisplayName = req.Name
 	}
 	if req.Slug != nil {
 		a.Slug = *req.Slug
+	}
+	// Ignored, and still 200, without the feature, as the API does.
+	if req.PostDeployCommand != nil && a.PostDeployCommand.Reported {
+		a.PostDeployCommand.Value = nil
+		if !req.PostDeployCommand.Null {
+			a.PostDeployCommand.Value = ptr(req.PostDeployCommand.Value)
+		}
 	}
 	if req.NodeVersion != nil {
 		a.NodeVersion = *req.NodeVersion

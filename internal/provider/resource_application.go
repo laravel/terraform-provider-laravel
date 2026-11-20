@@ -39,6 +39,14 @@ type ApplicationResourceModel struct {
 	CreatedAt                 types.String `tfsdk:"created_at"`
 	StarterKit                types.String `tfsdk:"starter_kit"`
 	RootDirectory             types.String `tfsdk:"root_directory"`
+	DefaultEnvironmentID      types.String `tfsdk:"default_environment_id"`
+	ServingMode               types.String `tfsdk:"serving_mode"`
+	ServingRoot               types.String `tfsdk:"serving_root"`
+	BuildCommand              types.String `tfsdk:"build_command"`
+	Framework                 types.String `tfsdk:"framework"`
+	Language                  types.String `tfsdk:"language"`
+	Notes                     types.String `tfsdk:"notes"`
+	RepositoryDefaultBranch   types.String `tfsdk:"repository_default_branch"`
 }
 
 func NewApplicationResource() resource.Resource {
@@ -139,11 +147,90 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"slack_channel": schema.StringAttribute{
-				Optional:    true,
-				Computed:    true,
-				Description: "Slack channel for application notifications.",
+				Optional: true,
+				Description: "Slack channel for application notifications. The organization must have Slack connected. " +
+					"Removing it turns Slack notifications off.",
+			},
+			"default_environment_id": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				Description: "ID of the application's default (production) environment, which Laravel Cloud cannot delete. " +
+					"Leave unset to keep the one the application was created with. It must be an environment of this " +
+					"application that is not a preview. A laravel_cloud_environment of this application cannot be referenced " +
+					"here, because the environment depends on the application; use its ID instead.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"serving_mode": schema.StringAttribute{
+				Optional: true,
+				Description: "How the default environment is served: \"process\" (an application server) or \"static\" " +
+					"(files served directly, for a static site). Leave unset to let Laravel Cloud detect it. It cannot be " +
+					"changed after creation, so changing it forces a new application. New environments of an application " +
+					"with a static environment are static too. " +
+					"The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.",
+				Validators: []validator.String{
+					stringvalidator.OneOf("process", "static"),
+				},
+				PlanModifiers: []planmodifier.String{
+					requiresReplaceUnlessImported(),
+					warnIfNotReported(),
+				},
+			},
+			"serving_root": schema.StringAttribute{
+				Optional: true,
+				Description: "Directory a static default environment serves, relative to the repository (\".\" for the " +
+					"top level). Requires serving_mode = \"static\". Used only when the application is created: change it " +
+					"afterwards with serving_root on laravel_cloud_environment. Changing it here only records the new value. " +
+					"The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.",
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 255),
+					stringvalidator.AlsoRequires(path.MatchRoot("serving_mode")),
+				},
+				PlanModifiers: []planmodifier.String{
+					warnIfNotReported(),
+				},
+			},
+			"build_command": schema.StringAttribute{
+				Optional: true,
+				Description: "Build command of a static default environment (max 2000 chars). Leave unset to build nothing. " +
+					"Laravel Cloud uses it only with serving_mode = \"static\"; other applications get a build command " +
+					"for their framework. Used only when the application is created: change it afterwards with " +
+					"build_command on laravel_cloud_environment. Changing it here only records the new value. " +
+					"The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.",
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 2000),
+				},
+				PlanModifiers: []planmodifier.String{
+					warnIfNotReported(),
+				},
+			},
+			"framework": schema.StringAttribute{
+				Computed:    true,
+				Description: "Framework of the default environment, as Laravel Cloud detected it (e.g. laravel, nextjs).",
+				PlanModifiers: []planmodifier.String{
+					followsAttributes{"repository", "default_environment_id"},
+				},
+			},
+			"language": schema.StringAttribute{
+				Computed:    true,
+				Description: "Language of the default environment (e.g. php, javascript).",
+				PlanModifiers: []planmodifier.String{
+					followsAttributes{"repository", "default_environment_id"},
+				},
+			},
+			"notes": schema.StringAttribute{
+				Computed:    true,
+				Description: "Notes on the application, set in the dashboard. Null when there are none or the API token cannot view them.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"repository_default_branch": schema.StringAttribute{
+				Computed:    true,
+				Description: "Default branch of the repository.",
+				PlanModifiers: []planmodifier.String{
+					followsAttributes{"repository"},
 				},
 			},
 			"avatar_url": schema.StringAttribute{
@@ -200,6 +287,10 @@ func (r *ApplicationResource) Create(ctx context.Context, req resource.CreateReq
 	if isSet(plan.RootDirectory) {
 		createReq.RootDirectory = plan.RootDirectory.ValueStringPointer()
 	}
+	if !plan.ServingMode.IsNull() {
+		createReq.Serving = &client.ServingRequest{Mode: plan.ServingMode.ValueString(), Root: *nullableStringRequest(plan.ServingRoot)}
+	}
+	createReq.BuildCommand = plan.BuildCommand.ValueStringPointer()
 
 	app, err := r.client.CreateApplication(ctx, createReq)
 	if err != nil {
@@ -207,17 +298,39 @@ func (r *ApplicationResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	// The create endpoint takes no slug, so a configured one is set by an
-	// update straight after. The application exists by then, so a failure is a
-	// warning: state keeps the configured slug, and the next refresh shows the
-	// generated one and plans the change again.
+	// The create endpoint takes no slug, Slack channel or default environment,
+	// so configured ones are set by an update straight after. The application
+	// exists by then, so a failure is a warning: state keeps the configured
+	// values, and the next refresh shows the real ones and plans the change
+	// again.
+	var followUp client.UpdateApplicationRequest
 	if isSet(plan.Slug) && plan.Slug.ValueString() != app.Attributes.Slug {
-		updated, err := r.client.UpdateApplication(ctx, app.ID, client.UpdateApplicationRequest{Slug: plan.Slug.ValueStringPointer()})
+		followUp.Slug = plan.Slug.ValueStringPointer()
+	}
+	if !plan.SlackChannel.IsNull() {
+		followUp.SlackChannel = nullableStringRequest(plan.SlackChannel)
+	}
+	if isSet(plan.DefaultEnvironmentID) {
+		followUp.DefaultEnvironmentID = plan.DefaultEnvironmentID.ValueStringPointer()
+	}
+	if followUp != (client.UpdateApplicationRequest{}) {
+		updated, err := r.client.UpdateApplication(ctx, app.ID, followUp)
 		if err != nil {
-			resp.Diagnostics.AddAttributeWarning(path.Root("slug"), "Could not set the slug after creating the application",
-				"The application was created, but setting its slug failed: "+err.Error()+". Run 'terraform apply' again to retry.")
+			resp.Diagnostics.AddWarning("Could not apply all settings after creating the application",
+				"The application was created, but setting its slug, slack_channel or default_environment_id failed: "+
+					err.Error()+". Run 'terraform apply' again to retry.")
 		} else {
 			app = updated
+		}
+	}
+	// The create and update responses carry no relationships.
+	if plan.DefaultEnvironmentID.IsUnknown() {
+		if withEnv, err := r.client.GetApplication(ctx, app.ID); err == nil {
+			plan.DefaultEnvironmentID = defaultEnvironmentFromAPI(withEnv)
+		} else {
+			plan.DefaultEnvironmentID = types.StringNull()
+			resp.Diagnostics.AddAttributeWarning(path.Root("default_environment_id"), "Could not read the default environment",
+				"The application was created, but reading it back failed: "+err.Error()+". The next refresh records it.")
 		}
 	}
 
@@ -226,10 +339,10 @@ func (r *ApplicationResource) Create(ctx context.Context, req resource.CreateReq
 	if !isSet(plan.Slug) {
 		plan.Slug = types.StringValue(app.Attributes.Slug)
 	}
-	plan.SlackChannel = types.StringPointerValue(app.Attributes.SlackChannel)
 	plan.AvatarURL = types.StringPointerValue(app.Attributes.AvatarURL)
 	plan.CreatedAt = types.StringPointerValue(app.Attributes.CreatedAt)
 	plan.RootDirectory = types.StringPointerValue(app.Attributes.RootDirectory)
+	setUnknownApplicationDetails(&plan, app)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -264,6 +377,11 @@ func (r *ApplicationResource) Read(ctx context.Context, req resource.ReadRequest
 	state.SlackChannel = types.StringPointerValue(app.Attributes.SlackChannel)
 	state.AvatarURL = types.StringPointerValue(app.Attributes.AvatarURL)
 	state.CreatedAt = types.StringPointerValue(app.Attributes.CreatedAt)
+	state.DefaultEnvironmentID = defaultEnvironmentFromAPI(app)
+	state.Framework = types.StringPointerValue(app.Attributes.Framework)
+	state.Language = types.StringPointerValue(app.Attributes.Language)
+	state.Notes = types.StringPointerValue(app.Attributes.Notes)
+	state.RepositoryDefaultBranch = repositoryDefaultBranch(app)
 	if app.Attributes.RootDirectory == nil && isSet(state.RootDirectory) {
 		resp.Diagnostics.Append(setRootDirectoryCleared(ctx, resp.Private, state.RootDirectory.ValueString())...)
 	}
@@ -299,8 +417,10 @@ func (r *ApplicationResource) Update(ctx context.Context, req resource.UpdateReq
 		updateReq.Repository = &v
 	}
 	if !plan.SlackChannel.Equal(state.SlackChannel) {
-		v := plan.SlackChannel.ValueString()
-		updateReq.SlackChannel = &v
+		updateReq.SlackChannel = nullableStringRequest(plan.SlackChannel)
+	}
+	if isSet(plan.DefaultEnvironmentID) && !plan.DefaultEnvironmentID.Equal(state.DefaultEnvironmentID) {
+		updateReq.DefaultEnvironmentID = plan.DefaultEnvironmentID.ValueStringPointer()
 	}
 	// The API reads source_control_provider_type only to resolve a repository
 	// being changed and discards it otherwise, so it goes out only alongside
@@ -319,7 +439,10 @@ func (r *ApplicationResource) Update(ctx context.Context, req resource.UpdateReq
 	plan.ID = state.ID
 	rememberAppRepository(plan.ID.ValueString(), plan.Repository)
 	plan.Slug = types.StringValue(app.Attributes.Slug)
-	plan.SlackChannel = types.StringPointerValue(app.Attributes.SlackChannel)
+	setUnknownApplicationDetails(&plan, app)
+	if plan.DefaultEnvironmentID.IsUnknown() {
+		plan.DefaultEnvironmentID = defaultEnvironmentFromAPI(app)
+	}
 	plan.AvatarURL = types.StringPointerValue(app.Attributes.AvatarURL)
 	plan.CreatedAt = types.StringPointerValue(app.Attributes.CreatedAt)
 	// root_directory cannot be set in place, but Laravel Cloud clears it when
@@ -444,4 +567,31 @@ func (rootDirectoryPlanModifier) PlanModifyString(ctx context.Context, req planm
 		}
 	}
 	resp.RequiresReplace = true
+}
+
+// defaultEnvironmentFromAPI is the application's default environment, which
+// the API reports only when the request includes defaultEnvironment.
+func defaultEnvironmentFromAPI(app *client.ApplicationData) types.String {
+	if id := app.Relationships.DefaultEnvironment.RelatedID(); id != "" {
+		return types.StringValue(id)
+	}
+	return types.StringNull()
+}
+
+func repositoryDefaultBranch(app *client.ApplicationData) types.String {
+	if app.Attributes.Repository == nil {
+		return types.StringNull()
+	}
+	return types.StringPointerValue(app.Attributes.Repository.DefaultBranch)
+}
+
+// setUnknownApplicationDetails fills in the read-only details the plan left
+// unknown from an API response.
+func setUnknownApplicationDetails(plan *ApplicationResourceModel, app *client.ApplicationData) {
+	setUnknownStringPtrFromAPI(&plan.Framework, app.Attributes.Framework)
+	setUnknownStringPtrFromAPI(&plan.Language, app.Attributes.Language)
+	setUnknownStringPtrFromAPI(&plan.Notes, app.Attributes.Notes)
+	if plan.RepositoryDefaultBranch.IsUnknown() {
+		plan.RepositoryDefaultBranch = repositoryDefaultBranch(app)
+	}
 }

@@ -62,12 +62,18 @@ type ApplicationAttributes struct {
 	// RootDirectory is the repository subdirectory the application lives in;
 	// null for the repository root.
 	RootDirectory *string `json:"root_directory"`
+	// Framework and Language are the default environment's. Notes is left out
+	// when the token cannot view notes.
+	Framework *string `json:"framework"`
+	Language  *string `json:"language"`
+	Notes     *string `json:"notes"`
 }
 
 // ApplicationRepository is the response-side repository object on an
 // application.
 type ApplicationRepository struct {
-	FullName string `json:"full_name"`
+	FullName      string  `json:"full_name"`
+	DefaultBranch *string `json:"default_branch"`
 }
 
 type CreateApplicationRequest struct {
@@ -80,6 +86,10 @@ type CreateApplicationRequest struct {
 	// an existing one.
 	StarterKit    *string `json:"starter_kit,omitempty"`
 	RootDirectory *string `json:"root_directory,omitempty"`
+	// Serving and BuildCommand configure the default environment. Cloud uses
+	// the build command only for a static site.
+	Serving      *ServingRequest `json:"serving,omitempty"`
+	BuildCommand *string         `json:"build_command,omitempty"`
 }
 
 type UpdateApplicationRequest struct {
@@ -88,7 +98,8 @@ type UpdateApplicationRequest struct {
 	Slug                      *string `json:"slug,omitempty"`
 	DefaultEnvironmentID      *string `json:"default_environment_id,omitempty"`
 	Repository                *string `json:"repository,omitempty"`
-	SlackChannel              *string `json:"slack_channel,omitempty"`
+	// SlackChannel null turns Slack notifications off.
+	SlackChannel *NullableString `json:"slack_channel,omitempty"`
 }
 
 // ---------------------------------------------------------------------
@@ -161,6 +172,15 @@ type EnvironmentAttributes struct {
 	// InternalNetworking says whether other environments on the same
 	// dedicated cluster can reach this one over the private network.
 	InternalNetworking *EnvironmentInternalNetworking `json:"internal_networking,omitempty"`
+	// DisplayName is the name, or a preview environment's pull request title.
+	DisplayName *string `json:"display_name"`
+	Framework   *string `json:"framework"`
+	Language    *string `json:"language"`
+	// PostDeployCommand is reported only when the organization has post-deploy
+	// commands and the environment is not a preview.
+	PostDeployCommand ReportedString `json:"post_deploy_command,omitzero"`
+	// PullRequest is set on a preview environment.
+	PullRequest *EnvironmentPullRequest `json:"pull_request"`
 	// EnvironmentVariables is the environment's variables, keys and plaintext
 	// values both. There is no GET on /environments/{id}/variables -- that
 	// route answers 405 and accepts POST only -- so this is the only way to
@@ -251,6 +271,42 @@ type CreateEnvironmentRequest struct {
 	Name          string  `json:"name"`
 	ClusterID     *string `json:"cluster_id,omitempty"`
 	EdgeNetworkID *string `json:"edge_network_id,omitempty"`
+	// Serving fixes how the environment is served. Without it, a new
+	// environment of an application that has a static environment is static
+	// too. Cloud uses BuildCommand only for a static site.
+	Serving      *ServingRequest `json:"serving,omitempty"`
+	BuildCommand *string         `json:"build_command,omitempty"`
+}
+
+// EnvironmentPullRequest is the pull request a preview environment deploys.
+type EnvironmentPullRequest struct {
+	Number       int64   `json:"number"`
+	URL          *string `json:"url"`
+	Title        *string `json:"title"`
+	SourceBranch *string `json:"source_branch"`
+	TargetBranch *string `json:"target_branch"`
+	Status       string  `json:"status"`
+	Draft        bool    `json:"draft"`
+}
+
+// ReportedString is a nullable response attribute that the API leaves out
+// entirely in some cases. Reported says whether the key was there at all.
+type ReportedString struct {
+	Reported bool
+	Value    *string
+}
+
+func (r *ReportedString) UnmarshalJSON(b []byte) error {
+	r.Reported = true
+	r.Value = nil
+	if string(b) == "null" {
+		return nil
+	}
+	return json.Unmarshal(b, &r.Value)
+}
+
+func (r ReportedString) MarshalJSON() ([]byte, error) {
+	return json.Marshal(r.Value)
 }
 
 type UpdateEnvironmentRequest struct {
@@ -265,7 +321,9 @@ type UpdateEnvironmentRequest struct {
 	BuildCommand     *string `json:"build_command,omitempty"`
 	NodeVersion      *string `json:"node_version,omitempty"`
 	DeployCommand    *string `json:"deploy_command,omitempty"`
-	UsesVanityDomain *bool   `json:"uses_vanity_domain,omitempty"`
+	// PostDeployCommand null clears it.
+	PostDeployCommand *NullableString `json:"post_deploy_command,omitempty"`
+	UsesVanityDomain  *bool           `json:"uses_vanity_domain,omitempty"`
 	// These three are nullable in the spec: JSON null detaches the resource
 	// from the environment. An empty string is not null and is rejected, so
 	// they are raw JSON rather than *string -- see AttachID / DetachID.

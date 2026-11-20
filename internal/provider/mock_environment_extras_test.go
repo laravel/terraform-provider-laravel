@@ -246,6 +246,9 @@ func restoreNulls(req *client.UpdateEnvironmentRequest, body map[string]any) {
 	if isNull("hibernation_wake_up_interval") {
 		req.HibernationWakeUpInterval = &client.NullableInt{Null: true}
 	}
+	if isNull("post_deploy_command") {
+		req.PostDeployCommand = &client.NullableString{Null: true}
+	}
 }
 
 // withSecretsRelationship adds relationships.secrets to an encoded environment
