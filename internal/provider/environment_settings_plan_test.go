@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -389,6 +390,60 @@ func TestEnvironmentServingRootPlan(t *testing.T) {
 			{
 				Config:           config("dist"),
 				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+		},
+	})
+}
+
+// TestEnvironmentHibernationRefusedPlan covers sleep_timeout on an app
+// instance size that cannot hibernate. The API answers the update
+// with 200 but turns hibernation and the periodic wake-up off, so the apply
+// must fail rather than record settings the environment does not have.
+// Hibernation turned off outside Terraform must also show in the plan, even
+// though the API never reports sleep_timeout itself.
+func TestEnvironmentHibernationRefusedPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	addr := "laravel_cloud_environment.env"
+	sleeping := environmentSettingsConfig(baseURL, `
+  sleep_timeout                = 10
+  hibernation_wake_up_interval = 60`)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: sleeping,
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("sleep_timeout"), knownvalue.Int64Exact(10)),
+				},
+			},
+			// The app instance moves to a Pro size, which needs hibernation
+			// off: the plan shows it, and applying it fails.
+			{
+				PreConfig: func() {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					f.cannotHibernate = map[string]bool{}
+					for id, env := range f.envs {
+						f.cannotHibernate[id] = true
+						env.Attributes.UsesHibernation = ptr(false)
+						env.Attributes.HibernationWakeUpInterval = nil
+					}
+				},
+				Config: sleeping,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectKnownValue(addr, tfjsonpath.New("sleep_timeout"), knownvalue.Int64Exact(10)),
+					},
+				},
+				ExpectError: regexp.MustCompile(`turned hibernation off instead of applying sleep_timeout`),
+			},
+			// Removing both settings converges.
+			{
+				Config: environmentSettingsConfig(baseURL, ""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
 			},
 		},
 	})

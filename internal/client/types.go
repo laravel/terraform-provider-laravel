@@ -141,7 +141,10 @@ type EnvironmentAttributes struct {
 	// flag; presence of a vanity domain is derived from this field.
 	VanityDomain          *string            `json:"vanity_domain"`
 	UsesOctane            bool               `json:"uses_octane"`
-	UsesHibernation       bool               `json:"uses_hibernation"`
+	// UsesHibernation is whether sleep mode is on. The backend turns it off,
+	// and still answers 200, when sleep_timeout is sent for an instance size
+	// that cannot hibernate. Nil when not reported.
+	UsesHibernation       *bool              `json:"uses_hibernation,omitempty"`
 	NetworkSettings       EnvironmentNetwork `json:"network_settings"`
 	CreatedFromAutomation bool               `json:"created_from_automation"`
 	CreatedAt             *string            `json:"created_at"`

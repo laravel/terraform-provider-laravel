@@ -71,7 +71,7 @@ resource "laravel_cloud_environment" "example" {
 - `response_headers_robots_tag` (String) X-Robots-Tag response header: "index, follow" or "noindex, nofollow".
 - `serving_root` (String) Directory a static environment serves, relative to the repository ("." for the top level). Only static environments accept it.
 - `shutdown_timeout` (Number) Seconds to wait before stopping the previous deployment's instances, so they can finish their requests and jobs (1-600). Applies on the next deployment. Leave unset to keep the platform default.
-- `sleep_timeout` (Number) Sleep timeout (1-60). Write-only: the API accepts this but never reports it back, so drift cannot be detected.
+- `sleep_timeout` (Number) Minutes without requests before the environment hibernates (1-60). Only instance sizes that can hibernate (Flex) take it: on a Pro size Laravel Cloud turns hibernation off instead, and the apply fails. The API reports whether hibernation is on but not this value, so hibernation turned off outside Terraform shows in the next plan, and a changed value does not. It is the same setting as the app instance's hibernation_timeout (laravel_cloud_instance), so set it in only one place. The API cannot turn hibernation off through the environment; use the instance for that.
 - `slug` (String)
 - `start_command` (String) Command that starts a dynamic application that is not PHP, e.g. "gunicorn myproject.wsgi" (max 255 chars). Required by the API for dynamic JavaScript, Python, Ruby, Go, Rust and Java applications, and rejected for PHP and static ones.
 - `timeout` (Number) Seconds the environment waits for the application to respond before timing out (5-60). Applies on the next deployment. Leave unset to keep the platform default.

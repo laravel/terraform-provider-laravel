@@ -50,6 +50,9 @@ type fakeCloud struct {
 	// failEnvUpdates makes that many of the next PATCH /environments calls
 	// fail with a 500, to model a follow-up update that does not land.
 	failEnvUpdates int
+	// cannotHibernate marks environments whose app instance has a size that
+	// cannot hibernate (a Pro size), by environment ID.
+	cannotHibernate map[string]bool
 
 	// Generic JSON:API store used by every resource other than applications
 	// and environments (which have bespoke handlers above). Keyed by
@@ -337,6 +340,9 @@ func (f *fakeCloud) newEnvironment(appID, name, branch string) *client.Environme
 			Color:           ptr("blue"),
 			Timeout:         ptr(int64(20)),
 			ShutdownTimeout: ptr(int64(30)),
+			// A new environment's app instance is the smallest Flex size,
+			// which hibernates.
+			UsesHibernation: ptr(true),
 			PHPMajorVersion: "8.4",
 			NodeVersion:     "20",
 			VanityDomain:    &vanity,
@@ -473,6 +479,16 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err)
 		return
 	}
+	// sleep_timeout is never reported, but it turns sleep mode on -- unless
+	// the size cannot hibernate, in which case the real API turns sleep mode
+	// and the wake-up interval off and still answers 200. An interval sent
+	// without sleep_timeout is stored either way (applied above).
+	if req.SleepTimeout != nil {
+		a.UsesHibernation = ptr(!f.cannotHibernate[env.ID])
+		if f.cannotHibernate[env.ID] {
+			a.HibernationWakeUpInterval = nil
+		}
+	}
 	if req.UsesPushToDeploy != nil {
 		a.UsesPushToDeploy = *req.UsesPushToDeploy
 	}
@@ -491,9 +507,9 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 	if req.ShutdownTimeout != nil {
 		a.ShutdownTimeout = ptr(int64(*req.ShutdownTimeout))
 	}
-	// sleep_timeout and uses_purge_edge_cache_on_deploy are accepted here and
-	// deliberately dropped: the real API has no response attribute for either,
-	// and a fake that echoed them back would mask a non-converging plan.
+	// uses_purge_edge_cache_on_deploy is accepted here and deliberately
+	// dropped: the real API has no response attribute for it, and a fake that
+	// echoed it back would mask a non-converging plan.
 	// php_version is sent as "major:minor"; the API only ever reports the major
 	// version back via php_major_version.
 	if req.PHPVersion != nil {

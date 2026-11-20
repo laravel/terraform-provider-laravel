@@ -272,8 +272,12 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"sleep_timeout": schema.Int64Attribute{
 				Optional: true,
 				Computed: true,
-				Description: "Sleep timeout (1-60). Write-only: the API accepts this but never " +
-					"reports it back, so drift cannot be detected.",
+				Description: "Minutes without requests before the environment hibernates (1-60). Only instance " +
+					"sizes that can hibernate (Flex) take it: on a Pro size Laravel Cloud turns hibernation off " +
+					"instead, and the apply fails. The API reports whether hibernation is on but not this value, " +
+					"so hibernation turned off outside Terraform shows in the next plan, and a changed value does not. " +
+					"It is the same setting as the app instance's hibernation_timeout (laravel_cloud_instance), so set it in " +
+					"only one place. The API cannot turn hibernation off through the environment; use the instance for that.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -687,6 +691,13 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 			plan.Status = types.StringValue(patched.Attributes.Status)
 			setUnknownStringPtrFromAPI(&plan.BuildCommand, patched.Attributes.BuildCommand)
 			setUnknownStringPtrFromAPI(&plan.DeployCommand, patched.Attributes.DeployCommand)
+			// The environment exists, so this is a warning: an error would
+			// taint it and the next apply would replace it, to the same end.
+			// The next refresh drops sleep_timeout, so the plan shows it again
+			// and the update fails with the same message.
+			if patchReq.SleepTimeout != nil && hibernationOff(patched) {
+				resp.Diagnostics.AddAttributeWarning(path.Root("sleep_timeout"), hibernationRefusedSummary, hibernationRefusedDetail)
+			}
 		}
 		if err != nil {
 			// PATCH failed (e.g. dev server returns HTML). Keep the plan
@@ -853,9 +864,15 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	_, err := r.client.UpdateEnvironment(ctx, state.ID.ValueString(), *updateReq)
+	updated, err := r.client.UpdateEnvironment(ctx, state.ID.ValueString(), *updateReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating environment", err.Error())
+		return
+	}
+	// Prior state is kept, so the next refresh records what the API did and
+	// the next plan offers the same change again.
+	if updateReq.SleepTimeout != nil && hibernationOff(updated) {
+		resp.Diagnostics.AddAttributeError(path.Root("sleep_timeout"), hibernationRefusedSummary, hibernationRefusedDetail)
 		return
 	}
 	resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentWriteOnlyKey, nil)...)
@@ -1304,6 +1321,11 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 	keepStringIfAbsent(&state.Color, env.Attributes.Color)
 	keepInt64IfAbsent(&state.Timeout, env.Attributes.Timeout)
 	keepInt64IfAbsent(&state.ShutdownTimeout, env.Attributes.ShutdownTimeout)
+	// sleep_timeout is not reported, but hibernation being off means there is
+	// none, so a configured one shows up in the next plan.
+	if hibernationOff(env) {
+		state.SleepTimeout = types.Int64Null()
+	}
 	mapSettingsToState(env, state)
 
 	// sleep_timeout, uses_purge_edge_cache_on_deploy and uses_vanity_domain
@@ -1312,6 +1334,22 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 	// refresh, so the configured values are left in place and drift on them is
 	// not detectable.
 }
+
+// hibernationOff reports whether the API says sleep mode is off. After an
+// update that sent sleep_timeout, that means the API refused it: for an
+// instance size that cannot hibernate it answers 200 but turns sleep mode and
+// the periodic wake-up off instead.
+func hibernationOff(env *client.EnvironmentData) bool {
+	return env != nil && env.Attributes.UsesHibernation != nil && !*env.Attributes.UsesHibernation
+}
+
+const (
+	hibernationRefusedSummary = "Laravel Cloud turned hibernation off instead of applying sleep_timeout"
+	hibernationRefusedDetail  = "The environment's app instance has a size that cannot hibernate (Pro sizes cannot), so " +
+		"Laravel Cloud accepted sleep_timeout but turned hibernation and the periodic wake-up " +
+		"(hibernation_wake_up_interval) off. Move the app instance to a Flex size, or remove sleep_timeout and " +
+		"hibernation_wake_up_interval from the configuration."
+)
 
 // phpVersionFromMajor rebuilds php_version from the major version the API
 // reports: php_version is written as "8.4:1" but read back only as "8.4", and

@@ -3,10 +3,15 @@ package provider
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
@@ -214,6 +219,104 @@ func TestAccEnvironmentResource_readBack(t *testing.T) {
 			},
 		},
 	})
+}
+
+// TestAccEnvironmentResource_hibernationRefused moves the app instance to a
+// Pro size, which cannot hibernate, under an environment with sleep_timeout.
+// The API answers a sleep_timeout update with 200 but turns
+// hibernation off, so the plan must show sleep_timeout again and applying it
+// must fail; removing it must converge.
+func TestAccEnvironmentResource_hibernationRefused(t *testing.T) {
+	appName := testAccName()
+	var envID string
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccEnvironmentSleepConfig(appName, "sleep_timeout = 10"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("laravel_cloud_environment.test", "sleep_timeout", "10"),
+					func(s *terraform.State) error {
+						envID = s.RootModule().Resources["laravel_cloud_environment.test"].Primary.ID
+						return nil
+					},
+				),
+			},
+			{
+				PreConfig:   func() { testAccMoveAppInstanceToPro(t, envID) },
+				Config:      testAccEnvironmentSleepConfig(appName, "sleep_timeout = 10"),
+				ExpectError: regexp.MustCompile(`turned hibernation off instead of applying sleep_timeout`),
+			},
+			{
+				Config: testAccEnvironmentSleepConfig(appName, ""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+		},
+	})
+}
+
+func testAccEnvironmentSleepConfig(appName, sleep string) string {
+	return fmt.Sprintf(`
+resource "laravel_cloud_application" "test" {
+  name       = %[1]q
+  repository = %[2]q
+  region     = "us-east-2"
+}
+
+resource "laravel_cloud_environment" "test" {
+  application_id = laravel_cloud_application.test.id
+  name           = "staging"
+  branch         = %[3]q
+  %[4]s
+}
+`, appName, testAccRepository(), testAccBranch(), sleep)
+}
+
+// testAccMoveAppInstanceToPro moves the environment's app instance to a Pro
+// size outside Terraform. The API allows that only with hibernation off, which
+// takes hibernation_timeout: null -- a null the client's instance request
+// cannot send -- so this is a raw request.
+func testAccMoveAppInstanceToPro(t *testing.T, envID string) {
+	t.Helper()
+	ctx := context.Background()
+	instances, err := testAccClient().ListInstances(ctx, envID)
+	if err != nil {
+		t.Fatalf("listing instances: %v", err)
+	}
+	var appInstance string
+	for _, inst := range instances {
+		if inst.Attributes.InstanceType == "app" {
+			appInstance = inst.ID
+		}
+	}
+	if appInstance == "" {
+		t.Fatalf("environment %s has no app instance", envID)
+	}
+	base := os.Getenv("LARAVEL_CLOUD_BASE_URL")
+	if base == "" {
+		base = "https://cloud.laravel.com/api"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, base+"/instances/"+appInstance,
+		strings.NewReader(`{"size":"pro.m-1vcpu-4gb","hibernation_timeout":null}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("LARAVEL_CLOUD_API_TOKEN"))
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("resizing the app instance: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("resizing the app instance: %s: %s", res.Status, body)
+	}
 }
 
 func testAccEnvironmentReadBackConfig(appName string) string {
