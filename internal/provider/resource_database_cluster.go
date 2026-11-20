@@ -122,8 +122,18 @@ func (r *DatabaseClusterResource) Schema(_ context.Context, _ resource.SchemaReq
 			},
 			"cluster_id": schema.StringAttribute{
 				Optional: true,
-				Description: "Dedicated cluster ID. Changing this forces a new cluster: " +
-					"the API's update endpoint accepts config and nothing else.",
+				Description: "Dedicated cluster ID, from the laravel_cloud_dedicated_clusters data source " +
+					"(type rds-databases for the AWS RDS types, mysql-databases for Laravel MySQL; Neon " +
+					"Serverless Postgres does not accept one). The cluster must be active and in this " +
+					"cluster's region. When omitted, an AWS RDS type is placed on one of the " +
+					"organization's dedicated RDS clusters in the region, in no defined order, so set it " +
+					"when the organization has more than one there; Laravel MySQL goes to the shared, " +
+					"least-loaded infrastructure. Create-only: no API " +
+					"endpoint reports a database cluster's dedicated cluster, so Terraform cannot read " +
+					"it back or fill it in on import. An imported cluster leaves it null, and adding it " +
+					"to the configuration afterwards records it without replacing the cluster. Changing " +
+					"a recorded value forces a new cluster: the API's update endpoint accepts config and " +
+					"nothing else.",
 				PlanModifiers: []planmodifier.String{
 					requiresReplaceUnlessImported(),
 				},

@@ -54,6 +54,10 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 					a["uses_hibernation"] = false
 					a["hibernation_timeout"] = nil
 				}
+				// ElastiCache caches are always private, whatever is sent.
+				if t, _ := a["type"].(string); strings.HasPrefix(t, "aws_elasticache_") {
+					a["is_public"] = false
+				}
 				return a
 			},
 			afterCreate: func(f *fakeCloud, id string) { f.busy[id] = 2 },
@@ -75,6 +79,10 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 					size = s
 				}
 				cacheType, _ := attrs["type"].(string)
+				// Only Laravel Valkey has a public endpoint setting.
+				if p, ok := patch["is_public"]; ok && cacheType != "laravel_valkey" && p != attrs["is_public"] {
+					return "Public endpoint settings are not available for this cache type."
+				}
 				return cacheHibernationError(patch, cacheType, size)
 			},
 			// With scale to zero off the API clears the timeout. An update
