@@ -220,14 +220,17 @@ func IsNotFound(err error) bool {
 // deleting a cluster or restoring one. A WebSocket server that is creating or
 // updating answers "An update operation is already in progress for this
 // WebSocket cluster." or, on delete, "An operation is already in progress for
-// this WebSocket cluster."
+// this WebSocket cluster." An environment refuses to attach a database or cache
+// that is creating or updating with "The selected cache is still being
+// provisioned. Try again in a few seconds." (or database, or database cluster).
 func IsBusy(err error) bool {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnprocessableEntity {
 		return false
 	}
 	return strings.Contains(apiErr.Body, "already being updated") ||
-		strings.Contains(apiErr.Body, "already in progress")
+		strings.Contains(apiErr.Body, "already in progress") ||
+		strings.Contains(apiErr.Body, "still being provisioned")
 }
 
 // IsClusterNotEmpty returns true if the API refused to delete a database

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -250,6 +251,22 @@ func (r *CacheResource) Create(ctx context.Context, req resource.CreateRequest, 
 		}
 	}
 
+	// Save the cache before waiting, so it is not lost if the wait fails.
+	mapCacheToState(cache, &plan)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// The connection details arrive about a minute before the cache leaves
+	// "creating", and until then the API refuses to attach it to an
+	// environment, which is usually the next thing in the same apply.
+	cache, err = waitForCacheAvailable(ctx, r.client, cache.ID)
+	if err != nil {
+		resp.Diagnostics.AddError("Error waiting for cache to become available", err.Error())
+		return
+	}
+
 	mapCacheToState(cache, &plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -465,12 +482,32 @@ func mapCacheToState(c *client.CacheData, state *CacheResourceModel) {
 	}
 }
 
-// cacheBusy bounds how long Update waits for a busy cache. The interval is a
-// variable so the plan tests, which run against an in-memory fake, need not
-// wait.
+// cacheBusy bounds how long Create waits for a new cache to become
+// available, and Update for a busy one. The interval is a variable so the
+// plan tests need not wait.
 const cacheBusyAttempts = 30
 
 var cacheBusyInterval = 10 * time.Second
+
+var errCacheBusy = errors.New("cache is still provisioning")
+
+// waitForCacheAvailable polls the cache until it is no longer creating or
+// updating, and returns it.
+func waitForCacheAvailable(ctx context.Context, c *client.Client, id string) (*client.CacheData, error) {
+	var cache *client.CacheData
+	err := client.RetryOnConflict(ctx, cacheBusyAttempts, cacheBusyInterval, func() error {
+		var err error
+		cache, err = c.GetCache(ctx, id)
+		if err != nil {
+			return err
+		}
+		if s := cache.Attributes.Status; s == "creating" || s == "updating" {
+			return fmt.Errorf("%w: status is %q", errCacheBusy, s)
+		}
+		return nil
+	}, func(err error) bool { return errors.Is(err, errCacheBusy) })
+	return cache, err
+}
 
 // cacheConnectionPoll bounds how long Create waits for a new cache to report
 // its connection details.

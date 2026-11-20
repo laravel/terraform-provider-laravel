@@ -339,6 +339,54 @@ resource "laravel_cloud_websocket_application" "wsapp" {
 	})
 }
 
+// TestEnvironmentCacheSameApplyPlan is the fast counterpart of
+// TestAccEnvironmentResource_cacheSameApply. The fake refuses to
+// attach a cache that is creating or updating, as the API does: a cache
+// created in the same apply as its environment must be waited for, and one
+// resized in the same apply as it is attached must be retried.
+func TestEnvironmentCacheSameApplyPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	cache := func(size string) string {
+		return fmt.Sprintf(`
+resource "laravel_cloud_cache" "cache" {
+  name                 = "sessions"
+  type                 = "laravel_valkey"
+  region               = "us-east-2"
+  size                 = %q
+  auto_upgrade_enabled = false
+  is_public            = false
+}
+`, size)
+	}
+	stack := providerCfg(baseURL) + appEnvStack
+	attached := strings.Replace(stack, `  branch         = "main"
+}`, `  branch         = "main"
+  cache_id       = laravel_cloud_cache.cache.id
+}`, 1)
+	checkAttached := func(s *terraform.State) error {
+		envID := s.RootModule().Resources["laravel_cloud_environment.env"].Primary.ID
+		want := s.RootModule().Resources["laravel_cloud_cache.cache"].Primary.ID
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if got := f.attachments[envID]["cache"]; got != want {
+			return fmt.Errorf("attached cache = %q, want %q", got, want)
+		}
+		return nil
+	}
+	empty := resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: attached + cache("valkey-flex-250mb"), Check: checkAttached},
+			{Config: attached + cache("valkey-flex-250mb"), ConfigPlanChecks: empty},
+			{Config: stack + cache("valkey-flex-250mb")},
+			{Config: attached + cache("valkey-flex-1gb"), Check: checkAttached},
+			{Config: attached + cache("valkey-flex-1gb"), ConfigPlanChecks: empty},
+		},
+	})
+}
+
 // TestEnvironmentServingRootPlan changes the directory a static environment
 // serves, which goes out with the environment's current, fixed mode.
 func TestEnvironmentServingRootPlan(t *testing.T) {

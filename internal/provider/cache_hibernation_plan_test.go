@@ -30,8 +30,9 @@ resource "laravel_cloud_cache" "cache" {
 // TestCacheHibernationPlan is the fast counterpart of
 // TestAccCacheResource_hibernation: scale to zero is set on
 // create, changed and turned off in place, and eviction_policy is read back.
-// The fake refuses the first update after create as busy, and an update that
-// turns scale to zero on without its timeout, as the live API does.
+// The fake refuses an update while the previous one is still in progress, and
+// an update that turns scale to zero on without its timeout, as the live API
+// does.
 func TestCacheHibernationPlan(t *testing.T) {
 	f, baseURL := newFakeCloud(t)
 	addr := "laravel_cloud_cache.cache"
@@ -74,7 +75,7 @@ func TestCacheHibernationPlan(t *testing.T) {
 			// Omitted: the API's defaults are read back.
 			{Config: omitted, ConfigStateChecks: hibernation(false, knownvalue.Null())},
 			{Config: omitted, ConfigPlanChecks: empty},
-			// Turned on right after create, while the cache is still busy.
+			// Turned on after create.
 			{
 				Config:            on5,
 				ConfigPlanChecks:  update,
@@ -84,6 +85,7 @@ func TestCacheHibernationPlan(t *testing.T) {
 			{Config: on5, ConfigPlanChecks: empty},
 			// Removing both attributes keeps the cache as it is.
 			{Config: omitted, ConfigPlanChecks: empty},
+			// Changed while the last update is still in progress.
 			{
 				Config:           on10,
 				ConfigPlanChecks: update,

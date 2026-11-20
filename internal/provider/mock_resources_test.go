@@ -32,8 +32,10 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
 				// A new cache reports its connection details while it is
-				// still "creating", and refuses updates until it leaves that
-				// state (see validatePatch).
+				// still "creating", which it stays for two more reads (see
+				// beforeGet). Until then it refuses updates (see
+				// validatePatch) and environments refuse to attach it (see
+				// cacheProvisioningError).
 				a["status"] = "creating"
 				a["connection"] = map[string]any{
 					"hostname": "cache.test.local", "port": 6379,
@@ -54,8 +56,17 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 				}
 				return a
 			},
+			afterCreate: func(f *fakeCloud, id string) { f.busy[id] = 2 },
+			beforeGet: func(f *fakeCloud, id string) {
+				attrs := f.objects["cache"][id]
+				if !f.refuseIfBusy(id) && attrs["status"] == "creating" {
+					attrs["status"] = "available"
+				}
+			},
+			// A refused request stands for the time the cache takes to
+			// finish, so the next one succeeds.
 			validatePatch: func(attrs, patch map[string]any) string {
-				if attrs["status"] == "creating" {
+				if s := attrs["status"]; s == "creating" || s == "updating" {
 					attrs["status"] = "available"
 					return "An update is already in progress for this cache. Try again in a few seconds."
 				}
@@ -66,7 +77,8 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 				cacheType, _ := attrs["type"].(string)
 				return cacheHibernationError(patch, cacheType, size)
 			},
-			// With scale to zero off the API clears the timeout.
+			// With scale to zero off the API clears the timeout. An update
+			// leaves the cache "updating" until a refused request.
 			patchFn: func(attrs, patch map[string]any) {
 				for k, v := range patch {
 					attrs[k] = v
@@ -74,6 +86,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 				if attrs["uses_hibernation"] != true {
 					attrs["hibernation_timeout"] = nil
 				}
+				attrs["status"] = "updating"
 			},
 		},
 		{
@@ -695,6 +708,23 @@ func (f *fakeCloud) refuseIfBusy(id string) bool {
 	}
 	f.busy[id]--
 	return true
+}
+
+// cacheProvisioningError is the API's 422 message when an environment is asked
+// to attach a cache that is creating or updating, or "" when it can attach it.
+// A refused request stands for the time the cache takes to finish, so the next
+// one succeeds.
+func (f *fakeCloud) cacheProvisioningError(id string) string {
+	attrs, ok := f.objects["cache"][id]
+	if !ok {
+		return ""
+	}
+	if s := attrs["status"]; s == "creating" || s == "updating" {
+		attrs["status"] = "available"
+		delete(f.busy, id)
+		return "The selected cache is still being provisioned. Try again in a few seconds."
+	}
+	return ""
 }
 
 // The API's 422 messages for a WebSocket server that is creating or updating:

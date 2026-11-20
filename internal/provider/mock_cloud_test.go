@@ -125,6 +125,9 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	wsInterval := websocketBusyInterval
 	websocketBusyInterval = time.Millisecond
 	t.Cleanup(func() { websocketBusyInterval = wsInterval })
+	envInterval := environmentBusyInterval
+	environmentBusyInterval = time.Millisecond
+	t.Cleanup(func() { environmentBusyInterval = envInterval })
 	cacheInterval := cacheBusyInterval
 	cacheBusyInterval = time.Millisecond
 	t.Cleanup(func() { cacheBusyInterval = cacheInterval })
@@ -482,6 +485,14 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 		f.failEnvUpdates--
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("server error"))
 		return
+	}
+	if req.CacheID != nil {
+		var cacheID string
+		_ = json.Unmarshal(req.CacheID, &cacheID)
+		if msg := f.cacheProvisioningError(cacheID); msg != "" {
+			writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("%s", msg))
+			return
+		}
 	}
 	f.envUpdateBodies = append(f.envUpdateBodies, body)
 

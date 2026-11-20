@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -692,7 +693,7 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		patchReq.NightwatchToken = nullableStringRequest(wo)
 	}
 	if patchReq != nil {
-		patched, err := r.client.UpdateEnvironment(ctx, env.ID, *patchReq)
+		patched, err := updateEnvironmentWhenReady(ctx, r.client, env.ID, *patchReq)
 		if err == nil && patched != nil {
 			// Read-only values the PATCH changed must come from its response.
 			// php_version is sent as "8.4:1" and reported back only as a major
@@ -746,6 +747,25 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	setUnknownStringPtrFromAPI(&plan.DeployHookURL, env.Attributes.DeployHookURL)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// The API refuses to attach a database or cache that is creating or updating
+// ("The selected cache is still being provisioned. Try again in a few
+// seconds."), such as one created or resized earlier in the same apply. These
+// bound how long an environment update retries that. The interval is a
+// variable so the plan tests need not wait.
+const environmentBusyAttempts = 30
+
+var environmentBusyInterval = 10 * time.Second
+
+func updateEnvironmentWhenReady(ctx context.Context, c *client.Client, id string, req client.UpdateEnvironmentRequest) (*client.EnvironmentData, error) {
+	var env *client.EnvironmentData
+	err := client.RetryOnConflict(ctx, environmentBusyAttempts, environmentBusyInterval, func() error {
+		var err error
+		env, err = c.UpdateEnvironment(ctx, id, req)
+		return err
+	}, client.IsBusy)
+	return env, err
 }
 
 // ---------------------------------------------------------------------------
@@ -883,7 +903,7 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	updated, err := r.client.UpdateEnvironment(ctx, state.ID.ValueString(), *updateReq)
+	updated, err := updateEnvironmentWhenReady(ctx, r.client, state.ID.ValueString(), *updateReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating environment", err.Error())
 		return
