@@ -3,12 +3,12 @@
 page_title: "laravel_cloud_database_restore Resource - Laravel Cloud"
 subcategory: ""
 description: |-
-  Restores a Laravel Cloud database cluster from a snapshot or point-in-time.
+  Restores a Laravel Cloud database cluster from a snapshot or point-in-time, into a new cluster. The API gives a restored Serverless Postgres cluster the same ID as its source, so every request for it reaches the source: destroying such a restore only removes it from state, and the restored cluster has to be deleted in the Laravel Cloud dashboard.
 ---
 
 # laravel_cloud_database_restore (Resource)
 
-Restores a Laravel Cloud database cluster from a snapshot or point-in-time.
+Restores a Laravel Cloud database cluster from a snapshot or point-in-time, into a new cluster. The API gives a restored Serverless Postgres cluster the same ID as its source, so every request for it reaches the source: destroying such a restore only removes it from state, and the restored cluster has to be deleted in the Laravel Cloud dashboard.
 
 ## Example Usage
 
@@ -56,6 +56,7 @@ resource "laravel_cloud_database_restore" "example" {
 ### Optional
 
 - `database_snapshot_id` (String) Snapshot ID to restore from. Mutually exclusive with restore_time.
+- `force_destroy` (Boolean) Allow destroying the restored cluster even though it still contains databases. A restore copies the source cluster's databases into the new cluster, and the API refuses to delete a cluster while any database is attached, so destroying is usually impossible without this. Setting it true DELETES EVERY DATABASE IN THE RESTORED CLUSTER, including ones Terraform does not manage. Defaults to false, in which case destroy fails and names the databases that are in the way.
 - `restore_time` (String) Point-in-time to restore to (ISO 8601). Mutually exclusive with database_snapshot_id.
 
 ### Read-Only

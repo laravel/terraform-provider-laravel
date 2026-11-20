@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -498,9 +499,22 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 	// object under clusterType so those routes find it.
 	mux.HandleFunc("POST /databases/clusters/{id}/restore", func(w http.ResponseWriter, r *http.Request) {
 		body := decodeBody(r)
+		sourceID := r.PathValue("id")
 
 		f.mu.Lock()
 		defer f.mu.Unlock()
+
+		if f.refuseIfBusy(sourceID) {
+			writeError(w, http.StatusUnprocessableEntity, errors.New(clusterBusyMessage))
+			return
+		}
+
+		// A Serverless Postgres restore keeps the source's ID, so the API
+		// answers every later request for it with the source.
+		if t, _ := f.objects[clusterType][sourceID]["type"].(string); strings.HasPrefix(t, "neon_serverless_postgres") {
+			writeJSON(w, http.StatusCreated, jsonAPIObject(sourceID, clusterType, f.objects[clusterType][sourceID]))
+			return
+		}
 
 		f.seq++
 		id := fmt.Sprintf("cluster-%d", f.seq)
@@ -519,6 +533,12 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			f.objects[clusterType] = map[string]map[string]any{}
 		}
 		f.objects[clusterType][id] = attrs
+		// The restored cluster holds copies of the source's databases, and is
+		// busy while it restores.
+		for _, dbID := range f.clusterDatabaseIDs(sourceID) {
+			f.addClusterDatabase(id, f.objects["database"][dbID]["name"])
+		}
+		f.clusterBusy[id] = clusterCreatingRefusals
 		writeJSON(w, http.StatusCreated, jsonAPIObject(id, clusterType, attrs))
 	})
 }
@@ -530,7 +550,8 @@ const (
 	clusterBusyMessage         = "An update is already in progress for this database. Try again in a few seconds."
 )
 
-// clusterCreatingRefusals is how many requests a new cluster refuses as busy before it becomes available.
+// clusterCreatingRefusals is how many requests a new or restoring cluster
+// refuses as busy before it becomes available.
 const clusterCreatingRefusals = 2
 
 // refuseIfBusy reports whether the cluster is busy, and uses up one refusal.
@@ -543,7 +564,7 @@ func (f *fakeCloud) refuseIfBusy(clusterID string) bool {
 }
 
 // addClusterDatabase stores a database inside a cluster, as the platform does
-// when it creates a cluster.
+// when it creates a cluster or restores one.
 func (f *fakeCloud) addClusterDatabase(clusterID string, name any) {
 	f.seq++
 	id := fmt.Sprintf("db-schema-%d", f.seq)

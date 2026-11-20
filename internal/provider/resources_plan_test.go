@@ -420,6 +420,7 @@ resource "laravel_cloud_database_restore" "restore" {
   database_cluster_id = laravel_cloud_database_cluster.cluster.id
   name                = "restored-db"
   restore_time        = "2026-01-01T00:00:00Z"
+  force_destroy       = true
 }
 `
 	runPlanStability(t, config,

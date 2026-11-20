@@ -31,6 +31,7 @@ type DatabaseRestoreResourceModel struct {
 	Region               types.String `tfsdk:"region"`
 	Config               types.String `tfsdk:"config"`
 	Connection           types.Object `tfsdk:"connection_details"`
+	ForceDestroy         types.Bool   `tfsdk:"force_destroy"`
 }
 
 func NewDatabaseRestoreResource() resource.Resource {
@@ -43,7 +44,10 @@ func (r *DatabaseRestoreResource) Metadata(_ context.Context, req resource.Metad
 
 func (r *DatabaseRestoreResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Restores a Laravel Cloud database cluster from a snapshot or point-in-time.",
+		Description: "Restores a Laravel Cloud database cluster from a snapshot or point-in-time, into a new cluster. " +
+			"The API gives a restored Serverless Postgres cluster the same ID as its source, so every request for it " +
+			"reaches the source: destroying such a restore only removes it from state, and the restored cluster has " +
+			"to be deleted in the Laravel Cloud dashboard.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
@@ -100,6 +104,15 @@ func (r *DatabaseRestoreResource) Schema(_ context.Context, _ resource.SchemaReq
 				Computed:    true,
 				Description: "JSON-encoded configuration of the restored cluster.",
 			},
+			"force_destroy": schema.BoolAttribute{
+				Optional: true,
+				Description: "Allow destroying the restored cluster even though it still contains " +
+					"databases. A restore copies the source cluster's databases into the new cluster, " +
+					"and the API refuses to delete a cluster while any database is attached, so " +
+					"destroying is usually impossible without this. Setting it true DELETES EVERY " +
+					"DATABASE IN THE RESTORED CLUSTER, including ones Terraform does not manage. " +
+					"Defaults to false, in which case destroy fails and names the databases that are in the way.",
+			},
 			"connection_details": schema.SingleNestedAttribute{
 				Computed:    true,
 				Description: "Read-only connection details for the restored cluster.",
@@ -147,13 +160,22 @@ func (r *DatabaseRestoreResource) Create(ctx context.Context, req resource.Creat
 		createReq.DatabaseSnapshotID = &v
 	}
 
-	restored, err := r.client.CreateDatabaseRestore(ctx, plan.DatabaseClusterID.ValueString(), createReq)
+	// The source cluster refuses restores while it is busy.
+	var restored *client.DatabaseClusterData
+	err := client.RetryOnConflict(ctx, databaseBusyAttempts, databaseBusyInterval, func() error {
+		var err error
+		restored, err = r.client.CreateDatabaseRestore(ctx, plan.DatabaseClusterID.ValueString(), createReq)
+		return err
+	}, client.IsBusy)
 	if err != nil {
 		resp.Diagnostics.AddError("Error restoring database", err.Error())
 		return
 	}
 
 	plan.ID = types.StringValue(restored.ID)
+	if sharesSourceID(plan) {
+		resp.Diagnostics.AddWarning("Restored cluster cannot be managed through the API", sharedSourceIDDetail)
+	}
 	plan.RestoredClusterName = types.StringValue(restored.Attributes.Name)
 	plan.RestoredClusterType = types.StringValue(restored.Attributes.DBType)
 	plan.RestoredClusterState = types.StringValue(restored.Attributes.Status)
@@ -198,8 +220,17 @@ func (r *DatabaseRestoreResource) Read(ctx context.Context, req resource.ReadReq
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-func (r *DatabaseRestoreResource) Update(_ context.Context, _ resource.UpdateRequest, resp *resource.UpdateResponse) {
-	resp.Diagnostics.AddError("Update not supported", "Database restores are immutable. Create a new restore instead.")
+// Update only ever changes force_destroy: every other argument forces a new
+// restore. Nothing is sent to the API.
+func (r *DatabaseRestoreResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state DatabaseRestoreResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	state.ForceDestroy = plan.ForceDestroy
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *DatabaseRestoreResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -209,8 +240,27 @@ func (r *DatabaseRestoreResource) Delete(ctx context.Context, req resource.Delet
 		return
 	}
 
-	// Delete the restored cluster.
-	if err := r.client.DeleteDatabaseCluster(ctx, state.ID.ValueString()); err != nil {
-		resp.Diagnostics.AddError("Error deleting restored database cluster", err.Error())
+	if sharesSourceID(state) {
+		// Removed from state without a request, which would reach the source.
+		resp.Diagnostics.AddWarning("Restored cluster was not deleted", sharedSourceIDDetail+
+			" Delete it in the Laravel Cloud dashboard.")
+		return
 	}
+
+	// The restored cluster is an ordinary cluster holding copies of the
+	// source's databases, so it is deleted the same way.
+	resp.Diagnostics.Append(deleteDatabaseCluster(ctx, r.client, state.ID.ValueString(), state.ForceDestroy.ValueBool())...)
 }
+
+// sharesSourceID reports whether the API gave the restored cluster the same ID
+// as the cluster it was restored from, which it does for Serverless Postgres:
+// both keep the Neon project's ID. The API looks clusters up by that ID and
+// takes the first match, the source, so every request for the restored
+// cluster -- deleting it, too -- acts on the source instead.
+func sharesSourceID(m DatabaseRestoreResourceModel) bool {
+	return m.ID.ValueString() == m.DatabaseClusterID.ValueString()
+}
+
+const sharedSourceIDDetail = "The API gave the restored cluster the same ID as the cluster it was restored from, " +
+	"as it does for every Serverless Postgres restore, so any request for it reaches the source cluster instead. " +
+	"Terraform does not delete it, because that would delete the source and its databases."
