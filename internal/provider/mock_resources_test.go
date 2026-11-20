@@ -65,6 +65,37 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			typeName: "storage_bucket", idPrefix: "bucket",
 			collectionPattern: "/buckets", itemPattern: "/buckets/{id}",
 			patch: true, del: true,
+			// Every bucket is created with an access key, which is listed under
+			// it like any other key, and a bucket cannot be deleted while it has
+			// keys. key_name and key_permission are request-only fields.
+			afterCreate: func(f *fakeCloud, bucketID string) {
+				attrs := f.objects["storage_bucket"][bucketID]
+				f.seq++
+				id := fmt.Sprintf("key-%d", f.seq)
+				if f.objects["storage_bucket_key"] == nil {
+					f.objects["storage_bucket_key"] = map[string]map[string]any{}
+				}
+				f.objects["storage_bucket_key"][id] = map[string]any{
+					"name": attrs["key_name"], "permission": attrs["key_permission"],
+					"access_key_id": "AKIATEST0000", "access_key_secret": "initial-key-secret",
+				}
+				key := "storage_bucket_key:" + bucketID
+				f.children[key] = append(f.children[key], id)
+				if f.parents["storage_bucket_key"] == nil {
+					f.parents["storage_bucket_key"] = map[string]string{}
+				}
+				f.parents["storage_bucket_key"][id] = bucketID
+				delete(attrs, "key_name")
+				delete(attrs, "key_permission")
+			},
+			beforeDelete: func(f *fakeCloud, bucketID string) string {
+				for _, id := range f.children["storage_bucket_key:"+bucketID] {
+					if _, ok := f.objects["storage_bucket_key"][id]; ok {
+						return "The bucket has access keys attached and cannot be deleted. Delete all its access keys first."
+					}
+				}
+				return ""
+			},
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
 				a["status"] = "available"

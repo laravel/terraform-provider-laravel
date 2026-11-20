@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -70,6 +71,10 @@ type crudSpec struct {
 	// side effects the API performs on create -- notably a database cluster
 	// auto-creating a database inside itself.
 	afterCreate func(f *fakeCloud, id string)
+
+	// beforeDelete, if set, can refuse a DELETE by returning the message the
+	// API answers with a 422 -- a bucket that still has keys, for example.
+	beforeDelete func(f *fakeCloud, id string) string
 
 	// createOnlyAttrs names attributes the API returns when the object is
 	// created and omits from every later response -- credentials, typically.
@@ -206,6 +211,12 @@ func (f *fakeCloud) genDelete(s crudSpec) http.HandlerFunc {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 
+		if s.beforeDelete != nil {
+			if msg := s.beforeDelete(f, r.PathValue("id")); msg != "" {
+				writeError(w, http.StatusUnprocessableEntity, errors.New(msg))
+				return
+			}
+		}
 		delete(f.objects[s.typeName], r.PathValue("id"))
 		w.WriteHeader(http.StatusNoContent)
 	}
