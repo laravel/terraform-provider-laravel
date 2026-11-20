@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -57,6 +58,54 @@ func TestEnvironmentVariablesRemovalPlan(t *testing.T) {
 			},
 		},
 	})
+}
+
+// TestEnvironmentVariablesLimitPlan checks that more variables than an
+// environment can hold fail at plan time. Cloud stores at most 210
+// per environment and takes at most 210 per request, so the plan used to look
+// fine and the apply failed with a 422.
+func TestEnvironmentVariablesLimitPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	countVars := func(want int) func(*terraform.State) error {
+		return func(*terraform.State) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			for envID, vars := range f.vars {
+				if len(vars) != want {
+					return fmt.Errorf("environment %s has %d variables, want %d", envID, len(vars), want)
+				}
+			}
+			return nil
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: environmentVariablesConfig(baseURL, numberedVariables(210)),
+				Check:  countVars(210),
+			},
+			{
+				Config:      environmentVariablesConfig(baseURL, numberedVariables(211)),
+				ExpectError: regexp.MustCompile(`(?s)at most 210 variables per environment.*sets 211`),
+			},
+			{
+				// Nothing was written for the rejected configuration.
+				Config: environmentVariablesConfig(baseURL, numberedVariables(210)),
+				Check:  countVars(210),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+		},
+	})
+}
+
+// numberedVariables is a for expression for a variables map with n keys,
+// TFACC_VAR_000 upwards.
+func numberedVariables(n int) string {
+	return fmt.Sprintf(` for i in range(%d) : format("TFACC_VAR_%%03d", i) => "value-${i}" `, n)
 }
 
 func environmentVariablesConfig(baseURL, vars string) string {
