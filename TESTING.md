@@ -64,6 +64,21 @@ Enable Terraform debug logging:
 TF_LOG=DEBUG make testacc
 ```
 
+### Cleaning Up (Sweepers)
+
+Every acceptance test names its resources with the `tfacc-` prefix (use
+`testAccName()`). The sweepers delete only resources with that prefix, so they
+are safe to run against an organization that also holds real resources:
+
+```sh
+go test ./internal/provider -v -sweep=all
+```
+
+They delete applications (and with them their environments), WebSocket
+servers, caches, buckets (keys first), database users (in any cluster, by
+username prefix `tfacc_`), database clusters (databases first) and
+secrets.
+
 ## Plan-Check Tests (fake API)
 
 Plan-check tests run a **real** `terraform plan`/`apply` cycle against an

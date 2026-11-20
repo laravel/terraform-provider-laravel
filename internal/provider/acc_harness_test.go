@@ -141,12 +141,57 @@ func init() {
 		},
 	})
 
+	// Database users are named with the prefix in underscores, since
+	// usernames may not contain dashes. They are looked for in every cluster,
+	// not only test clusters, because a test may add one to any cluster; only
+	// prefixed users are deleted. Serverless Postgres has no database users,
+	// and the superuser cannot be deleted.
+	resource.AddTestSweepers("laravel_cloud_database_user", &resource.Sweeper{
+		Name:         "laravel_cloud_database_user",
+		Dependencies: []string{"laravel_cloud_application"},
+		F: func(string) error {
+			c := testAccClient()
+			clusters, err := c.ListDatabaseClusters(ctx)
+			if err != nil {
+				return err
+			}
+			var errs []string
+			for _, d := range clusters {
+				if strings.HasPrefix(d.Attributes.DBType, "neon_serverless_postgres") {
+					continue
+				}
+				users, err := c.ListDatabaseUsers(ctx, d.ID)
+				if err != nil {
+					if !client.IsNotFound(err) {
+						errs = append(errs, fmt.Sprintf("%s: %v", d.Attributes.Name, err))
+					}
+					continue
+				}
+				err = sweepEach(users,
+					func(u client.DatabaseUserData) string {
+						if u.Attributes.Type == "superuser" {
+							return ""
+						}
+						return strings.ReplaceAll(u.Attributes.Username, "_", "-")
+					},
+					func(u client.DatabaseUserData) error { return c.DeleteDatabaseUser(ctx, d.ID, u.ID) })
+				if err != nil {
+					errs = append(errs, err.Error())
+				}
+			}
+			if len(errs) > 0 {
+				return fmt.Errorf("%s", strings.Join(errs, "\n"))
+			}
+			return nil
+		},
+	})
+
 	// A cluster cannot be deleted while it still holds databases, so its
 	// databases go first. A cluster that is still busy fails here and is
 	// picked up by the next sweep.
 	resource.AddTestSweepers("laravel_cloud_database_cluster", &resource.Sweeper{
 		Name:         "laravel_cloud_database_cluster",
-		Dependencies: []string{"laravel_cloud_application"},
+		Dependencies: []string{"laravel_cloud_application", "laravel_cloud_database_user"},
 		F: func(string) error {
 			c := testAccClient()
 			clusters, err := c.ListDatabaseClusters(ctx)
