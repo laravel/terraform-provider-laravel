@@ -105,8 +105,8 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"min_replicas": schema.Int64Attribute{
 				Optional: true,
 				Computed: true,
-				Description: "Minimum number of replicas. Only applicable to the \"custom\" " +
-					"scaling type; the API rejects it for \"auto\". Required for custom scaling " +
+				Description: "Minimum number of replicas. Set it only for the \"custom\" scaling type: " +
+					"for \"auto\" and \"none\" the platform sets it to 1. Required for custom scaling " +
 					"except on managed queues, where it is the minimum number of workers: optional " +
 					"on current-generation (mq.*) sizes, where 0 lets the queue scale to zero when " +
 					"idle, and rejected on previous-generation sizes, which always scale to zero.",
@@ -117,8 +117,8 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"max_replicas": schema.Int64Attribute{
 				Optional: true,
 				Computed: true,
-				Description: "Maximum number of replicas. Only applicable to the \"custom\" " +
-					"scaling type; the API rejects it for \"auto\".",
+				Description: "Maximum number of replicas. Set it only for the \"custom\" scaling type: " +
+					"for \"auto\" the platform sets it to the plan's replica limit, and for \"none\" to 1.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -130,11 +130,11 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			},
 			"scaling_cpu_threshold_percentage": schema.Int64Attribute{
 				Optional:    true,
-				Description: "CPU scaling threshold (50-95).",
+				Description: "CPU usage, in percent (50-95), above which the instance scales out. Leave unset for the platform default. Not allowed with scaling_type \"none\".",
 			},
 			"scaling_memory_threshold_percentage": schema.Int64Attribute{
 				Optional:    true,
-				Description: "Memory scaling threshold (50-95).",
+				Description: "Memory usage, in percent (50-95), above which the instance scales out. Leave unset for the platform default. Not allowed with scaling_type \"none\".",
 			},
 			"sleep_with_app": schema.BoolAttribute{
 				Optional:    true,
@@ -412,17 +412,26 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		v := plan.ScalingType.ValueString()
 		updateReq.ScalingType = &v
 	}
-	// A null planned replica count means "not applicable" -- the instance is
-	// scaling automatically, and the API rejects the field outright. Sending
-	// ValueInt64() of a null would post 0, which is neither what the plan says
-	// nor a value the API accepts.
-	if !plan.MinReplicas.Equal(state.MinReplicas) && !plan.MinReplicas.IsNull() {
+	// An unknown replica count is one the platform picks, and the API rejects
+	// either count outright for "auto".
+	autoScaling := plan.ScalingType.ValueString() == "auto"
+	if !autoScaling && isSet(plan.MinReplicas) && !plan.MinReplicas.Equal(state.MinReplicas) {
 		v := int(plan.MinReplicas.ValueInt64())
 		updateReq.MinReplicas = &v
 	}
-	if !plan.MaxReplicas.Equal(state.MaxReplicas) && !plan.MaxReplicas.IsNull() {
+	if !autoScaling && isSet(plan.MaxReplicas) && !plan.MaxReplicas.Equal(state.MaxReplicas) {
 		v := int(plan.MaxReplicas.ValueInt64())
 		updateReq.MaxReplicas = &v
+	}
+	// A removed threshold is sent as null, which returns it to the platform
+	// default.
+	if !plan.ScalingCPUThresholdPercentage.Equal(state.ScalingCPUThresholdPercentage) {
+		v := plan.ScalingCPUThresholdPercentage
+		updateReq.ScalingCPUThresholdPercentage = &client.NullableInt{Value: int(v.ValueInt64()), Null: v.IsNull()}
+	}
+	if !plan.ScalingMemoryThresholdPercentage.Equal(state.ScalingMemoryThresholdPercentage) {
+		v := plan.ScalingMemoryThresholdPercentage
+		updateReq.ScalingMemoryThresholdPercentage = &client.NullableInt{Value: int(v.ValueInt64()), Null: v.IsNull()}
 	}
 	if !plan.UsesScheduler.Equal(state.UsesScheduler) {
 		v := plan.UsesScheduler.ValueBool()
@@ -524,9 +533,13 @@ func mapInstanceToState(inst *client.InstanceData, state *InstanceResourceModel)
 	state.MaxReplicas = types.Int64PointerValue(inst.Attributes.MaxReplicas)
 	state.UsesScheduler = types.BoolValue(inst.Attributes.UsesScheduler)
 	state.CreatedAt = types.StringPointerValue(inst.Attributes.CreatedAt)
+	// null is the platform default, and what the API reports once scaling
+	// stops, so it must replace whatever was there before.
+	state.ScalingCPUThresholdPercentage = types.Int64Null()
 	if inst.Attributes.ScalingCPUThresholdPercentage != nil {
 		state.ScalingCPUThresholdPercentage = types.Int64Value(int64(*inst.Attributes.ScalingCPUThresholdPercentage))
 	}
+	state.ScalingMemoryThresholdPercentage = types.Int64Null()
 	if inst.Attributes.ScalingMemoryThresholdPercentage != nil {
 		state.ScalingMemoryThresholdPercentage = types.Int64Value(int64(*inst.Attributes.ScalingMemoryThresholdPercentage))
 	}
@@ -618,6 +631,22 @@ func (r *InstanceResource) ValidateConfig(ctx context.Context, req resource.Vali
 		)
 	}
 
+	if config.ScalingType.ValueString() == "none" {
+		for _, a := range []struct {
+			name string
+			v    types.Int64
+		}{
+			{"scaling_cpu_threshold_percentage", config.ScalingCPUThresholdPercentage},
+			{"scaling_memory_threshold_percentage", config.ScalingMemoryThresholdPercentage},
+		} {
+			if isSet(a.v) {
+				resp.Diagnostics.AddAttributeError(path.Root(a.name), a.name+" cannot be used without scaling",
+					"The Laravel Cloud API requires the scaling thresholds to be empty when scaling_type is \"none\". "+
+						"Remove "+a.name+", or set scaling_type to \"custom\" or \"auto\".")
+			}
+		}
+	}
+
 	if config.ScalingType.ValueString() == "auto" {
 		if isSet(config.MinReplicas) {
 			resp.Diagnostics.AddAttributeError(
@@ -668,45 +697,47 @@ func validateHibernationTimeout(v types.Int64) (int64, bool) {
 	return got, got >= hibernationTimeoutMin && got <= hibernationTimeoutMax
 }
 
-// ModifyPlan clears the replica counts when the instance scales automatically.
+// ModifyPlan leaves the replica counts to the platform when it chooses them.
 //
-// min_replicas and max_replicas are Optional+Computed with UseStateForUnknown,
-// so removing them from config does not plan a change -- the prior values are
-// carried forward. Switching an existing instance from "custom" to "auto" would
-// therefore leave the old counts in state and on the server, which is exactly
-// the combination ValidateConfig declares impossible and the API rejects, with
-// no way out: removing them from config does nothing and setting them fails
-// validation.
-//
-// Planning them as null instead makes the transition mean what it says.
+// For "auto" the API sets them to 1 and the plan's replica limit, and for
+// "none" to 1 and 1, whatever the instance had before. min_replicas and
+// max_replicas are Optional+Computed with UseStateForUnknown, so an unset
+// count carries the prior value forward, which is wrong once the scaling type
+// changes: switching from "custom" to "auto" would plan the old counts and the
+// apply would fail with an inconsistent result. An unset count is unknown
+// instead whenever the scaling type is new, and is read back after the apply.
 func (r *InstanceResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	// Nothing to do when the resource is being destroyed.
 	if req.Plan.Raw.IsNull() {
 		return
 	}
 
-	var plan InstanceResourceModel
+	var plan, config InstanceResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	if plan.ScalingType.IsUnknown() || plan.ScalingType.ValueString() != "auto" {
+	scalingType := plan.ScalingType.ValueString()
+	if plan.ScalingType.IsUnknown() || (scalingType != "auto" && scalingType != "none") {
 		return
 	}
+	if !req.State.Raw.IsNull() {
+		var state InstanceResourceModel
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+		if resp.Diagnostics.HasError() || state.ScalingType.Equal(plan.ScalingType) {
+			return
+		}
+	}
 
-	changed := false
-	if !plan.MinReplicas.IsNull() {
-		plan.MinReplicas = types.Int64Null()
-		changed = true
+	if config.MinReplicas.IsNull() {
+		plan.MinReplicas = types.Int64Unknown()
 	}
-	if !plan.MaxReplicas.IsNull() {
-		plan.MaxReplicas = types.Int64Null()
-		changed = true
+	if config.MaxReplicas.IsNull() {
+		plan.MaxReplicas = types.Int64Unknown()
 	}
-	if changed {
-		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
-	}
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
 // validateManagedQueueConfig catches what the API would reject or ignore by

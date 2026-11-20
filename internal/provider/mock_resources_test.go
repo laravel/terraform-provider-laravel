@@ -202,19 +202,14 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 						delete(a, "polling_interval")
 					}
 				}
+				syncInstanceScaling(a)
 				return a
 			},
-			// The API does not report replica counts for an automatically
-			// scaled instance -- they are rejected on the way in and absent on
-			// the way out.
 			patchFn: func(attrs, patch map[string]any) {
 				for k, v := range patch {
 					attrs[k] = v
 				}
-				if attrs["scaling_type"] == "auto" {
-					delete(attrs, "min_replicas")
-					delete(attrs, "max_replicas")
-				}
+				syncInstanceScaling(attrs)
 				// Only app instances take health checks; anything else has
 				// them silently dropped. An empty object clears them.
 				if probes, ok := attrs["probes"].(map[string]any); ok && (attrs["type"] != "app" || len(probes) == 0) {
@@ -768,4 +763,22 @@ func fakeWorkerCommand(config any) string {
 		}
 	}
 	return strings.Join(append(parts, "--quiet"), " ")
+}
+
+// fakeAutoMaxReplicas stands in for the plan's replica limit, which the API
+// reports as max_replicas for an automatically scaled instance (1000 on the
+// test organization's plan).
+const fakeAutoMaxReplicas = 10
+
+// syncInstanceScaling does what the API does after every instance create and
+// update: "auto" runs 1 replica up to the plan's limit and "none" exactly 1,
+// whatever the instance had before, and "none" clears both thresholds.
+func syncInstanceScaling(a map[string]any) {
+	switch a["scaling_type"] {
+	case "auto":
+		a["min_replicas"], a["max_replicas"] = 1, fakeAutoMaxReplicas
+	case "none":
+		a["min_replicas"], a["max_replicas"] = 1, 1
+		a["scaling_cpu_threshold_percentage"], a["scaling_memory_threshold_percentage"] = nil, nil
+	}
 }

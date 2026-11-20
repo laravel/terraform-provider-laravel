@@ -393,20 +393,22 @@ type CreateInstanceRequest struct {
 }
 
 type UpdateInstanceRequest struct {
-	Name                             *string `json:"name,omitempty"`
-	Size                             *string `json:"size,omitempty"`
-	ScalingType                      *string `json:"scaling_type,omitempty"`
-	MinReplicas                      *int    `json:"min_replicas,omitempty"`
-	MaxReplicas                      *int    `json:"max_replicas,omitempty"`
-	UsesScheduler                    *bool   `json:"uses_scheduler,omitempty"`
-	ScalingCPUThresholdPercentage    *int    `json:"scaling_cpu_threshold_percentage,omitempty"`
-	ScalingMemoryThresholdPercentage *int    `json:"scaling_memory_threshold_percentage,omitempty"`
-	SleepWithApp                     *bool   `json:"sleep_with_app,omitempty"`
-	UsesOctane                       *bool   `json:"uses_octane,omitempty"`
-	UsesInertiaSSR                   *bool   `json:"uses_inertia_ssr,omitempty"`
-	HibernationTimeout               *int    `json:"hibernation_timeout,omitempty"`
-	VisibilityTimeout                *int    `json:"visibility_timeout,omitempty"`
-	ShutdownTimeout                  *int    `json:"shutdown_timeout,omitempty"`
+	Name          *string `json:"name,omitempty"`
+	Size          *string `json:"size,omitempty"`
+	ScalingType   *string `json:"scaling_type,omitempty"`
+	MinReplicas   *int    `json:"min_replicas,omitempty"`
+	MaxReplicas   *int    `json:"max_replicas,omitempty"`
+	UsesScheduler *bool   `json:"uses_scheduler,omitempty"`
+	// The thresholds are nullable: null returns the instance to the platform
+	// default.
+	ScalingCPUThresholdPercentage    *NullableInt `json:"scaling_cpu_threshold_percentage,omitempty"`
+	ScalingMemoryThresholdPercentage *NullableInt `json:"scaling_memory_threshold_percentage,omitempty"`
+	SleepWithApp                     *bool        `json:"sleep_with_app,omitempty"`
+	UsesOctane                       *bool        `json:"uses_octane,omitempty"`
+	UsesInertiaSSR                   *bool        `json:"uses_inertia_ssr,omitempty"`
+	HibernationTimeout               *int         `json:"hibernation_timeout,omitempty"`
+	VisibilityTimeout                *int         `json:"visibility_timeout,omitempty"`
+	ShutdownTimeout                  *int         `json:"shutdown_timeout,omitempty"`
 	// PollingInterval applies to previous-generation managed queues only; see
 	// CreateInstanceRequest.
 	PollingInterval *int `json:"polling_interval,omitempty"`
