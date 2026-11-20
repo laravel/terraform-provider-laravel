@@ -139,8 +139,8 @@ type EnvironmentAttributes struct {
 	// VanityDomain is the read-only vanity domain hostname returned by the
 	// API (empty/null when none). There is no uses_vanity_domain response
 	// flag; presence of a vanity domain is derived from this field.
-	VanityDomain          *string            `json:"vanity_domain"`
-	UsesOctane            bool               `json:"uses_octane"`
+	VanityDomain *string `json:"vanity_domain"`
+	UsesOctane   bool    `json:"uses_octane"`
 	// UsesHibernation is whether sleep mode is on. The backend turns it off,
 	// and still answers 200, when sleep_timeout is sent for an instance size
 	// that cannot hibernate. Nil when not reported.
@@ -1199,6 +1199,11 @@ type ApplicationRelationships struct {
 type EnvironmentRelationships struct {
 	Application Relationship `json:"application"`
 	Branch      Relationship `json:"branch"`
+	// The attachments are pointers so that "not included in the response"
+	// (nil) stays apart from "included and detached" (data: null).
+	Database             *Relationship `json:"database,omitempty"`
+	Cache                *Relationship `json:"cache,omitempty"`
+	WebsocketApplication *Relationship `json:"websocketApplication,omitempty"`
 }
 
 // DatabaseSnapshotRelationships are the relationships on a database snapshot.

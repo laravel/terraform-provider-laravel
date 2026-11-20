@@ -50,6 +50,10 @@ type fakeCloud struct {
 	// failEnvUpdates makes that many of the next PATCH /environments calls
 	// fail with a 500, to model a follow-up update that does not land.
 	failEnvUpdates int
+	// attachments holds each environment's attached database, cache and
+	// WebSocket application by relationship name, reported only when the GET
+	// asks for them with include, as the API does.
+	attachments map[string]map[string]string
 	// cannotHibernate marks environments whose app instance has a size that
 	// cannot hibernate (a Pro size), by environment ID.
 	cannotHibernate map[string]bool
@@ -425,7 +429,22 @@ func (f *fakeCloud) getEnvironment(w http.ResponseWriter, r *http.Request) {
 	if f.hideVariables {
 		env.Attributes.EnvironmentVariables = nil
 	}
-	writeJSON(w, http.StatusOK, f.withSecretsRelationship(r, id, environmentDoc(env)))
+	doc := environmentDoc(env)
+	include := r.URL.Query().Get("include")
+	for name, rel := range map[string]**client.Relationship{
+		"database":             &doc.Data.Relationships.Database,
+		"cache":                &doc.Data.Relationships.Cache,
+		"websocketApplication": &doc.Data.Relationships.WebsocketApplication,
+	} {
+		if !strings.Contains(include, name) {
+			continue
+		}
+		*rel = &client.Relationship{}
+		if related := f.attachments[id][name]; related != "" {
+			(*rel).Data = &client.ResourceIdentifier{ID: related}
+		}
+	}
+	writeJSON(w, http.StatusOK, f.withSecretsRelationship(r, id, doc))
 }
 
 func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
@@ -474,6 +493,24 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 	// network_settings.cache.strategy -- mirror that asymmetry faithfully.
 	if req.CacheStrategy != nil {
 		a.NetworkSettings.Cache.Strategy = *req.CacheStrategy
+	}
+	for name, raw := range map[string]json.RawMessage{
+		"database":             req.DatabaseSchemaID,
+		"cache":                req.CacheID,
+		"websocketApplication": req.WebsocketApplicationID,
+	} {
+		if raw == nil {
+			continue
+		}
+		var related string
+		_ = json.Unmarshal(raw, &related) // null leaves it empty: detached
+		if f.attachments == nil {
+			f.attachments = map[string]map[string]string{}
+		}
+		if f.attachments[env.ID] == nil {
+			f.attachments[env.ID] = map[string]string{}
+		}
+		f.attachments[env.ID][name] = related
 	}
 	if err := f.applyEnvironmentSettings(env, req); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err)

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
@@ -317,6 +318,109 @@ func testAccMoveAppInstanceToPro(t *testing.T, envID string) {
 		body, _ := io.ReadAll(res.Body)
 		t.Fatalf("resizing the app instance: %s: %s", res.Status, body)
 	}
+}
+
+// TestAccEnvironmentResource_attachmentReadBack covers an attached cache
+// detached outside Terraform. The API reports the attachment as an
+// included relationship, so the next plan must put it back.
+func TestAccEnvironmentResource_attachmentReadBack(t *testing.T) {
+	appName := testAccName()
+	cacheName := testAccName()
+	var envID, cacheID string
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccEnvironmentCacheConfig(appName, cacheName, false),
+				Check: func(s *terraform.State) error {
+					envID = s.RootModule().Resources["laravel_cloud_environment.test"].Primary.ID
+					cacheID = s.RootModule().Resources["laravel_cloud_cache.test"].Primary.ID
+					return nil
+				},
+			},
+			// The API refuses to attach a cache that is still provisioning,
+			// which a new one is for a while after Create returns.
+			{
+				PreConfig: func() { testAccWaitForCacheAvailable(t, cacheID) },
+				Config:    testAccEnvironmentCacheConfig(appName, cacheName, true),
+				Check:     func(*terraform.State) error { return testAccCheckAttachedCache(envID, cacheID) },
+			},
+			{
+				PreConfig: func() {
+					if _, err := testAccClient().UpdateEnvironment(context.Background(), envID,
+						client.UpdateEnvironmentRequest{CacheID: client.DetachID()}); err != nil {
+						t.Fatalf("detaching the cache outside Terraform: %v", err)
+					}
+				},
+				Config:             testAccEnvironmentCacheConfig(appName, cacheName, true),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+			{
+				Config: testAccEnvironmentCacheConfig(appName, cacheName, true),
+				Check:  func(*terraform.State) error { return testAccCheckAttachedCache(envID, cacheID) },
+			},
+		},
+	})
+}
+
+func testAccWaitForCacheAvailable(t *testing.T, id string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Minute)
+	for {
+		cache, err := testAccClient().GetCache(context.Background(), id)
+		if err == nil && cache.Attributes.Status == "available" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("cache %s is not available after 15 minutes (last error: %v)", id, err)
+		}
+		time.Sleep(10 * time.Second)
+	}
+}
+
+// testAccCheckAttachedCache checks the cache the API reports as attached.
+func testAccCheckAttachedCache(envID, want string) error {
+	env, err := testAccClient().GetEnvironment(context.Background(), envID)
+	if err != nil {
+		return err
+	}
+	if env.Relationships.Cache == nil || env.Relationships.Cache.RelatedID() != want {
+		return fmt.Errorf("environment %s reports cache %+v, want %q", envID, env.Relationships.Cache, want)
+	}
+	return nil
+}
+
+func testAccEnvironmentCacheConfig(appName, cacheName string, attach bool) string {
+	cacheID := ""
+	if attach {
+		cacheID = "cache_id = laravel_cloud_cache.test.id"
+	}
+	return fmt.Sprintf(`
+resource "laravel_cloud_application" "test" {
+  name       = %[1]q
+  repository = %[2]q
+  region     = "us-east-2"
+}
+
+resource "laravel_cloud_cache" "test" {
+  name                 = %[4]q
+  type                 = "laravel_valkey"
+  region               = "us-east-2"
+  size                 = "valkey-pro.250mb"
+  auto_upgrade_enabled = true
+  is_public            = false
+}
+
+resource "laravel_cloud_environment" "test" {
+  application_id = laravel_cloud_application.test.id
+  name           = "staging"
+  branch         = %[3]q
+  %[5]s
+}
+`, appName, testAccRepository(), testAccBranch(), cacheName, cacheID)
 }
 
 func testAccEnvironmentReadBackConfig(appName string) string {

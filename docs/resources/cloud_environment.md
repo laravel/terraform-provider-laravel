@@ -46,11 +46,11 @@ resource "laravel_cloud_environment" "example" {
 > **NOTE**: [Write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) are supported in Terraform 1.11 and later.
 
 - `build_command` (String) Custom build command (max 2000 chars).
-- `cache_id` (String) Cache to attach.
+- `cache_id` (String) Cache to attach. Removing it detaches the cache. A detach or another cache attached outside Terraform shows in the next plan; left unset, the attachment is not managed.
 - `cache_strategy` (String) Cache strategy (default, bypass).
 - `cluster_id` (String) Dedicated cluster ID. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
 - `color` (String) Environment color (blue, green, orange, purple, red, yellow, cyan, gray). Leave unset to keep the color Laravel Cloud picked when it created the environment.
-- `database_id` (String) ID of the database to attach (a laravel_cloud_database, not its cluster). Removing it detaches the database.
+- `database_id` (String) ID of the database to attach (a laravel_cloud_database, not its cluster). Removing it detaches the database. A detach or another database attached outside Terraform shows in the next plan; left unset, the attachment is not managed.
 - `database_schema_id` (String, Deprecated) Deprecated alias for database_id.
 - `deploy_command` (String) Custom deploy command (max 2000 chars).
 - `edge_network_id` (String) Dedicated edge network to create the environment in (see the laravel_cloud_edge_networks data source). Only for organizations with a dedicated edge network. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
@@ -81,7 +81,7 @@ resource "laravel_cloud_environment" "example" {
 - `uses_push_to_deploy` (Boolean)
 - `uses_vanity_domain` (Boolean)
 - `vanity_domain` (String) Subdomain label of the environment's vanity domain, such as "my-app" for my-app.laravel.cloud: 3 to 63 lowercase letters, numbers and dashes, not starting or ending with a dash. The full hostname is in vanity_hostname. Leave unset to keep the assigned default. The API allows one change every 30 minutes.
-- `websocket_application_id` (String) WebSocket application (laravel_cloud_websocket_application) to attach. Removing it detaches the application.
+- `websocket_application_id` (String) WebSocket application (laravel_cloud_websocket_application) to attach. Removing it detaches the application. A detach or another application attached outside Terraform shows in the next plan; left unset, the attachment is not managed.
 
 ### Read-Only
 

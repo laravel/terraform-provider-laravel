@@ -302,7 +302,8 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"database_id": schema.StringAttribute{
 				Optional: true,
 				Description: "ID of the database to attach (a laravel_cloud_database, not its cluster). " +
-					"Removing it detaches the database.",
+					"Removing it detaches the database. A detach or another database attached outside Terraform " +
+					"shows in the next plan; left unset, the attachment is not managed.",
 				Validators: []validator.String{
 					stringvalidator.ConflictsWith(path.MatchRoot("database_schema_id")),
 				},
@@ -313,12 +314,15 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				DeprecationMessage: "database_schema_id is renamed to database_id. Rename the attribute; the attached database is unchanged.",
 			},
 			"cache_id": schema.StringAttribute{
-				Optional:    true,
-				Description: "Cache to attach.",
+				Optional: true,
+				Description: "Cache to attach. Removing it detaches the cache. A detach or another cache attached " +
+					"outside Terraform shows in the next plan; left unset, the attachment is not managed.",
 			},
 			"websocket_application_id": schema.StringAttribute{
-				Optional:    true,
-				Description: "WebSocket application (laravel_cloud_websocket_application) to attach. Removing it detaches the application.",
+				Optional: true,
+				Description: "WebSocket application (laravel_cloud_websocket_application) to attach. Removing it detaches " +
+					"the application. A detach or another application attached outside Terraform shows in the next plan; " +
+					"left unset, the attachment is not managed.",
 			},
 			"created_at": schema.StringAttribute{
 				Computed: true,
@@ -1321,6 +1325,13 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 	keepStringIfAbsent(&state.Color, env.Attributes.Color)
 	keepInt64IfAbsent(&state.Timeout, env.Attributes.Timeout)
 	keepInt64IfAbsent(&state.ShutdownTimeout, env.Attributes.ShutdownTimeout)
+	if state.DatabaseID.IsNull() {
+		readAttachment(&state.DatabaseSchemaID, env.Relationships.Database)
+	} else {
+		readAttachment(&state.DatabaseID, env.Relationships.Database)
+	}
+	readAttachment(&state.CacheID, env.Relationships.Cache)
+	readAttachment(&state.WebsocketApplicationID, env.Relationships.WebsocketApplication)
 	// sleep_timeout is not reported, but hibernation being off means there is
 	// none, so a configured one shows up in the next plan.
 	if hibernationOff(env) {
@@ -1333,6 +1344,22 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 	// back. Writing a zero value here would fight the configuration on every
 	// refresh, so the configured values are left in place and drift on them is
 	// not detectable.
+}
+
+// readAttachment records the attachment the API reports for one the
+// configuration manages, so a detach or a different attachment made outside
+// Terraform shows in the next plan. One the configuration never set stays
+// null: that leaves an attachment made in the dashboard alone rather than
+// planning to detach it. A response without the relationship changes nothing.
+func readAttachment(dst *types.String, rel *client.Relationship) {
+	if rel == nil || dst.IsNull() {
+		return
+	}
+	if id := rel.RelatedID(); id != "" {
+		*dst = types.StringValue(id)
+	} else {
+		*dst = types.StringNull()
+	}
 }
 
 // hibernationOff reports whether the API says sleep mode is off. After an

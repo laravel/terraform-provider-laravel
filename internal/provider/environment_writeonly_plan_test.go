@@ -429,3 +429,57 @@ func expectDatabaseUpdates(f *fakeCloud, want ...string) resource.TestCheckFunc 
 		return nil
 	}
 }
+
+// TestEnvironmentAttachmentDriftPlan covers the attached database and cache
+// changed outside Terraform. The API reports them as included
+// relationships, so a detach or a different attachment shows in the next plan
+// and is put back. An attachment the configuration never set is left alone.
+func TestEnvironmentAttachmentDriftPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	config := environmentDatabaseConfig(baseURL, `
+  database_id = "db-1"
+  cache_id    = "cache-1"`)
+
+	const envAddr = "laravel_cloud_environment.db"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config},
+			{
+				// The dashboard swaps the database, detaches the cache and
+				// attaches a WebSocket application Terraform does not manage.
+				PreConfig: func() {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					for id := range f.attachments {
+						f.attachments[id] = map[string]string{"database": "db-2", "websocketApplication": "ws-1"}
+					}
+				},
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(envAddr, plancheck.ResourceActionUpdate),
+						plancheck.ExpectKnownValue(envAddr, tfjsonpath.New("websocket_application_id"), knownvalue.Null()),
+					},
+				},
+				Check: func(*terraform.State) error {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					last := f.envUpdates[len(f.envUpdates)-1]
+					if string(last.DatabaseSchemaID) != `"db-1"` || string(last.CacheID) != `"cache-1"` || last.WebsocketApplicationID != nil {
+						return fmt.Errorf("last environment update sent database %s, cache %s, websocket application %s; "+
+							`want "db-1", "cache-1" and nothing`, last.DatabaseSchemaID, last.CacheID, last.WebsocketApplicationID)
+					}
+					return nil
+				},
+			},
+			{
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+		},
+	})
+}

@@ -16,10 +16,12 @@ func (c *Client) ListEnvironments(ctx context.Context, applicationID string) ([]
 // block entirely unless it is asked for, and neither the owning application
 // id nor the branch is otherwise recoverable on import. `branch` is not an
 // attribute at all -- it is a relationship whose identifier carries an id, so
-// the human-readable name has to come from the included branch object.
+// the human-readable name has to come from the included branch object. The
+// attached database, cache and WebSocket application are likewise reported
+// only as included relationships.
 func (c *Client) GetEnvironment(ctx context.Context, id string) (*EnvironmentData, error) {
 	var doc Document[EnvironmentData]
-	if err := c.do(ctx, "GET", fmt.Sprintf("/environments/%s?include=application,branch", id), nil, &doc); err != nil {
+	if err := c.do(ctx, "GET", fmt.Sprintf("/environments/%s?include=application,branch,database,cache,websocketApplication", id), nil, &doc); err != nil {
 		return nil, err
 	}
 
