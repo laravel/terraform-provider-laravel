@@ -17,7 +17,7 @@ package provider
 // Uncomment to run it against a real API, and expect it to be slow.
 //
 // func TestAccDatabaseClusterResource_basic(t *testing.T) {
-// 	rName := fmt.Sprintf("tf-test-%s", acctest.RandString(8))
+// 	rName := testAccName()
 //
 // 	resource.Test(t, resource.TestCase{
 // 		PreCheck:                 func() { testAccPreCheck(t) },

@@ -4,12 +4,11 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
 
 func TestAccApplicationResource_basic(t *testing.T) {
-	rName := fmt.Sprintf("tf-test-%s", acctest.RandString(8))
+	rName := testAccName()
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
