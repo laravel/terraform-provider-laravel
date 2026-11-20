@@ -531,6 +531,7 @@ func (f *fakeCloud) newEnvironment(appID, name, branch string) *client.Environme
 	}
 	f.envs[id] = env
 	f.appEnvs[appID] = append(f.appEnvs[appID], id)
+	f.newAppInstance(id)
 	return env
 }
 

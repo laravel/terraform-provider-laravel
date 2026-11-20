@@ -465,6 +465,48 @@ func TestAccInstance_appSettings(t *testing.T) {
 	})
 }
 
+// type = "app" takes over the app instance Laravel Cloud creates with
+// the environment, with no import. The create route refuses type "app" with
+// a 422, which is how this failed before. Destroy leaves the instance to the
+// environment, as the API refuses to delete it.
+func TestAccInstance_adoptApp(t *testing.T) {
+	name := testAccName()
+	const addr = "laravel_cloud_instance.app"
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccAppInstanceConfig(name, "uses_octane = true\n  hibernation_timeout = 0", true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(addr, "type", "app"),
+					resource.TestCheckResourceAttr(addr, "hibernation_timeout", "0"),
+					testAccCheckAppInstance(addr, true, nil),
+					func(s *terraform.State) error {
+						envID := s.RootModule().Resources["laravel_cloud_environment.test"].Primary.ID
+						instances, err := testAccClient().ListInstances(context.Background(), envID)
+						if err != nil {
+							return err
+						}
+						if len(instances) != 1 || instances[0].ID != s.RootModule().Resources[addr].Primary.ID {
+							return fmt.Errorf("want only the environment's app instance, managed by %s; the environment has %d instances", addr, len(instances))
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config: testAccAppInstanceConfig(name, "uses_octane = false\n  hibernation_timeout = 15", true),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
+				}},
+				Check: testAccCheckAppInstance(addr, false, intPtr(15)),
+			},
+		},
+	})
+}
+
 // testAccCheckAppInstance reads the app instance's settings from the API.
 func testAccCheckAppInstance(addr string, octane bool, hibernation *int) resource.TestCheckFunc {
 	return func(s *terraform.State) error {

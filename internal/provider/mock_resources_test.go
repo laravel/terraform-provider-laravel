@@ -267,8 +267,17 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			collectionPattern: "/environments/{eid}/instances", itemPattern: "/instances/{id}",
 			patch: true, del: true,
 			relationshipName: "environment", relationshipType: "environments",
-			validateCreate: validateManagedQueueCreate,
+			list:           true,
+			validateCreate: validateInstanceCreate,
 			afterCreate:    afterManagedQueueCreate,
+			// Like Cloud, an environment's app instance goes only with the
+			// environment.
+			beforeDelete: func(f *fakeCloud, id string) string {
+				if f.objects["instance"][id]["type"] == "app" {
+					return "The default App cluster cannot be deleted."
+				}
+				return ""
+			},
 			seed: func(body map[string]any, _ string) map[string]any {
 				// Echo the body; managed-queue / status pointer fields are left
 				// absent so they decode to null (not zero values) -- except
@@ -295,11 +304,6 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 					}
 				}
 				syncInstanceScaling(a)
-				// A new environment's app instance runs without Octane or
-				// Inertia SSR and hibernates after 5 minutes.
-				if a["type"] == "app" {
-					a["uses_octane"], a["uses_inertia_ssr"], a["hibernation_timeout"] = false, false, 5
-				}
 				syncAppInstanceSettings(a)
 				return a
 			},
@@ -1012,6 +1016,37 @@ func fakeWorkerCommand(config any) string {
 // reports as max_replicas for an automatically scaled instance (1000 on the
 // test organization's plan).
 const fakeAutoMaxReplicas = 10
+
+// validateInstanceCreate refuses what Cloud's create route does: it creates
+// only service and managed_queue instances, as an environment's app instance
+// comes with the environment.
+func validateInstanceCreate(body map[string]any) string {
+	if body["type"] != "service" && body["type"] != "managed_queue" {
+		return "The type value is invalid."
+	}
+	return validateManagedQueueCreate(body)
+}
+
+// newAppInstance stores the app instance Cloud creates with every
+// environment, as it reports it on the test organization. The caller holds
+// f.mu.
+func (f *fakeCloud) newAppInstance(envID string) {
+	// Not from f.seq, which tests count on for other IDs.
+	id := "instance-app-" + envID
+	if f.objects["instance"] == nil {
+		f.objects["instance"] = map[string]map[string]any{}
+	}
+	f.objects["instance"][id] = map[string]any{
+		"name": "App", "type": "app", "size": "flex-512mb", "scaling_type": "none",
+		"min_replicas": 1, "max_replicas": 1, "uses_scheduler": false,
+		"uses_octane": false, "uses_inertia_ssr": false, "hibernation_timeout": 5,
+	}
+	f.children["instance:"+envID] = append(f.children["instance:"+envID], id)
+	if f.parents["instance"] == nil {
+		f.parents["instance"] = map[string]string{}
+	}
+	f.parents["instance"][id] = envID
+}
 
 // syncAppInstanceSettings does what the API does with the settings only app
 // instances have: every other type ignores them and reports null. A null

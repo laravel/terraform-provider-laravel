@@ -34,10 +34,26 @@ resource "laravel_cloud_environment" "example" {
 resource "laravel_cloud_instance" "example" {
   environment_id = laravel_cloud_environment.example.id
   name           = "web"
-  size           = "flex.c-1vcpu-256mb"
+  size           = "flex-512mb"
   scaling_type   = "custom"
   min_replicas   = 1
   max_replicas   = 1
+}
+
+# Laravel Cloud creates an app instance with every environment. type = "app"
+# takes it over instead of creating another, and destroy leaves it to the
+# environment.
+resource "laravel_cloud_instance" "app" {
+  environment_id = laravel_cloud_environment.example.id
+  name           = "App"
+  type           = "app"
+  size           = "flex-512mb"
+  scaling_type   = "none"
+  min_replicas   = 1
+  max_replicas   = 1
+
+  uses_octane         = true
+  hibernation_timeout = 0 # never hibernate
 }
 ```
 
@@ -49,25 +65,25 @@ resource "laravel_cloud_instance" "example" {
 - `environment_id` (String) Parent environment ID.
 - `name` (String) Instance name (3-40 characters). Changing a managed queue's name replaces the queue.
 - `scaling_type` (String) Scaling type (none, custom, auto).
-- `size` (String) Instance size (e.g. flex.c-1vcpu-256mb).
+- `size` (String) Instance size (e.g. flex-512mb).
 
 ### Optional
 
 - `fifo` (Boolean) Whether the managed queue is a FIFO queue, which delivers jobs exactly once and in order. Only for managed queues, on organizations with current-generation queues. Laravel Cloud adds a ".fifo" suffix to the queue's name, which can then have at most 34 characters; name is set without it. Changing it replaces the queue.
-- `hibernation_timeout` (Number) Minutes of inactivity (1-60) before the app hibernates (scales to zero). Set 0 to turn hibernation off. Only for app instances, which Laravel Cloud creates with the environment, so manage one by importing it. The environment's sleep_timeout writes the same setting: set only one.
+- `hibernation_timeout` (Number) Minutes of inactivity (1-60) before the app hibernates (scales to zero). Set 0 to turn hibernation off. Only for app instances, which Laravel Cloud creates with the environment, so set type = "app" to manage it. Use it instead of the environment's deprecated sleep_timeout, which writes the same setting but cannot turn hibernation off.
 - `is_default` (Boolean) Whether this managed queue is the environment's default, the one a job goes to when it names no queue. Set true to make it the default; only managed_queue instances can be. It cannot be set false: the default moves when another queue is made the default.
 - `max_replicas` (Number) Maximum number of replicas. Set it only for the "custom" scaling type: for "auto" the platform sets it to the plan's replica limit, and for "none" to 1.
 - `min_replicas` (Number) Minimum number of replicas. Set it only for the "custom" scaling type: for "auto" and "none" the platform sets it to 1. Required for custom scaling except on managed queues, where it is the minimum number of workers: optional on current-generation (mq.*) sizes, where 0 lets the queue scale to zero when idle, and rejected on previous-generation sizes, which always scale to zero.
 - `paused` (Boolean) Whether the managed queue is paused, which stops it dispatching jobs to its workers. Set true to pause it and false to resume it. Only for managed_queue instances; null for others.
 - `polling_interval` (Number) Queue polling interval in seconds (1-60). Only for previous-generation managed queues (sizes such as mq-pro-256mb), which require it; current-generation (mq.*) sizes have no polling interval.
-- `probes` (Attributes) Custom health checks for an app instance's web process. Only app instances accept them, and only on plans with health checks; manage one by importing the environment's app instance. The checks configured here replace all existing ones, and a check left out uses the platform default. When unset, Terraform leaves the instance's health checks alone, including any the platform set up itself; removing the attribute once set resets every check to the platform default. (see [below for nested schema](#nestedatt--probes))
+- `probes` (Attributes) Custom health checks for an app instance's web process. Only app instances accept them, and only on plans with health checks; set type = "app" to manage the environment's app instance. The checks configured here replace all existing ones, and a check left out uses the platform default. When unset, Terraform leaves the instance's health checks alone, including any the platform set up itself; removing the attribute once set resets every check to the platform default. (see [below for nested schema](#nestedatt--probes))
 - `scaling_cpu_threshold_percentage` (Number) CPU usage, in percent (50-95), above which the instance scales out. Leave unset for the platform default. Not allowed with scaling_type "none".
 - `scaling_memory_threshold_percentage` (Number) Memory usage, in percent (50-95), above which the instance scales out. Leave unset for the platform default. Not allowed with scaling_type "none".
 - `shutdown_timeout` (Number) Queue shutdown timeout in seconds (managed_queue).
 - `sleep_with_app` (Boolean) Whether the instance's replicas scale to zero along with the app, waking when it does. Only for service instances.
-- `type` (String) Instance type (service or managed_queue). Defaults to service when not set. An environment's app instance, which can only be imported, is app.
-- `uses_inertia_ssr` (Boolean) Whether the app runs an Inertia SSR server. Only for app instances, which Laravel Cloud creates with the environment, so manage one by importing it. Changing it also changes the environment's build command.
-- `uses_octane` (Boolean) Whether the app is served by Laravel Octane. Only for app instances, which Laravel Cloud creates with the environment, so manage one by importing it. The same setting as the environment's uses_octane: set it in one place.
+- `type` (String) Instance type (service, managed_queue or app). Defaults to service when not set. Laravel Cloud creates an environment's app instance with the environment, so app takes over that instance instead of creating one, and destroy leaves it to the environment.
+- `uses_inertia_ssr` (Boolean) Whether the app runs an Inertia SSR server. Only for app instances, which Laravel Cloud creates with the environment: set type = "app" to manage it. Changing it also changes the environment's build command.
+- `uses_octane` (Boolean) Whether the app is served by Laravel Octane. Only for app instances, which Laravel Cloud creates with the environment: set type = "app" to manage it. The same setting as the environment's uses_octane: set it in one place.
 - `uses_scheduler` (Boolean)
 - `visibility_timeout` (Number) Queue visibility timeout in seconds (managed_queue).
 
