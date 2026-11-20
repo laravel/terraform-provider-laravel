@@ -139,7 +139,8 @@ resource "laravel_cloud_cache" "cache" {
 			plancheck.ExpectUnknownValue(addr, tfjsonpath.New("connection_details")),
 		},
 		[]statecheck.StateCheck{
-			statecheck.ExpectKnownValue(addr, tfjsonpath.New("status"), knownvalue.StringExact("available")),
+			// A new cache reports its connection while it is still creating.
+			statecheck.ExpectKnownValue(addr, tfjsonpath.New("status"), knownvalue.StringExact("creating")),
 			statecheck.ExpectKnownValue(addr, tfjsonpath.New("connection_details").AtMapKey("hostname"), knownvalue.StringExact("cache.test.local")),
 			// Upstash has no eviction policy or scale to zero.
 			statecheck.ExpectKnownValue(addr, tfjsonpath.New("eviction_policy"), knownvalue.Null()),

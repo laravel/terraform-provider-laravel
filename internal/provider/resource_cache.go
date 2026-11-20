@@ -327,7 +327,16 @@ func (r *CacheResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
-	cache, err := r.client.UpdateCache(ctx, state.ID.ValueString(), updateReq)
+	// The API refuses an update while the cache is busy ("An update is
+	// already in progress for this cache"), which includes the first minute
+	// or so after create: the connection details Create waits for arrive
+	// before the cache leaves "creating".
+	var cache *client.CacheData
+	err := client.RetryOnConflict(ctx, cacheBusyAttempts, cacheBusyInterval, func() error {
+		var updateErr error
+		cache, updateErr = r.client.UpdateCache(ctx, state.ID.ValueString(), updateReq)
+		return updateErr
+	}, client.IsBusy)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating cache", err.Error())
 		return
@@ -455,6 +464,13 @@ func mapCacheToState(c *client.CacheData, state *CacheResourceModel) {
 		state.Connection = mapCacheConnection(c.Attributes.Connection)
 	}
 }
+
+// cacheBusy bounds how long Update waits for a busy cache. The interval is a
+// variable so the plan tests, which run against an in-memory fake, need not
+// wait.
+const cacheBusyAttempts = 30
+
+var cacheBusyInterval = 10 * time.Second
 
 // cacheConnectionPoll bounds how long Create waits for a new cache to report
 // its connection details.

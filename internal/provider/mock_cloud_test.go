@@ -108,6 +108,9 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	wsInterval := websocketBusyInterval
 	websocketBusyInterval = time.Millisecond
 	t.Cleanup(func() { websocketBusyInterval = wsInterval })
+	cacheInterval := cacheBusyInterval
+	cacheBusyInterval = time.Millisecond
+	t.Cleanup(func() { cacheBusyInterval = cacheInterval })
 
 	mux := http.NewServeMux()
 	// Applications

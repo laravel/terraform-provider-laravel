@@ -31,7 +31,10 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			},
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
-				a["status"] = "available"
+				// A new cache reports its connection details while it is
+				// still "creating", and refuses updates until it leaves that
+				// state (see validatePatch).
+				a["status"] = "creating"
 				a["connection"] = map[string]any{
 					"hostname": "cache.test.local", "port": 6379,
 					"protocol": "tcp", "username": "default", "password": "cache-secret",
@@ -52,6 +55,10 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 				return a
 			},
 			validatePatch: func(attrs, patch map[string]any) string {
+				if attrs["status"] == "creating" {
+					attrs["status"] = "available"
+					return "An update is already in progress for this cache. Try again in a few seconds."
+				}
 				size, _ := attrs["size"].(string)
 				if s, ok := patch["size"].(string); ok {
 					size = s

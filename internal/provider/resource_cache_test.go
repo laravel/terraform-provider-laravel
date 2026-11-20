@@ -74,6 +74,7 @@ func TestAccCacheResource_hibernation(t *testing.T) {
 				ImportState:       true,
 				ImportStateVerify: true,
 			},
+			// The first update usually lands while the cache is still creating.
 			{
 				Config: testAccCacheHibernationConfig(rName, "uses_hibernation = true\n  hibernation_timeout = 10"),
 				Check:  resource.TestCheckResourceAttr(addr, "hibernation_timeout", "10"),
