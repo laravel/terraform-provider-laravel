@@ -52,6 +52,7 @@ type EnvironmentResourceModel struct {
 	DeployCommand              types.String `tfsdk:"deploy_command"`
 	UsesPushToDeploy           types.Bool   `tfsdk:"uses_push_to_deploy"`
 	UsesDeployHook             types.Bool   `tfsdk:"uses_deploy_hook"`
+	DeployHookURL              types.String `tfsdk:"deploy_hook_url"`
 	UsesVanityDomain           types.Bool   `tfsdk:"uses_vanity_domain"`
 	UsesOctane                 types.Bool   `tfsdk:"uses_octane"`
 	UsesPurgeEdgeCacheOnDeploy types.Bool   `tfsdk:"uses_purge_edge_cache_on_deploy"`
@@ -236,6 +237,14 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
 				},
+			},
+			"deploy_hook_url": schema.StringAttribute{
+				Computed:  true,
+				Sensitive: true,
+				Description: "URL that deploys the environment when it receives a POST request, such as from CI. " +
+					"Null while uses_deploy_hook is false, or when the API token lacks permission to edit deploy hooks. " +
+					"Anyone with the URL can deploy.",
+				// ModifyPlan keeps it unless uses_deploy_hook changes.
 			},
 			"uses_vanity_domain": schema.BoolAttribute{
 				Optional: true,
@@ -695,6 +704,7 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 			plan.Status = types.StringValue(patched.Attributes.Status)
 			setUnknownStringPtrFromAPI(&plan.BuildCommand, patched.Attributes.BuildCommand)
 			setUnknownStringPtrFromAPI(&plan.DeployCommand, patched.Attributes.DeployCommand)
+			setUnknownStringPtrFromAPI(&plan.DeployHookURL, patched.Attributes.DeployHookURL)
 			// The environment exists, so this is a warning: an error would
 			// taint it and the next apply would replace it, to the same end.
 			// The next refresh drops sleep_timeout, so the plan shows it again
@@ -732,6 +742,8 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	// made outside Terraform, and pinning that same version later would plan
 	// nothing. A configured one was sent in the PATCH above and stays as planned.
 	resolveUnknownStringToNull(&plan.PHPVersion)
+	// Still unknown when no follow-up update was needed or it failed.
+	setUnknownStringPtrFromAPI(&plan.DeployHookURL, env.Attributes.DeployHookURL)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -864,6 +876,9 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 	}
 	if updateReq == nil {
 		// Nothing else changed — just keep state as-is.
+		if plan.DeployHookURL.IsUnknown() {
+			plan.DeployHookURL = state.DeployHookURL
+		}
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
 	}
@@ -889,6 +904,8 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 	plan.ApplicationID = state.ApplicationID
 	plan.CreatedAt = state.CreatedAt
 	plan.Slug = state.Slug
+	// Turning the deploy hook on or off creates or drops its URL.
+	setUnknownStringPtrFromAPI(&plan.DeployHookURL, updated.Attributes.DeployHookURL)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -1127,6 +1144,20 @@ func (r *EnvironmentResource) ModifyPlan(ctx context.Context, req resource.Modif
 		if !planVanity.Equal(stateVanity) {
 			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("vanity_hostname"), types.StringUnknown())...)
 		}
+
+		// deploy_hook_url only changes with uses_deploy_hook. It is often null,
+		// which UseStateForUnknown would not carry over, so it is kept here.
+		var planHook, stateHook types.Bool
+		var stateHookURL types.String
+		resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("uses_deploy_hook"), &planHook)...)
+		resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("uses_deploy_hook"), &stateHook)...)
+		resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("deploy_hook_url"), &stateHookURL)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if planHook.Equal(stateHook) {
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("deploy_hook_url"), stateHookURL)...)
+		}
 	}
 
 	var dbID, schemaID types.String
@@ -1315,6 +1346,7 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 	state.NodeVersion = types.StringValue(env.Attributes.NodeVersion)
 	state.UsesPushToDeploy = types.BoolValue(env.Attributes.UsesPushToDeploy)
 	state.UsesDeployHook = types.BoolValue(env.Attributes.UsesDeployHook)
+	state.DeployHookURL = types.StringPointerValue(env.Attributes.DeployHookURL)
 	state.UsesOctane = types.BoolValue(env.Attributes.UsesOctane)
 	// cache_strategy is readable only from network_settings; there is no
 	// top-level attribute of that name in the response.

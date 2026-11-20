@@ -170,7 +170,7 @@ func TestAccEnvironmentResource_vanityDomain(t *testing.T) {
 // TestAccEnvironmentResource_readBack covers color, timeout and
 // shutdown_timeout, which the API reports. An unset shutdown_timeout
 // takes the API's value, and a change made outside Terraform shows in the next
-// plan and is put back.
+// plan and is put back. It also reads the deploy hook URL.
 func TestAccEnvironmentResource_readBack(t *testing.T) {
 	appName := testAccName()
 	var envID string
@@ -186,6 +186,7 @@ func TestAccEnvironmentResource_readBack(t *testing.T) {
 					resource.TestCheckResourceAttr("laravel_cloud_environment.test", "timeout", "30"),
 					// Unset, so it is the platform default rather than null.
 					resource.TestCheckResourceAttr("laravel_cloud_environment.test", "shutdown_timeout", "30"),
+					resource.TestMatchResourceAttr("laravel_cloud_environment.test", "deploy_hook_url", regexp.MustCompile(`^https://`)),
 					func(s *terraform.State) error {
 						envID = s.RootModule().Resources["laravel_cloud_environment.test"].Primary.ID
 						return nil
@@ -437,6 +438,8 @@ resource "laravel_cloud_environment" "test" {
   branch         = %[3]q
   color          = "red"
   timeout        = 30
+
+  uses_deploy_hook = true
 }
 `, appName, testAccRepository(), testAccBranch())
 }

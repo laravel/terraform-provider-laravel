@@ -127,6 +127,9 @@ type EnvironmentAttributes struct {
 	Color           *string `json:"color,omitempty"`
 	Timeout         *int64  `json:"timeout,omitempty"`
 	ShutdownTimeout *int64  `json:"shutdown_timeout,omitempty"`
+	// DeployHookURL is null when the deploy hook is off or the token lacks the
+	// environment_deploy_hook.edit permission.
+	DeployHookURL *string `json:"deploy_hook_url"`
 	// PHPMajorVersion is the read-only major version returned by the API
 	// (e.g. "8.4"). The writable php_version sent on update uses the
 	// "8.4:1" form, so the two are deliberately distinct fields.

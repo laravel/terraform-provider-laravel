@@ -448,3 +448,47 @@ func TestEnvironmentHibernationRefusedPlan(t *testing.T) {
 		},
 	})
 }
+
+// TestEnvironmentDeployHookURLPlan covers deploy_hook_url, which the
+// API reports while the deploy hook is on. It must follow uses_deploy_hook
+// and, null or not, plan empty when nothing changes.
+func TestEnvironmentDeployHookURLPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	addr := "laravel_cloud_environment.env"
+	on := environmentSettingsConfig(baseURL, "  uses_deploy_hook = true")
+	off := environmentSettingsConfig(baseURL, "  uses_deploy_hook = false")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: on,
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("deploy_hook_url"),
+						knownvalue.StringRegexp(regexp.MustCompile(`^https://cloud\.laravel\.com/deploy-hooks/env-\d+/token$`))),
+				},
+			},
+			{
+				Config: on,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			{
+				Config: off,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectUnknownValue(addr, tfjsonpath.New("deploy_hook_url"))},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("deploy_hook_url"), knownvalue.Null()),
+				},
+			},
+			{
+				Config: off,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+		},
+	})
+}

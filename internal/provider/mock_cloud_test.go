@@ -531,6 +531,10 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.UsesDeployHook != nil {
 		a.UsesDeployHook = *req.UsesDeployHook
+		a.DeployHookURL = nil
+		if a.UsesDeployHook {
+			a.DeployHookURL = ptr("https://cloud.laravel.com/deploy-hooks/" + env.ID + "/token")
+		}
 	}
 	if req.UsesOctane != nil {
 		a.UsesOctane = *req.UsesOctane

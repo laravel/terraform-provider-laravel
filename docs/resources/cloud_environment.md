@@ -86,6 +86,7 @@ resource "laravel_cloud_environment" "example" {
 ### Read-Only
 
 - `created_at` (String)
+- `deploy_hook_url` (String, Sensitive) URL that deploys the environment when it receives a POST request, such as from CI. Null while uses_deploy_hook is false, or when the API token lacks permission to edit deploy hooks. Anyone with the URL can deploy.
 - `id` (String) The ID of this resource.
 - `php_major_version` (String) Major PHP version reported by the API (e.g. "8.4").
 - `serving_mode` (String) How the environment is served: "process" (an application server) or "static" (files served directly). Fixed when the environment is created. Null when the API does not report it.
