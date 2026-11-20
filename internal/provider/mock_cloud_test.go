@@ -98,6 +98,10 @@ type fakeCloud struct {
 	// writes answer the bare 302 to the app root it sends for a throttled
 	// write.
 	throttleReads, throttleWrites int
+
+	// edgeRules models the rulesets of the dedicated edge network; see
+	// mock_edge_network_rules_test.go.
+	edgeRules *fakeEdgeRules
 }
 
 // throttle wraps the fake's routes with Laravel Cloud's rate-limit responses
@@ -175,6 +179,9 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	cacheInterval := cacheBusyInterval
 	cacheBusyInterval = time.Millisecond
 	t.Cleanup(func() { cacheBusyInterval = cacheInterval })
+	edgeRuleInterval := edgeRuleBusyInterval
+	edgeRuleBusyInterval = time.Millisecond
+	t.Cleanup(func() { edgeRuleBusyInterval = edgeRuleInterval })
 
 	mux := http.NewServeMux()
 	// Applications
@@ -198,6 +205,7 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	f.registerSecretRoutes(mux)
 	f.registerDatabaseUserRoutes(mux)
 	f.registerEnvironmentExtraRoutes(mux)
+	f.registerEdgeNetworkRuleRoutes(mux)
 
 	// Pacing would only slow the fake down; TestRateLimitedReadsPlan covers
 	// what the provider does when Laravel Cloud's limits are reached.

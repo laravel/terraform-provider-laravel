@@ -233,4 +233,41 @@ func init() {
 				func(s client.SecretData) error { return c.DeleteSecret(ctx, s.ID) })
 		},
 	})
+	// Edge network rules sit in the rulesets of every dedicated edge
+	// network, which belong to live sites; only prefixed rules are deleted.
+	resource.AddTestSweepers("laravel_cloud_edge_network_rule", &resource.Sweeper{
+		Name: "laravel_cloud_edge_network_rule",
+		F: func(string) error {
+			c := testAccClient()
+			networks, err := c.ListEdgeNetworks(ctx, nil)
+			if err != nil {
+				return err
+			}
+			var errs []string
+			for _, n := range networks {
+				if n.Attributes.TenancyType != "dedicated" {
+					continue
+				}
+				for _, ruleset := range []string{"firewall", "rate_limit", "cache"} {
+					rules, err := c.ListEdgeNetworkRules(ctx, n.ID, ruleset)
+					if err == nil {
+						err = sweepEach(rules,
+							func(r client.EdgeNetworkRuleData) string { return r.Attributes.Name },
+							func(r client.EdgeNetworkRuleData) error {
+								return client.RetryOnConflict(ctx, edgeRuleBusyAttempts, edgeRuleBusyInterval, func() error {
+									return c.DeleteEdgeNetworkRule(ctx, n.ID, ruleset, r.ID)
+								}, client.IsRulesetBusy)
+							})
+					}
+					if err != nil {
+						errs = append(errs, fmt.Sprintf("%s %s: %v", n.ID, ruleset, err))
+					}
+				}
+			}
+			if len(errs) > 0 {
+				return fmt.Errorf("%s", strings.Join(errs, "\n"))
+			}
+			return nil
+		},
+	})
 }

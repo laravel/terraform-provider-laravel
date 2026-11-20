@@ -71,6 +71,7 @@ token explicitly rather than guess which organization to manage.
 | `laravel_cloud_environment` | Environment within an application |
 | `laravel_cloud_instance` | Compute instance within an environment |
 | `laravel_cloud_domain` | Custom domain for an environment |
+| `laravel_cloud_edge_network_rule` | Custom firewall, rate limit or cache rule on a dedicated edge network |
 | `laravel_cloud_database_cluster` | Database cluster (MySQL, Postgres, Neon) |
 | `laravel_cloud_database` | Database schema within a cluster |
 | `laravel_cloud_database_user` | User in a database cluster, with access to some of its databases |
