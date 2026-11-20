@@ -33,7 +33,7 @@ resource "laravel_cloud_application" "example" {
 ### Optional
 
 - `cluster_id` (String) Dedicated cluster ID. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
-- `root_directory` (String) Subdirectory of the repository the application lives in, for a repository that holds more than one project (max 255 chars). Leave unset for the repository root. It cannot be changed after creation, so changing it forces a new application.
+- `root_directory` (String) Subdirectory of the repository the application lives in, for a repository that holds more than one project (max 255 chars). Leave unset for the repository root. It cannot be changed after creation, so changing it forces a new application. Laravel Cloud clears it when repository changes to one without that directory; the apply then fails and asks for it to be removed from the configuration, rather than replacing the application.
 - `slack_channel` (String) Slack channel for application notifications.
 - `slug` (String) URL-friendly slug.
 - `source_control_provider_type` (String) Source control provider type (github, gitlab, gitlab_self_hosted, or bitbucket). Becomes required by the API on March 9, 2026. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.

@@ -2,9 +2,11 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -124,13 +126,16 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Computed: true,
 				Description: "Subdirectory of the repository the application lives in, for a repository that holds " +
 					"more than one project (max 255 chars). Leave unset for the repository root. " +
-					"It cannot be changed after creation, so changing it forces a new application.",
+					"It cannot be changed after creation, so changing it forces a new application. " +
+					"Laravel Cloud clears it when repository changes to one without that directory; " +
+					"the apply then fails and asks for it to be removed from the configuration, rather than " +
+					"replacing the application.",
 				Validators: []validator.String{
 					stringvalidator.LengthBetween(1, 255),
 				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
-					stringplanmodifier.RequiresReplace(),
+					rootDirectoryPlanModifier{},
 				},
 			},
 			"slack_channel": schema.StringAttribute{
@@ -251,6 +256,9 @@ func (r *ApplicationResource) Read(ctx context.Context, req resource.ReadRequest
 	state.SlackChannel = types.StringPointerValue(app.Attributes.SlackChannel)
 	state.AvatarURL = types.StringPointerValue(app.Attributes.AvatarURL)
 	state.CreatedAt = types.StringPointerValue(app.Attributes.CreatedAt)
+	if app.Attributes.RootDirectory == nil && isSet(state.RootDirectory) {
+		resp.Diagnostics.Append(setRootDirectoryCleared(ctx, resp.Private, state.RootDirectory.ValueString())...)
+	}
 	state.RootDirectory = types.StringPointerValue(app.Attributes.RootDirectory)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
@@ -305,9 +313,26 @@ func (r *ApplicationResource) Update(ctx context.Context, req resource.UpdateReq
 	plan.SlackChannel = types.StringPointerValue(app.Attributes.SlackChannel)
 	plan.AvatarURL = types.StringPointerValue(app.Attributes.AvatarURL)
 	plan.CreatedAt = types.StringPointerValue(app.Attributes.CreatedAt)
-	// root_directory cannot change in place, so the planned value stands: after
-	// an upgrade it is planned as its null prior state, and the next refresh
-	// records the reported value.
+	// root_directory cannot be set in place, but Laravel Cloud clears it when
+	// the new repository lacks that directory.
+	switch {
+	case plan.RootDirectory.IsUnknown():
+		// Unset in the configuration and the repository changed.
+		plan.RootDirectory = types.StringPointerValue(app.Attributes.RootDirectory)
+	case isSet(plan.RootDirectory) && app.Attributes.RootDirectory == nil:
+		// The configured directory can no longer hold, and replacing the
+		// application would delete its environments. State records what Cloud
+		// did, and the next plan refuses to replace over it.
+		dir := plan.RootDirectory.ValueString()
+		plan.RootDirectory = types.StringNull()
+		resp.Diagnostics.Append(setRootDirectoryCleared(ctx, resp.Private, dir)...)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		resp.Diagnostics.AddAttributeError(path.Root("root_directory"), "Laravel Cloud cleared root_directory",
+			rootDirectoryClearedDetail(dir))
+		return
+	}
+	// Otherwise the planned value stands: after an upgrade it is planned as its
+	// null prior state, and the next refresh records the reported value.
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -344,4 +369,70 @@ func (r *ApplicationResource) ImportState(ctx context.Context, req resource.Impo
 	if repo := app.Attributes.Repository; repo != nil && repo.FullName != "" {
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("repository"), repo.FullName)...)
 	}
+}
+
+// rootDirectoryClearedKey is the private state key holding the root_directory
+// Laravel Cloud cleared after a repository change, as a JSON string.
+const rootDirectoryClearedKey = "root_directory_cleared"
+
+// privateSetter is the private state of a Read or Update response.
+type privateSetter interface {
+	SetKey(context.Context, string, []byte) diag.Diagnostics
+}
+
+func setRootDirectoryCleared(ctx context.Context, p privateSetter, dir string) diag.Diagnostics {
+	if p == nil {
+		return nil
+	}
+	b, _ := json.Marshal(dir)
+	return p.SetKey(ctx, rootDirectoryClearedKey, b)
+}
+
+func rootDirectoryClearedDetail(dir string) string {
+	return fmt.Sprintf("The repository has no %q directory, so Laravel Cloud cleared root_directory and the application "+
+		"now builds from the repository root. root_directory cannot be set in place, and replacing the application "+
+		"would delete its environments, so Terraform will not do either. Remove root_directory from the "+
+		"configuration to accept the repository root.", dir)
+}
+
+// rootDirectoryPlanModifier replaces the application when root_directory is
+// changed, except over a directory Laravel Cloud itself cleared, and reads it
+// back when a repository change may clear it.
+type rootDirectoryPlanModifier struct{}
+
+func (rootDirectoryPlanModifier) Description(context.Context) string {
+	return "Requires replacement when changed, unless Laravel Cloud cleared the configured value."
+}
+
+func (m rootDirectoryPlanModifier) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (rootDirectoryPlanModifier) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	if req.ConfigValue.IsNull() {
+		// Kept from state, but a repository change may clear it.
+		var planRepo, stateRepo types.String
+		resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("repository"), &planRepo)...)
+		resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("repository"), &stateRepo)...)
+		if !req.StateValue.IsNull() && !planRepo.Equal(stateRepo) {
+			resp.PlanValue = types.StringUnknown()
+		}
+		return
+	}
+	if req.PlanValue.Equal(req.StateValue) {
+		return
+	}
+	if req.StateValue.IsNull() && req.Private != nil {
+		b, d := req.Private.GetKey(ctx, rootDirectoryClearedKey)
+		resp.Diagnostics.Append(d...)
+		var cleared string
+		if len(b) > 0 && json.Unmarshal(b, &cleared) == nil && cleared == req.ConfigValue.ValueString() {
+			resp.Diagnostics.AddAttributeError(req.Path, "Laravel Cloud cleared root_directory", rootDirectoryClearedDetail(cleared))
+			return
+		}
+	}
+	resp.RequiresReplace = true
 }

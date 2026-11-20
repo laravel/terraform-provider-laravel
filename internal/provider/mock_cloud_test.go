@@ -268,6 +268,13 @@ func (f *fakeCloud) updateApplication(w http.ResponseWriter, r *http.Request) {
 		app.Attributes.SlackChannel = req.SlackChannel
 	}
 	if req.Repository != nil {
+		// Laravel Cloud clears root_directory when the new repository lacks
+		// that directory. The fake's repositories hold no files, except that
+		// one named like the directory's parent keeps it.
+		if cur := app.Attributes.Repository; (cur == nil || cur.FullName != *req.Repository) &&
+			app.Attributes.RootDirectory != nil && !strings.HasPrefix(*req.Repository, "acme/monorepo") {
+			app.Attributes.RootDirectory = nil
+		}
 		app.Attributes.Repository = &client.ApplicationRepository{FullName: *req.Repository}
 	}
 	if req.DefaultEnvironmentID != nil {

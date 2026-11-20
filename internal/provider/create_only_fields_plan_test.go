@@ -3,6 +3,7 @@ package provider
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -256,6 +257,73 @@ func TestCacheClusterIDPlan(t *testing.T) {
 				Check: sentClusterID("dc-2"),
 			},
 		},
+	})
+}
+
+// TestApplicationRootDirectoryClearedPlan covers Laravel Cloud clearing
+// root_directory when the repository changes to one without that directory.
+// Unset in the configuration, the cleared value is read back; still
+// configured, the apply fails and the next plan refuses to replace the
+// application, which would delete its environments.
+func TestApplicationRootDirectoryClearedPlan(t *testing.T) {
+	addr := "laravel_cloud_application.app"
+	withRepo := func(baseURL, repo, extra string) string {
+		return strings.Replace(applicationConfig(baseURL, extra), `"acme/monorepo"`, fmt.Sprintf("%q", repo), 1)
+	}
+
+	t.Run("unset", func(t *testing.T) {
+		_, baseURL := newFakeCloud(t)
+		resource.Test(t, resource.TestCase{
+			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			Steps: []resource.TestStep{
+				{Config: applicationConfig(baseURL, `  root_directory = "apps/web"`)},
+				{
+					Config: withRepo(baseURL, "acme/site", ""),
+					ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
+						plancheck.ExpectUnknownValue(addr, tfjsonpath.New("root_directory")),
+					}},
+					ConfigStateChecks: []statecheck.StateCheck{
+						statecheck.ExpectKnownValue(addr, tfjsonpath.New("root_directory"), knownvalue.Null()),
+					},
+				},
+			},
+		})
+	})
+
+	t.Run("configured", func(t *testing.T) {
+		_, baseURL := newFakeCloud(t)
+		cleared := regexp.MustCompile(`Laravel Cloud cleared root_directory`)
+		resource.Test(t, resource.TestCase{
+			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			Steps: []resource.TestStep{
+				{Config: applicationConfig(baseURL, `  root_directory = "apps/web"`)},
+				{
+					Config:      withRepo(baseURL, "acme/site", `  root_directory = "apps/web"`),
+					ExpectError: cleared,
+				},
+				{
+					// Planning again fails too, instead of replacing.
+					Config:      withRepo(baseURL, "acme/site", `  root_directory = "apps/web"`),
+					PlanOnly:    true,
+					ExpectError: cleared,
+				},
+				{
+					Config:           withRepo(baseURL, "acme/site", ""),
+					ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+					ConfigStateChecks: []statecheck.StateCheck{
+						statecheck.ExpectKnownValue(addr, tfjsonpath.New("root_directory"), knownvalue.Null()),
+					},
+				},
+				{
+					// Any other directory is a new application, as before.
+					Config: withRepo(baseURL, "acme/site", `  root_directory = "apps/api"`),
+					ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(addr, plancheck.ResourceActionDestroyBeforeCreate),
+					}},
+				},
+			},
+		})
 	})
 }
 
