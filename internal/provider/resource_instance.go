@@ -89,7 +89,21 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			},
 			"name": schema.StringAttribute{
 				Required:    true,
-				Description: "Instance name (3-40 characters).",
+				Description: "Instance name (3-40 characters). Changing a managed queue's name replaces the queue.",
+				// The API renames a managed queue's instance but not its
+				// SQS queue, so the app and worker end up on a queue that doesn't
+				// exist. A new queue under the new name is the only safe rename.
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplaceIf(
+						func(ctx context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+							var instanceType types.String
+							resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("type"), &instanceType)...)
+							resp.RequiresReplace = instanceType.ValueString() == "managed_queue"
+						},
+						"Changing a managed queue's name replaces the queue.",
+						"Changing a managed queue's name replaces the queue.",
+					),
+				},
 			},
 			"type": schema.StringAttribute{
 				Optional:    true,

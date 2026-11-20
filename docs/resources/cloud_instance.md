@@ -47,7 +47,7 @@ resource "laravel_cloud_instance" "example" {
 ### Required
 
 - `environment_id` (String) Parent environment ID.
-- `name` (String) Instance name (3-40 characters).
+- `name` (String) Instance name (3-40 characters). Changing a managed queue's name replaces the queue.
 - `scaling_type` (String) Scaling type (none, custom, auto).
 - `size` (String) Instance size (e.g. flex.c-1vcpu-256mb).
 

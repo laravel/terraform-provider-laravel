@@ -112,6 +112,54 @@ resource "laravel_cloud_instance" "standard" {
 	})
 }
 
+// TestInstanceRenamePlan: the API renames a managed queue's
+// instance but not its SQS queue, so renaming a queue must replace it, while
+// any other instance still renames in place.
+func TestInstanceRenamePlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	const queue, service = "laravel_cloud_instance.queue", "laravel_cloud_instance.service"
+	config := func(suffix string) string {
+		return providerCfg(baseURL) + appEnvStack + fmt.Sprintf(`
+resource "laravel_cloud_instance" "queue" {
+  environment_id = laravel_cloud_environment.env.id
+  name           = "jobs%[1]s"
+  type           = "managed_queue"
+  size           = "mq.flex.256mb"
+  scaling_type   = "custom"
+  max_replicas   = 2
+}
+
+resource "laravel_cloud_instance" "service" {
+  environment_id = laravel_cloud_environment.env.id
+  name           = "web%[1]s"
+  size           = "flex-512mb"
+  scaling_type   = "none"
+}
+`, suffix)
+	}
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config("")},
+			{
+				Config: config("-renamed"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(queue, plancheck.ResourceActionReplace),
+					plancheck.ExpectResourceAction(service, plancheck.ResourceActionUpdate),
+				}},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(queue, tfjsonpath.New("name"), knownvalue.StringExact("jobs-renamed")),
+					statecheck.ExpectKnownValue(service, tfjsonpath.New("name"), knownvalue.StringExact("web-renamed")),
+				},
+			},
+			{
+				Config:           config("-renamed"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+		},
+	})
+}
+
 // TestInstanceManagedQueueValidationPlan rejects settings the API ignores or
 // refuses for a queue's generation.
 func TestInstanceManagedQueueValidationPlan(t *testing.T) {
