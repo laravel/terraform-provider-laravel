@@ -219,3 +219,68 @@ func TestDomainStateUpgradeV0(t *testing.T) {
 		t.Errorf("name = %q (%v), want example.com", name, err)
 	}
 }
+
+// TestDomainWaitForVerificationPlan: with
+// wait_for_verification the apply asks Cloud to check the domain's records
+// until it verifies, and records the verified statuses; turning it on for an
+// existing domain waits on that apply. A domain that does not verify in time
+// is kept, with its last statuses, and the next plan is empty.
+func TestDomainWaitForVerificationPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	const addr = "laravel_cloud_domain.site"
+	verified := []statecheck.StateCheck{
+		statecheck.ExpectKnownValue(addr, tfjsonpath.New("hostname_status"), knownvalue.StringExact("verified")),
+		statecheck.ExpectKnownValue(addr, tfjsonpath.New("ssl_status"), knownvalue.StringExact("verified")),
+		statecheck.ExpectKnownValue(addr, tfjsonpath.New("origin_status"), knownvalue.StringExact("verified")),
+		statecheck.ExpectKnownValue(addr, tfjsonpath.New("action_required"), knownvalue.Null()),
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: domainConfig(baseURL, "wait_for_verification = true"), ConfigStateChecks: verified},
+			{
+				Config:           domainConfig(baseURL, "wait_for_verification = true"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+		},
+	})
+
+	_, baseURL = newFakeCloud(t)
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: domainConfig(baseURL, ""),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("hostname_status"), knownvalue.StringExact("pending")),
+				},
+			},
+			{
+				Config: domainConfig(baseURL, "wait_for_verification = true"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
+				}},
+				ConfigStateChecks: verified,
+			},
+		},
+	})
+
+	_, baseURL = newFakeCloud(t)
+	never := domainConfigNamed(baseURL, "never.example.com", "wait_for_verification = true\n  verification_timeout = 2")
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: never,
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("hostname_status"), knownvalue.StringExact("pending")),
+				},
+			},
+			{
+				Config:           never,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+		},
+	})
+}

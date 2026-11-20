@@ -54,12 +54,12 @@ resource "laravel_cloud_background_process" "example" {
 
 - `instance_id` (String) Parent instance ID.
 - `processes` (Number) Number of processes (1-10).
-- `type` (String) Process type (worker, custom).
+- `type` (String) Process type (worker, custom). Changing it updates the process in place.
 
 ### Optional
 
-- `command` (String) Custom command (required when type is custom, 3-500 chars).
-- `config` (String) JSON-encoded worker configuration (connection, queue, tries, backoff, sleep, rest, timeout, force).
+- `command` (String) Command to run. Required when type is custom (3-500 chars). For a worker, Laravel Cloud generates the queue:work command from config, so leave it unset.
+- `config` (String) JSON-encoded worker configuration, such as jsonencode({ queue = "default", tries = 3 }). Keys: backoff, connection, force, queue, rest, sleep, timeout, tries. Only applies to workers.
 
 ### Read-Only
 

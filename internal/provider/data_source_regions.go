@@ -50,7 +50,7 @@ func (d *RegionsDataSource) Schema(_ context.Context, _ datasource.SchemaRequest
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
 							Computed:    true,
-							Description: "Region identifier (e.g. us-east-1).",
+							Description: "Region identifier (such as us-east-1).",
 						},
 						"label": schema.StringAttribute{
 							Computed:    true,
@@ -58,7 +58,7 @@ func (d *RegionsDataSource) Schema(_ context.Context, _ datasource.SchemaRequest
 						},
 						"flag": schema.StringAttribute{
 							Computed:    true,
-							Description: "Country identifier for the region's flag, e.g. `us` or `germany`. Not an emoji.",
+							Description: "Country identifier for the region's flag, such as `us` or `germany`. Not an emoji.",
 						},
 					},
 				},
@@ -73,7 +73,7 @@ func (d *RegionsDataSource) Configure(_ context.Context, req datasource.Configur
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Data Source Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected data source configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	d.client = c

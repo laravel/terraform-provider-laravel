@@ -24,6 +24,10 @@ type Client struct {
 	baseURL    string
 	token      string
 	httpClient *http.Client
+	// Client-side pacing; see WithRateLimits. The limiters are nil when
+	// pacing is off.
+	maxPerMinute, maxCreatePerMinute    int
+	limitAll, limitCreate, limitCommand *limiter
 }
 
 // NewClient creates a new Laravel Cloud API client.
@@ -47,6 +51,12 @@ func NewClient(token string, opts ...ClientOption) *Client {
 			return http.ErrUseLastResponse
 		}
 	}
+	key := c.baseURL + "\x00" + c.token
+	c.limitAll = sharedLimiter(key+"\x00all", c.maxPerMinute)
+	c.limitCreate = sharedLimiter(key+"\x00create", c.maxCreatePerMinute)
+	if c.limitAll != nil {
+		c.limitCommand = sharedLimiter(key+"\x00command", commandRequestsPerMinute)
+	}
 	return c
 }
 
@@ -67,7 +77,44 @@ func WithHTTPClient(h *http.Client) ClientOption {
 // Low-level HTTP helpers
 // ---------------------------------------------------------------------
 
+// do sends one API request, paced by the client's limiters. A read that the
+// API refused because of load (429, 502, 503, 504) is retried after a delay;
+// a 429 also holds back every other request this process sends to the
+// organization until the limit resets. Writes are sent once.
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
+	create, command := rateClass(method, path)
+	for retries := 0; ; retries++ {
+		if err := c.limitAll.wait(ctx); err != nil {
+			return err
+		}
+		if create {
+			if err := c.limitCreate.wait(ctx); err != nil {
+				return err
+			}
+		}
+		if command {
+			if err := c.limitCommand.wait(ctx); err != nil {
+				return err
+			}
+		}
+
+		status, header, err := c.send(ctx, method, path, body, out)
+		if err == nil || !shouldRetry(method, status, retries) {
+			return err
+		}
+		delay := retryDelay(status, header, retries+1, time.Now())
+		if status == http.StatusTooManyRequests && c.limitAll != nil {
+			c.limitAll.pause(time.Now().Add(delay))
+		}
+		if err := sleepCtx(ctx, delay); err != nil {
+			return err
+		}
+	}
+}
+
+// send makes one HTTP request and decodes its response into out. It returns
+// the response status and headers, when there was a response, with any error.
+func (c *Client) send(ctx context.Context, method, path string, body any, out any) (status int, header http.Header, err error) {
 	// Split any query string off before joining: url.JoinPath treats the whole
 	// argument as path segments and would escape "?" to "%3F".
 	reqPath, rawQuery := path, ""
@@ -76,7 +123,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	}
 	u, err := url.JoinPath(c.baseURL, reqPath)
 	if err != nil {
-		return fmt.Errorf("building URL: %w", err)
+		return 0, nil, fmt.Errorf("building URL: %w", err)
 	}
 	if rawQuery != "" {
 		u += "?" + rawQuery
@@ -86,14 +133,14 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("marshaling request body: %w", err)
+			return 0, nil, fmt.Errorf("marshaling request body: %w", err)
 		}
 		reqBody = bytes.NewReader(b)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, u, reqBody)
 	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
+		return 0, nil, fmt.Errorf("creating request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
@@ -103,18 +150,19 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("executing request: %w", err)
+		return 0, nil, fmt.Errorf("executing request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	status, header = resp.StatusCode, resp.Header
 
 	// Read one byte past the cap so a truncated body is reported as such
 	// rather than as the JSON syntax error truncation would otherwise cause.
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
 	if err != nil {
-		return fmt.Errorf("reading response body: %w", err)
+		return status, header, fmt.Errorf("reading response body: %w", err)
 	}
 	if len(respBody) > maxResponseSize {
-		return fmt.Errorf("response from %s %s exceeds the %d byte limit", method, u, maxResponseSize)
+		return status, header, fmt.Errorf("response from %s %s exceeds the %d byte limit", method, u, maxResponseSize)
 	}
 
 	// A redirect means the request never reached the API handler it was aimed
@@ -124,7 +172,11 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		if loc == "" {
 			loc = "(no Location header)"
 		}
-		return fmt.Errorf("%s %s was answered with an unexpected %d redirect to %s; the API did not handle this request", method, u, resp.StatusCode, loc)
+		// Laravel Cloud answers a write it throttled this way (with no
+		// rate-limit headers), so say so: it is the likeliest cause.
+		return status, header, fmt.Errorf("%s %s was answered with an unexpected %d redirect to %s; the API did not handle this request. "+
+			"It may be a rate limit: Laravel Cloud answers a write that exceeds one this way. Wait a minute and retry, "+
+			"or lower max_requests_per_minute if other runs share the organization", method, u, resp.StatusCode, loc)
 	}
 
 	// Detect non-JSON responses (e.g. HTML error pages, SPA catch-all).
@@ -136,11 +188,11 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		if len(preview) > 200 {
 			preview = preview[:200] + "..."
 		}
-		return fmt.Errorf("expected JSON response from %s %s but received Content-Type %q (status %d): %s", method, u, ct, resp.StatusCode, preview)
+		return status, header, fmt.Errorf("expected JSON response from %s %s but received Content-Type %q (status %d): %s", method, u, ct, resp.StatusCode, preview)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &APIError{
+		return status, header, &APIError{
 			StatusCode: resp.StatusCode,
 			Body:       string(respBody),
 		}
@@ -149,10 +201,10 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	if out != nil && len(respBody) > 0 {
 		ct := resp.Header.Get("Content-Type")
 		if err := json.Unmarshal(respBody, out); err != nil {
-			return fmt.Errorf("decoding response from %s %s (Content-Type: %q, status %d): %w", method, u, ct, resp.StatusCode, err)
+			return status, header, fmt.Errorf("decoding response from %s %s (Content-Type: %q, status %d): %w", method, u, ct, resp.StatusCode, err)
 		}
 	}
-	return nil
+	return status, header, nil
 }
 
 // listAll walks every page of a paginated collection route and returns the
@@ -206,6 +258,55 @@ func (e *APIError) Error() string {
 func IsNotFound(err error) bool {
 	var apiErr *APIError
 	return errors.As(err, &apiErr) && apiErr.StatusCode == 404
+}
+
+// IsBusy returns true if the API refused the request because the resource, or
+// the database cluster it belongs to, has another operation in progress -- a
+// cluster that is still being created counts. The same request succeeds once
+// that operation finishes.
+//
+// The API has no error code for this, only a 422 validation message, and the
+// wording differs by route: "This database cluster is already being updated.
+// Try again shortly." when creating or deleting a database, and "An update is
+// already in progress for this database. Try again in a few seconds." when
+// deleting a cluster or restoring one. A WebSocket server that is creating or
+// updating answers "An update operation is already in progress for this
+// WebSocket cluster." or, on delete, "An operation is already in progress for
+// this WebSocket cluster." An environment refuses to attach a database or cache
+// that is creating or updating with "The selected cache is still being
+// provisioned. Try again in a few seconds." (or database, or database cluster).
+// A managed queue whose SQS queue is still creating or updating refuses to be
+// paused, resumed or made the default with "This queue is not available yet.
+// Wait a few seconds and try again."
+func IsBusy(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	return strings.Contains(apiErr.Body, "already being updated") ||
+		strings.Contains(apiErr.Body, "already in progress") ||
+		strings.Contains(apiErr.Body, "still being provisioned") ||
+		strings.Contains(apiErr.Body, "not available yet")
+}
+
+// IsBranchUnavailable returns true if the API refused to create an environment
+// because Laravel Cloud's own record of the application's branches has no row
+// for the requested branch: `422 {"branch": ["The selected branch is no longer
+// available."]}`. Cloud answers this while it has not yet synced a non-default
+// branch of a newly connected repository, and also for an application whose
+// repository is null.
+func IsBranchUnavailable(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity &&
+		strings.Contains(apiErr.Body, "The selected branch is no longer available")
+}
+
+// IsClusterNotEmpty returns true if the API refused to delete a database
+// cluster because it still has databases.
+func IsClusterNotEmpty(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity &&
+		strings.Contains(apiErr.Body, "still has databases")
 }
 
 // RetryOnConflict retries operation up to maxAttempts when isRetryable returns

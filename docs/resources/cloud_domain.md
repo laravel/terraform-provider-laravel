@@ -49,7 +49,9 @@ resource "laravel_cloud_domain" "example" {
 
 - `allow_downtime` (Boolean) Whether to allow downtime while attaching the domain. Create-time only; changing this forces a new domain.
 - `cloudflare_strategy` (String) Cloudflare integration strategy (none, dns, dns_proxy). Create-time only; changing this forces a new domain.
-- `verification_method` (String) Verification method (pre_verification, real_time). Editable in place via the API's update endpoint.
+- `verification_method` (String) Verification method (pre_verification, real_time). Changing it updates the domain in place.
+- `verification_timeout` (Number) Minutes to wait for the domain to verify when wait_for_verification is true. Defaults to 30.
+- `wait_for_verification` (Boolean) Whether apply waits for the domain to verify, asking Laravel Cloud to check its DNS records once a minute, for up to verification_timeout minutes. Create the records in dns_records first, for example from a previous apply. A domain that does not verify in time is kept, with a warning. Setting it on an existing domain waits on the next apply.
 - `wildcard_enabled` (Boolean) Enable wildcard subdomain. Create-time only; changing this forces a new domain.
 - `www_redirect` (String) WWW redirect (root_to_www, www_to_root). Create-time only: the API's update endpoint accepts verification_method and nothing else, so changing this forces a new domain.
 

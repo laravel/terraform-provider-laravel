@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -12,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
@@ -66,8 +68,9 @@ func (r *WebsocketApplicationResource) Schema(_ context.Context, _ resource.Sche
 				},
 			},
 			"name": schema.StringAttribute{
-				Required:    true,
-				Description: "Application name.",
+				Required: true,
+				Description: "Application name. Every server already has an application named " +
+					"`production`, which Laravel Cloud creates with it, so that name cannot be used.",
 			},
 			"app_id": schema.StringAttribute{
 				Computed:    true,
@@ -89,9 +92,9 @@ func (r *WebsocketApplicationResource) Schema(_ context.Context, _ resource.Sche
 				ElementType: types.StringType,
 				Description: "Allowed origins for WebSocket connections. The API always " +
 					"returns a list here, empty when no origins are restricted, so this is " +
-					"Computed as well as Optional. Because it is computed, REMOVING this " +
-					"attribute from the configuration leaves the existing origins in place " +
-					"rather than clearing them -- assign an empty list to clear them.",
+					"computed as well as optional. Because it is computed, removing this " +
+					"attribute from the configuration leaves the existing origins in place. " +
+					"Assign an empty list to clear them.",
 				PlanModifiers: []planmodifier.List{
 					listplanmodifier.UseStateForUnknown(),
 				},
@@ -99,7 +102,10 @@ func (r *WebsocketApplicationResource) Schema(_ context.Context, _ resource.Sche
 			"ping_interval": schema.Int64Attribute{
 				Optional:    true,
 				Computed:    true,
-				Description: "Ping interval in seconds.",
+				Description: "Ping interval in seconds, from 1 to 60.",
+				Validators: []validator.Int64{
+					int64validator.Between(1, 60),
+				},
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -107,7 +113,10 @@ func (r *WebsocketApplicationResource) Schema(_ context.Context, _ resource.Sche
 			"activity_timeout": schema.Int64Attribute{
 				Optional:    true,
 				Computed:    true,
-				Description: "Activity timeout in seconds.",
+				Description: "Activity timeout in seconds, from 1 to 60.",
+				Validators: []validator.Int64{
+					int64validator.Between(1, 60),
+				},
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -133,7 +142,7 @@ func (r *WebsocketApplicationResource) Configure(_ context.Context, req resource
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected resource configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	r.client = c
@@ -169,7 +178,15 @@ func (r *WebsocketApplicationResource) Create(ctx context.Context, req resource.
 		createReq.ActivityTimeout = &v
 	}
 
-	wsApp, err := r.client.CreateWebsocketApplication(ctx, plan.ServerID.ValueString(), createReq)
+	// The server refuses new applications while it is busy: while it is still
+	// being created, and for a few seconds after any application on it is
+	// created or deleted, so sibling applications created in parallel queue up.
+	var wsApp *client.WebsocketApplicationData
+	err := client.RetryOnConflict(ctx, websocketBusyAttempts, websocketBusyInterval, func() error {
+		var err error
+		wsApp, err = r.client.CreateWebsocketApplication(ctx, plan.ServerID.ValueString(), createReq)
+		return err
+	}, client.IsBusy)
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating websocket application", err.Error())
 		return
@@ -240,7 +257,12 @@ func (r *WebsocketApplicationResource) Update(ctx context.Context, req resource.
 		updateReq.ActivityTimeout = &v
 	}
 
-	wsApp, err := r.client.UpdateWebsocketApplication(ctx, state.ID.ValueString(), updateReq)
+	var wsApp *client.WebsocketApplicationData
+	err := client.RetryOnConflict(ctx, websocketBusyAttempts, websocketBusyInterval, func() error {
+		var err error
+		wsApp, err = r.client.UpdateWebsocketApplication(ctx, state.ID.ValueString(), updateReq)
+		return err
+	}, client.IsBusy)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating websocket application", err.Error())
 		return
@@ -257,7 +279,10 @@ func (r *WebsocketApplicationResource) Delete(ctx context.Context, req resource.
 		return
 	}
 
-	if err := r.client.DeleteWebsocketApplication(ctx, state.ID.ValueString()); err != nil {
+	err := client.RetryOnConflict(ctx, websocketBusyAttempts, websocketBusyInterval, func() error {
+		return r.client.DeleteWebsocketApplication(ctx, state.ID.ValueString())
+	}, client.IsBusy)
+	if err != nil {
 		resp.Diagnostics.AddError("Error deleting websocket application", err.Error())
 	}
 }

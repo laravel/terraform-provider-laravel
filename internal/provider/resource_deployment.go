@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -49,7 +52,10 @@ func (r *DeploymentResource) Metadata(_ context.Context, req resource.MetadataRe
 
 func (r *DeploymentResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Initiates a deployment on a Laravel Cloud environment.",
+		Description: "Initiates a deployment on a Laravel Cloud environment. While the environment's resources " +
+			"(such as a cache or database) are still provisioning, Laravel Cloud queues the deployment instead of " +
+			"starting it; Terraform waits for it to start, for up to the 30 minutes Laravel Cloud keeps it queued, " +
+			"and records the deployment it started.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed: true,
@@ -122,7 +128,7 @@ func (r *DeploymentResource) Configure(_ context.Context, req resource.Configure
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected resource configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	r.client = c
@@ -135,7 +141,10 @@ func (r *DeploymentResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	deployment, err := r.client.CreateDeployment(ctx, plan.EnvironmentID.ValueString())
+	deployment, queued, err := r.client.CreateDeployment(ctx, plan.EnvironmentID.ValueString())
+	if err == nil && queued != nil {
+		deployment, err = waitForQueuedDeployment(ctx, r.client, queued.ID)
+	}
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating deployment", err.Error())
 		return
@@ -152,7 +161,30 @@ func (r *DeploymentResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
-	deployment, err := r.client.GetDeployment(ctx, state.ID.ValueString())
+	id := state.ID.ValueString()
+	// Provider 1.4.0 and earlier stored the id of a queued deployment, which
+	// GET /deployments does not know. Follow it to the deployment it started.
+	if strings.HasPrefix(id, queuedDeploymentIDPrefix) {
+		queued, err := r.client.GetQueuedDeployment(ctx, id)
+		if err != nil {
+			if client.IsNotFound(err) {
+				resp.State.RemoveResource(ctx)
+				return
+			}
+			resp.Diagnostics.AddError("Error reading queued deployment", err.Error())
+			return
+		}
+		id = queued.Relationships.Deployment.RelatedID()
+		if id == "" {
+			// Still waiting, or replaced by a newer request: there is no
+			// deployment to read, and requesting another is not this read's call.
+			state.Status = types.StringValue(queued.Attributes.Status)
+			resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+			return
+		}
+	}
+
+	deployment, err := r.client.GetDeployment(ctx, id)
 	if err != nil {
 		if client.IsNotFound(err) {
 			resp.State.RemoveResource(ctx)
@@ -175,12 +207,56 @@ func (r *DeploymentResource) Delete(_ context.Context, _ resource.DeleteRequest,
 	resp.Diagnostics.AddWarning(
 		"Deployment not deleted from Laravel Cloud",
 		"The Laravel Cloud API does not support deleting deployments. "+
-			"The resource has been removed from Terraform state.",
+			"Terraform removed the resource from its state.",
 	)
 }
 
 func (r *DeploymentResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// queuedDeploymentIDPrefix starts the id of every queued deployment.
+const queuedDeploymentIDPrefix = "qdepl"
+
+// queuedDeploymentPollInterval is how often Create checks whether a queued
+// deployment has started. A variable so the plan tests need not wait.
+var queuedDeploymentPollInterval = 5 * time.Second
+
+// queuedDeploymentPollAttempts covers the 30 minutes Laravel Cloud keeps a
+// deployment queued before it expires it, with some margin.
+const queuedDeploymentPollAttempts = 400
+
+var errDeploymentQueued = errors.New("deployment is still queued")
+
+// waitForQueuedDeployment waits until Laravel Cloud starts a queued deployment,
+// which it does once the environment's resources finish provisioning, and
+// returns the deployment it started.
+func waitForQueuedDeployment(ctx context.Context, c *client.Client, id string) (*client.DeploymentData, error) {
+	var queued *client.QueuedDeploymentData
+	err := client.RetryOnConflict(ctx, queuedDeploymentPollAttempts, queuedDeploymentPollInterval, func() error {
+		var err error
+		queued, err = c.GetQueuedDeployment(ctx, id)
+		if err != nil {
+			return err
+		}
+		if queued.Attributes.Status == "pending" {
+			return errDeploymentQueued
+		}
+		return nil
+	}, func(err error) bool { return errors.Is(err, errDeploymentQueued) })
+	if err != nil {
+		return nil, fmt.Errorf("waiting for queued deployment %s to start: %w", id, err)
+	}
+
+	deploymentID := queued.Relationships.Deployment.RelatedID()
+	if queued.Attributes.Status != "promoted" || deploymentID == "" {
+		reason := "it is " + queued.Attributes.Status
+		if queued.Attributes.FailureReason != nil && *queued.Attributes.FailureReason != "" {
+			reason = *queued.Attributes.FailureReason
+		}
+		return nil, fmt.Errorf("queued deployment %s did not start: %s", id, reason)
+	}
+	return c.GetDeployment(ctx, deploymentID)
 }
 
 func mapDeploymentToState(d *client.DeploymentData, state *DeploymentResourceModel) {

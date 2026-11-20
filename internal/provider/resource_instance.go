@@ -3,7 +3,10 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -52,6 +55,10 @@ type InstanceResourceModel struct {
 	IsDefault                        types.Bool   `tfsdk:"is_default"`
 	Probes                           types.Object `tfsdk:"probes"`
 	QueueStatus                      types.String `tfsdk:"queue_status"`
+	Fifo                             types.Bool   `tfsdk:"fifo"`
+	QueueType                        types.String `tfsdk:"queue_type"`
+	RetireAt                         types.String `tfsdk:"retire_at"`
+	RetiredAt                        types.String `tfsdk:"retired_at"`
 	CreatedAt                        types.String `tfsdk:"created_at"`
 }
 
@@ -82,20 +89,36 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			},
 			"name": schema.StringAttribute{
 				Required:    true,
-				Description: "Instance name (3-40 characters).",
+				Description: "Instance name (3-40 characters). Changing a managed queue's name replaces the queue.",
+				// The API renames a managed queue's instance but not its
+				// SQS queue, so the app and worker end up on a queue that doesn't
+				// exist. A new queue under the new name is the only safe rename.
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplaceIf(
+						func(ctx context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+							var instanceType types.String
+							resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("type"), &instanceType)...)
+							resp.RequiresReplace = instanceType.ValueString() == "managed_queue"
+						},
+						"Changing a managed queue's name replaces the queue.",
+						"Changing a managed queue's name replaces the queue.",
+					),
+				},
 			},
 			"type": schema.StringAttribute{
-				Optional:    true,
-				Computed:    true,
-				Default:     stringdefault.StaticString("service"),
-				Description: "Instance type (service or managed_queue). Defaults to service when not set.",
+				Optional: true,
+				Computed: true,
+				Default:  stringdefault.StaticString("service"),
+				Description: "Instance type (service, managed_queue or app). Defaults to service when not set. Laravel Cloud " +
+					"creates an environment's app instance with the environment, so app takes over that instance instead " +
+					"of creating one, and destroy leaves it to the environment.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
 			"size": schema.StringAttribute{
 				Required:    true,
-				Description: "Instance size (e.g. flex.c-1vcpu-256mb).",
+				Description: "Instance size (such as flex-512mb).",
 			},
 			"scaling_type": schema.StringAttribute{
 				Required:    true,
@@ -104,9 +127,11 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"min_replicas": schema.Int64Attribute{
 				Optional: true,
 				Computed: true,
-				Description: "Minimum number of replicas. Only applicable to the \"custom\" " +
-					"scaling type; the API rejects it for \"auto\", and it does not apply to " +
-					"managed queues, which always scale to zero when idle.",
+				Description: "Minimum number of replicas. Set it only for the \"custom\" scaling type: " +
+					"for \"auto\" and \"none\" the platform sets it to 1. Required for custom scaling " +
+					"except on managed queues, where it is the minimum number of workers: optional " +
+					"on current-generation (mq.*) sizes, where 0 lets the queue scale to zero when " +
+					"idle, and rejected on previous-generation sizes, which always scale to zero.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -114,8 +139,8 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"max_replicas": schema.Int64Attribute{
 				Optional: true,
 				Computed: true,
-				Description: "Maximum number of replicas. Only applicable to the \"custom\" " +
-					"scaling type; the API rejects it for \"auto\".",
+				Description: "Maximum number of replicas. Set it only for the \"custom\" scaling type: " +
+					"for \"auto\" the platform sets it to the plan's replica limit, and for \"none\" to 1.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -127,16 +152,16 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			},
 			"scaling_cpu_threshold_percentage": schema.Int64Attribute{
 				Optional:    true,
-				Description: "CPU scaling threshold (50-95).",
+				Description: "CPU usage, in percent (50-95), above which the instance scales out. Leave unset for the platform default. Not allowed with scaling_type \"none\".",
 			},
 			"scaling_memory_threshold_percentage": schema.Int64Attribute{
 				Optional:    true,
-				Description: "Memory scaling threshold (50-95).",
+				Description: "Memory usage, in percent (50-95), above which the instance scales out. Leave unset for the platform default. Not allowed with scaling_type \"none\".",
 			},
 			"sleep_with_app": schema.BoolAttribute{
 				Optional:    true,
 				Computed:    true,
-				Description: "Whether the instance sleeps with the app (managed_queue).",
+				Description: "Whether the instance's replicas scale to zero along with the app, waking when it does. Only for service instances.",
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
 				},
@@ -150,10 +175,11 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"polling_interval": schema.Int64Attribute{
+				Optional: true,
 				Computed: true,
-				Description: "Queue polling interval in seconds (managed_queue). Read-only: " +
-					"the API reports this value but accepts it in neither the create nor the " +
-					"update request, so it is managed by the platform.",
+				Description: "Queue polling interval in seconds (1-60). Only for previous-generation " +
+					"managed queues (sizes such as mq-pro-256mb), which require it; current-generation " +
+					"(mq.*) sizes have no polling interval.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -167,20 +193,44 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"uses_octane": schema.BoolAttribute{
-				Optional:    true,
-				Description: "Whether the instance uses Laravel Octane. The create route ignores it, so on create the provider applies it with a follow-up update.",
+				Optional: true,
+				Computed: true,
+				Description: "Whether the app is served by Laravel Octane. Only for app instances, which Laravel Cloud " +
+					"creates with the environment: set type = \"app\" to manage it. The same setting as the " +
+					"environment's uses_octane: set it in one place.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"uses_inertia_ssr": schema.BoolAttribute{
-				Optional:    true,
-				Description: "Whether the instance uses Inertia SSR. The create route ignores it, so on create the provider applies it with a follow-up update.",
+				Optional: true,
+				Computed: true,
+				Description: "Whether the app runs an Inertia SSR server. Only for app instances, which Laravel Cloud " +
+					"creates with the environment: set type = \"app\" to manage it. Changing it also changes the " +
+					"environment's build command.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"hibernation_timeout": schema.Int64Attribute{
-				Optional:    true,
-				Description: "Hibernation timeout in seconds (1-60). The create route ignores it, so on create the provider applies it with a follow-up update.",
+				Optional: true,
+				Computed: true,
+				Description: "Minutes of inactivity (1-60) before the app hibernates (scales to zero). Set 0 to turn " +
+					"hibernation off. Only for app instances, which Laravel Cloud creates with the environment, so " +
+					"set type = \"app\" to manage it. Use it instead of the environment's deprecated sleep_timeout, " +
+					"which writes the same setting but cannot turn hibernation off.",
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
 			},
 			"paused": schema.BoolAttribute{
-				Computed:    true,
-				Description: "Whether the instance is paused.",
+				Optional: true,
+				Computed: true,
+				Description: "Whether the managed queue is paused, which stops it dispatching jobs to its workers. " +
+					"Set true to pause it and false to resume it. Only for managed_queue instances; null for others.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"is_default": schema.BoolAttribute{
 				Optional: true,
@@ -193,6 +243,34 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"queue_status": schema.StringAttribute{
 				Computed:    true,
 				Description: "Raw queue status JSON (managed_queue).",
+			},
+			"fifo": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+				Description: "Whether the managed queue is a FIFO queue, which delivers jobs exactly once and in order. " +
+					"Only for managed queues, on organizations with current-generation queues. Laravel Cloud adds a \".fifo\" suffix to the " +
+					"queue's name, which can then have at most 34 characters; name is set without it. Changing it " +
+					"replaces the queue.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.RequiresReplace(),
+				},
+			},
+			"queue_type": schema.StringAttribute{
+				Computed:    true,
+				Description: "The managed queue's type: standard or fifo. Null for other instance types.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"retire_at": schema.StringAttribute{
+				Computed:    true,
+				Description: "When the instance's size is scheduled to be retired because it is being discontinued.",
+			},
+			"retired_at": schema.StringAttribute{
+				Computed: true,
+				Description: "When the instance was retired because its size is no longer supported. A retired queue " +
+					"stops processing jobs until its size is upgraded.",
 			},
 			"created_at": schema.StringAttribute{
 				Computed: true,
@@ -207,7 +285,7 @@ func (r *InstanceResource) Configure(_ context.Context, req resource.ConfigureRe
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected resource configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	r.client = c
@@ -217,6 +295,10 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 	var plan InstanceResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	if plan.Type.ValueString() == "app" {
+		r.adoptAppInstance(ctx, plan, resp)
 		return
 	}
 
@@ -266,6 +348,24 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		v := int(plan.ShutdownTimeout.ValueInt64())
 		createReq.ShutdownTimeout = &v
 	}
+	if !plan.PollingInterval.IsNull() && !plan.PollingInterval.IsUnknown() {
+		v := int(plan.PollingInterval.ValueInt64())
+		createReq.PollingInterval = &v
+	}
+	// fifo is declined for anything but a managed queue.
+	if plan.Type.ValueString() == "managed_queue" && plan.Fifo.ValueBool() {
+		v := true
+		createReq.Fifo = &v
+	}
+	// A managed queue runs exactly one worker with one process on the cloud
+	// connection, as the CLI creates it. Without it the API answers 422.
+	if plan.Type.ValueString() == "managed_queue" {
+		createReq.BackgroundProcesses = []client.CreateBackgroundProcessRequest{{
+			Type:      "worker",
+			Processes: 1,
+			Config:    map[string]any{"connection": "cloud", "queue": plan.Name.ValueString()},
+		}}
+	}
 
 	inst, err := r.client.CreateInstance(ctx, plan.EnvironmentID.ValueString(), createReq)
 	if err != nil {
@@ -273,10 +373,7 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	// uses_octane, uses_inertia_ssr and hibernation_timeout are accepted only
-	// by the update route. Writing them straight into state would have claimed
-	// a value that was never sent, and because the API does not report them
-	// back no later refresh could ever notice -- so they are applied here.
+	// probes are accepted only by the update route, so they are applied here.
 	//
 	// The instance exists by this point, so a failure must not abort Create:
 	// returning early would skip the state write below and strand a live,
@@ -285,8 +382,7 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		if updated, err := r.client.UpdateInstance(ctx, inst.ID, updateReq); err != nil {
 			resp.Diagnostics.AddWarning(
 				"Could not apply all settings after creating the instance",
-				"The instance was created, but applying uses_octane, uses_inertia_ssr, "+
-					"hibernation_timeout or probes failed: "+err.Error()+
+				"The instance was created, but applying probes failed: "+err.Error()+
 					". The configured values are kept in state; run 'terraform apply' again to retry.",
 			)
 		} else {
@@ -296,6 +392,7 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 
 	configuredProbes := plan.Probes
 	configuredDefault := plan.IsDefault
+	configuredPaused := plan.Paused
 	mapInstanceToState(inst, &plan)
 	// The API ignores probes it cannot apply rather than rejecting them. The
 	// instance exists, so keep the configured value and let the next plan
@@ -304,17 +401,97 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		resp.Diagnostics.AddWarning("Health checks were not applied", probesNotAppliedDetail)
 		plan.Probes = configuredProbes
 	}
+	// A new queue is still creating, and the API makes it the default or
+	// pauses it only once it is available, so these wait for that. If one
+	// still fails, state records what the queue really is, so the next plan
+	// shows the change again and Update retries it.
 	if isSet(configuredDefault) && configuredDefault.ValueBool() && !plan.IsDefault.ValueBool() {
-		if err := r.client.SetDefaultInstance(ctx, inst.ID); err != nil {
+		if updated, err := queueActionWhenAvailable(ctx, r.client.SetDefaultInstance, inst.ID); err != nil {
 			resp.Diagnostics.AddWarning(
 				"Could not make the queue the default after creating it",
 				"The instance was created, but making it the environment's default queue failed: "+err.Error()+
-					". A queue can become the default only once it is available; run 'terraform apply' again to retry.",
+					". Run 'terraform apply' again to retry.",
 			)
+		} else {
+			plan.IsDefault = types.BoolPointerValue(updated.Attributes.IsDefault)
 		}
-		plan.IsDefault = configuredDefault
+	}
+	if isSet(configuredPaused) && configuredPaused.ValueBool() && !plan.Paused.ValueBool() {
+		if updated, err := queueActionWhenAvailable(ctx, r.client.PauseInstance, inst.ID); err != nil {
+			resp.Diagnostics.AddWarning(
+				"Could not pause the queue after creating it",
+				"The instance was created, but pausing it failed: "+err.Error()+". Run 'terraform apply' again to retry.",
+			)
+		} else {
+			plan.Paused = types.BoolPointerValue(updated.Attributes.Paused)
+		}
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// adoptAppInstance takes over the app instance Laravel Cloud creates with
+// every environment, which the API cannot create, and applies the configured
+// settings to it. Nothing is created, so a failure leaves nothing behind and
+// the next apply tries again.
+func (r *InstanceResource) adoptAppInstance(ctx context.Context, plan InstanceResourceModel, resp *resource.CreateResponse) {
+	envID := plan.EnvironmentID.ValueString()
+	instances, err := r.client.ListInstances(ctx, envID)
+	if err != nil {
+		resp.Diagnostics.AddError("Error finding the environment's app instance", err.Error())
+		return
+	}
+	var inst *client.InstanceData
+	for i := range instances {
+		if instances[i].Attributes.InstanceType == "app" {
+			inst = &instances[i]
+			break
+		}
+	}
+	if inst == nil {
+		resp.Diagnostics.AddAttributeError(path.Root("type"), "Environment has no app instance",
+			fmt.Sprintf("An app instance cannot be created: Laravel Cloud creates one with each environment, and "+
+				"environment %s has none.", envID))
+		return
+	}
+
+	var current InstanceResourceModel
+	mapInstanceToState(inst, &current)
+	if updateReq := instanceUpdateRequest(plan, current); updateReq != (client.UpdateInstanceRequest{}) {
+		if inst, err = r.client.UpdateInstance(ctx, inst.ID, updateReq); err != nil {
+			resp.Diagnostics.AddError("Error updating the environment's app instance", err.Error())
+			return
+		}
+	}
+	configuredProbes := plan.Probes
+	if probes, _ := probesFromObject(configuredProbes); probes != nil && inst.Attributes.Probes == nil {
+		resp.Diagnostics.AddAttributeError(path.Root("probes"), "Health checks were not applied", probesNotAppliedDetail)
+		return
+	}
+	mapInstanceToState(inst, &plan)
+	plan.EnvironmentID = types.StringValue(envID)
+	plan.Probes = configuredProbes
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// The API refuses to make a managed queue the default, pause it or resume it
+// while its SQS queue is creating or updating ("This queue is not available
+// yet"), as a queue is right after it is created or resized. These bound how
+// long that is retried. The interval is a variable so the plan tests need not
+// wait.
+const queueAvailableAttempts = 60
+
+var queueAvailableInterval = 5 * time.Second
+
+// queueActionWhenAvailable runs one of a managed queue's action routes,
+// retrying while the queue is not available yet.
+func queueActionWhenAvailable(ctx context.Context, action func(context.Context, string) (*client.InstanceData, error), id string) (*client.InstanceData, error) {
+	var inst *client.InstanceData
+	err := client.RetryOnConflict(ctx, queueAvailableAttempts, queueAvailableInterval, func() error {
+		var err error
+		inst, err = action(ctx, id)
+		return err
+	}, client.IsBusy)
+	return inst, err
 }
 
 // probesNotAppliedDetail explains a probes value the API accepted but ignored.
@@ -322,25 +499,12 @@ const probesNotAppliedDetail = "The API did not apply probes. Health checks are 
 	"and only on plans that include them."
 
 // instanceCreateFollowUp collects the update-only attributes the create route
-// ignores, reporting whether any of them were configured.
+// ignores, reporting whether any of them were configured. uses_octane,
+// uses_inertia_ssr and hibernation_timeout are not among them: they apply only
+// to app instances, which the API cannot create.
 func instanceCreateFollowUp(plan InstanceResourceModel) (client.UpdateInstanceRequest, bool) {
 	var req client.UpdateInstanceRequest
 	set := false
-	if !plan.UsesOctane.IsNull() && !plan.UsesOctane.IsUnknown() {
-		v := plan.UsesOctane.ValueBool()
-		req.UsesOctane = &v
-		set = true
-	}
-	if !plan.UsesInertiaSSR.IsNull() && !plan.UsesInertiaSSR.IsUnknown() {
-		v := plan.UsesInertiaSSR.ValueBool()
-		req.UsesInertiaSSR = &v
-		set = true
-	}
-	if !plan.HibernationTimeout.IsNull() && !plan.HibernationTimeout.IsUnknown() {
-		v := int(plan.HibernationTimeout.ValueInt64())
-		req.HibernationTimeout = &v
-		set = true
-	}
 	if probes, _ := probesFromObject(plan.Probes); probes != nil {
 		req.Probes = probesRequest(probes)
 		set = true
@@ -382,6 +546,54 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
+	updateReq := instanceUpdateRequest(plan, state)
+	planProbes, _ := probesFromObject(plan.Probes)
+
+	inst, err := r.client.UpdateInstance(ctx, state.ID.ValueString(), updateReq)
+	if err != nil {
+		resp.Diagnostics.AddError("Error updating instance", err.Error())
+		return
+	}
+	if planProbes != nil && inst.Attributes.Probes == nil {
+		resp.Diagnostics.AddAttributeError(path.Root("probes"), "Health checks were not applied", probesNotAppliedDetail)
+		return
+	}
+
+	// Making a queue the default is its own call, and the API refuses it for
+	// the queue that already is.
+	configuredDefault := plan.IsDefault
+	if isSet(configuredDefault) && configuredDefault.ValueBool() && !state.IsDefault.ValueBool() {
+		if inst, err = queueActionWhenAvailable(ctx, r.client.SetDefaultInstance, state.ID.ValueString()); err != nil {
+			resp.Diagnostics.AddError("Error making the queue the default", err.Error())
+			return
+		}
+	}
+	if isSet(plan.Paused) && !plan.Paused.Equal(state.Paused) {
+		action := r.client.ResumeInstance
+		if plan.Paused.ValueBool() {
+			action = r.client.PauseInstance
+		}
+		if inst, err = queueActionWhenAvailable(ctx, action, state.ID.ValueString()); err != nil {
+			resp.Diagnostics.AddError("Error pausing or resuming the queue", err.Error())
+			return
+		}
+	}
+
+	plan.EnvironmentID = state.EnvironmentID
+	configuredProbes := plan.Probes
+	mapInstanceToState(inst, &plan)
+	// The action routes answer without probes, which only the update
+	// response reports.
+	plan.Probes = configuredProbes
+	if isSet(configuredDefault) {
+		plan.IsDefault = configuredDefault
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// instanceUpdateRequest builds the PATCH that moves an instance from state to
+// plan, sending only what changed.
+func instanceUpdateRequest(plan, state InstanceResourceModel) client.UpdateInstanceRequest {
 	updateReq := client.UpdateInstanceRequest{}
 	if !plan.Name.Equal(state.Name) {
 		v := plan.Name.ValueString()
@@ -395,17 +607,26 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		v := plan.ScalingType.ValueString()
 		updateReq.ScalingType = &v
 	}
-	// A null planned replica count means "not applicable" -- the instance is
-	// scaling automatically, and the API rejects the field outright. Sending
-	// ValueInt64() of a null would post 0, which is neither what the plan says
-	// nor a value the API accepts.
-	if !plan.MinReplicas.Equal(state.MinReplicas) && !plan.MinReplicas.IsNull() {
+	// An unknown replica count is one the platform picks, and the API rejects
+	// either count outright for "auto".
+	autoScaling := plan.ScalingType.ValueString() == "auto"
+	if !autoScaling && isSet(plan.MinReplicas) && !plan.MinReplicas.Equal(state.MinReplicas) {
 		v := int(plan.MinReplicas.ValueInt64())
 		updateReq.MinReplicas = &v
 	}
-	if !plan.MaxReplicas.Equal(state.MaxReplicas) && !plan.MaxReplicas.IsNull() {
+	if !autoScaling && isSet(plan.MaxReplicas) && !plan.MaxReplicas.Equal(state.MaxReplicas) {
 		v := int(plan.MaxReplicas.ValueInt64())
 		updateReq.MaxReplicas = &v
+	}
+	// A removed threshold is sent as null, which returns it to the platform
+	// default.
+	if !plan.ScalingCPUThresholdPercentage.Equal(state.ScalingCPUThresholdPercentage) {
+		v := plan.ScalingCPUThresholdPercentage
+		updateReq.ScalingCPUThresholdPercentage = &client.NullableInt{Value: int(v.ValueInt64()), Null: v.IsNull()}
+	}
+	if !plan.ScalingMemoryThresholdPercentage.Equal(state.ScalingMemoryThresholdPercentage) {
+		v := plan.ScalingMemoryThresholdPercentage
+		updateReq.ScalingMemoryThresholdPercentage = &client.NullableInt{Value: int(v.ValueInt64()), Null: v.IsNull()}
 	}
 	if !plan.UsesScheduler.Equal(state.UsesScheduler) {
 		v := plan.UsesScheduler.ValueBool()
@@ -423,58 +644,47 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		v := int(plan.ShutdownTimeout.ValueInt64())
 		updateReq.ShutdownTimeout = &v
 	}
-	// Update-only behavioral fields: not returned by the API, so send them
-	// whenever they are set in the plan.
-	if !plan.UsesOctane.IsNull() {
+	if !plan.PollingInterval.IsUnknown() && !plan.PollingInterval.IsNull() && !plan.PollingInterval.Equal(state.PollingInterval) {
+		v := int(plan.PollingInterval.ValueInt64())
+		updateReq.PollingInterval = &v
+	}
+	if isSet(plan.UsesOctane) && !plan.UsesOctane.Equal(state.UsesOctane) {
 		v := plan.UsesOctane.ValueBool()
 		updateReq.UsesOctane = &v
 	}
-	if !plan.UsesInertiaSSR.IsNull() {
+	if isSet(plan.UsesInertiaSSR) && !plan.UsesInertiaSSR.Equal(state.UsesInertiaSSR) {
 		v := plan.UsesInertiaSSR.ValueBool()
 		updateReq.UsesInertiaSSR = &v
 	}
-	if !plan.HibernationTimeout.IsNull() {
-		v := int(plan.HibernationTimeout.ValueInt64())
-		updateReq.HibernationTimeout = &v
+	// 0 turns hibernation off, which the API spells null.
+	if isSet(plan.HibernationTimeout) && !plan.HibernationTimeout.Equal(state.HibernationTimeout) {
+		v := plan.HibernationTimeout.ValueInt64()
+		updateReq.HibernationTimeout = &client.NullableInt{Value: int(v), Null: v == 0}
 	}
 	planProbes, _ := probesFromObject(plan.Probes)
 	stateProbes, _ := probesFromObject(state.Probes)
 	if !probesEqual(planProbes, stateProbes) {
 		updateReq.Probes = probesRequest(planProbes)
 	}
-
-	inst, err := r.client.UpdateInstance(ctx, state.ID.ValueString(), updateReq)
-	if err != nil {
-		resp.Diagnostics.AddError("Error updating instance", err.Error())
-		return
-	}
-	if planProbes != nil && inst.Attributes.Probes == nil {
-		resp.Diagnostics.AddAttributeError(path.Root("probes"), "Health checks were not applied", probesNotAppliedDetail)
-		return
-	}
-
-	// Making a queue the default is its own call, and the API refuses it for
-	// the queue that already is.
-	configuredDefault := plan.IsDefault
-	if isSet(configuredDefault) && configuredDefault.ValueBool() && !state.IsDefault.ValueBool() {
-		if err := r.client.SetDefaultInstance(ctx, state.ID.ValueString()); err != nil {
-			resp.Diagnostics.AddError("Error making the queue the default", err.Error())
-			return
-		}
-	}
-
-	plan.EnvironmentID = state.EnvironmentID
-	mapInstanceToState(inst, &plan)
-	if isSet(configuredDefault) {
-		plan.IsDefault = configuredDefault
-	}
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	return updateReq
 }
 
 func (r *InstanceResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state InstanceResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// The API refuses to delete an environment's app instance, which this
+	// resource took over or imported. Deleting the environment deletes it, so
+	// it is only dropped from state here.
+	if state.Type.ValueString() == "app" {
+		resp.Diagnostics.AddWarning(
+			"App instance not deleted",
+			fmt.Sprintf("Instance %q is its environment's app instance, which Laravel Cloud cannot delete on its own. "+
+				"It was removed from Terraform state and is deleted along with the environment.", state.Name.ValueString()),
+		)
 		return
 	}
 
@@ -495,7 +705,17 @@ func mapInstanceToState(inst *client.InstanceData, state *InstanceResourceModel)
 		state.EnvironmentID = types.StringValue(envID)
 	}
 	state.ID = types.StringValue(inst.ID)
-	state.Name = types.StringValue(inst.Attributes.Name)
+	// The API stores a FIFO queue's name with the ".fifo" suffix it adds on
+	// create, which the configuration leaves out.
+	state.QueueType = types.StringPointerValue(inst.Attributes.QueueType)
+	state.Fifo = types.BoolValue(state.QueueType.ValueString() == "fifo")
+	name := inst.Attributes.Name
+	if state.Fifo.ValueBool() {
+		name = strings.TrimSuffix(name, fifoQueueSuffix)
+	}
+	state.Name = types.StringValue(name)
+	state.RetireAt = types.StringPointerValue(inst.Attributes.RetireAt)
+	state.RetiredAt = types.StringPointerValue(inst.Attributes.RetiredAt)
 	state.Type = types.StringValue(inst.Attributes.InstanceType)
 	state.Size = types.StringValue(inst.Attributes.Size)
 	state.ScalingType = types.StringValue(inst.Attributes.ScalingType)
@@ -503,9 +723,13 @@ func mapInstanceToState(inst *client.InstanceData, state *InstanceResourceModel)
 	state.MaxReplicas = types.Int64PointerValue(inst.Attributes.MaxReplicas)
 	state.UsesScheduler = types.BoolValue(inst.Attributes.UsesScheduler)
 	state.CreatedAt = types.StringPointerValue(inst.Attributes.CreatedAt)
+	// null is the platform default, and what the API reports once scaling
+	// stops, so it must replace whatever was there before.
+	state.ScalingCPUThresholdPercentage = types.Int64Null()
 	if inst.Attributes.ScalingCPUThresholdPercentage != nil {
 		state.ScalingCPUThresholdPercentage = types.Int64Value(int64(*inst.Attributes.ScalingCPUThresholdPercentage))
 	}
+	state.ScalingMemoryThresholdPercentage = types.Int64Null()
 	if inst.Attributes.ScalingMemoryThresholdPercentage != nil {
 		state.ScalingMemoryThresholdPercentage = types.Int64Value(int64(*inst.Attributes.ScalingMemoryThresholdPercentage))
 	}
@@ -532,6 +756,11 @@ func mapInstanceToState(inst *client.InstanceData, state *InstanceResourceModel)
 		state.ShutdownTimeout = types.Int64Null()
 	}
 
+	// App-instance settings; null for every other type.
+	state.UsesOctane = types.BoolPointerValue(inst.Attributes.UsesOctane)
+	state.UsesInertiaSSR = types.BoolPointerValue(inst.Attributes.UsesInertiaSSR)
+	state.HibernationTimeout = hibernationTimeoutFromAPI(inst)
+
 	// Computed read-only fields.
 	if inst.Attributes.Paused != nil {
 		state.Paused = types.BoolValue(*inst.Attributes.Paused)
@@ -555,6 +784,19 @@ func mapInstanceToState(inst *client.InstanceData, state *InstanceResourceModel)
 	if !state.Probes.IsNull() {
 		state.Probes = probesToObject(probesFromAPI(inst.Attributes.Probes))
 	}
+}
+
+// hibernationTimeoutFromAPI maps the API's timeout onto the attribute. For an
+// app instance null means hibernation is off, which the configuration spells
+// 0, so that is what it reads as; other instance types have no timeout.
+func hibernationTimeoutFromAPI(inst *client.InstanceData) types.Int64 {
+	if inst.Attributes.HibernationTimeout != nil {
+		return types.Int64Value(*inst.Attributes.HibernationTimeout)
+	}
+	if inst.Attributes.InstanceType == "app" {
+		return types.Int64Value(0)
+	}
+	return types.Int64Null()
 }
 
 // ValidateConfig moves the scaling_type/replica incompatibility from a runtime
@@ -585,15 +827,29 @@ func (r *InstanceResource) ValidateConfig(ctx context.Context, req resource.Vali
 		resp.Diagnostics.AddAttributeError(path.Root("is_default"), "is_default is only for managed queues",
 			fmt.Sprintf("Only a managed_queue instance can be the default queue; this one is %q.", config.Type.ValueString()))
 	}
+	if isSet(config.Paused) && !config.Type.IsUnknown() && config.Type.ValueString() != "managed_queue" {
+		resp.Diagnostics.AddAttributeError(path.Root("paused"), "paused is only for managed queues",
+			fmt.Sprintf("Only a managed_queue instance can be paused; this one is %q.", config.Type.ValueString()))
+	}
 	validateProbesConfig(config, &resp.Diagnostics)
+	validateManagedQueueConfig(config, &resp.Diagnostics)
 
-	if got, ok := validateHibernationTimeout(config.HibernationTimeout); !ok {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("hibernation_timeout"),
-			"hibernation_timeout is out of range",
-			fmt.Sprintf("The Laravel Cloud API requires hibernation_timeout to be between %d and %d seconds; got %d.",
-				hibernationTimeoutMin, hibernationTimeoutMax, got),
-		)
+	validateAppInstanceConfig(config, &resp.Diagnostics)
+
+	if config.ScalingType.ValueString() == "none" {
+		for _, a := range []struct {
+			name string
+			v    types.Int64
+		}{
+			{"scaling_cpu_threshold_percentage", config.ScalingCPUThresholdPercentage},
+			{"scaling_memory_threshold_percentage", config.ScalingMemoryThresholdPercentage},
+		} {
+			if isSet(a.v) {
+				resp.Diagnostics.AddAttributeError(path.Root(a.name), a.name+" cannot be used without scaling",
+					"The Laravel Cloud API requires the scaling thresholds to be empty when scaling_type is \"none\". "+
+						"Remove "+a.name+", or set scaling_type to \"custom\" or \"auto\".")
+			}
+		}
 	}
 
 	if config.ScalingType.ValueString() == "auto" {
@@ -616,8 +872,10 @@ func (r *InstanceResource) ValidateConfig(ctx context.Context, req resource.Vali
 		return
 	}
 
-	// Outside "auto", min_replicas is a required field of the create request.
-	if config.ScalingType.ValueString() == "custom" && !isSet(config.MinReplicas) {
+	// Outside "auto", min_replicas is a required field of the create request,
+	// except for managed queues, where it is optional or prohibited by size.
+	isQueue := config.Type.ValueString() == "managed_queue"
+	if config.ScalingType.ValueString() == "custom" && !isSet(config.MinReplicas) && !isQueue && !config.Type.IsUnknown() {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("min_replicas"),
 			"min_replicas is required for custom scaling",
@@ -626,62 +884,114 @@ func (r *InstanceResource) ValidateConfig(ctx context.Context, req resource.Vali
 	}
 }
 
-// hibernationTimeoutMin/Max are the bounds the API enforces: it answers an
-// out-of-range value with "The hibernation timeout must be null or an integer
-// between 1 and 60." Checking here turns that into a plan-time error, and the
-// provider now applies this attribute with a post-create update, where a 422
-// would otherwise surface only as a warning after the instance already exists.
-const (
-	hibernationTimeoutMin = 1
-	hibernationTimeoutMax = 60
-)
-
-func validateHibernationTimeout(v types.Int64) (int64, bool) {
-	if v.IsNull() || v.IsUnknown() {
-		return 0, true
+// validateAppInstanceConfig checks the settings only app instances have. The
+// API ignores them on other types and reports null, so they could never
+// converge there, and it answers a timeout outside 1-60 minutes with "The
+// hibernation timeout must be null or an integer between 1 and 60."
+func validateAppInstanceConfig(config InstanceResourceModel, diags *diag.Diagnostics) {
+	instanceType := config.Type.ValueString()
+	if config.Type.IsNull() {
+		instanceType = "service"
 	}
-	got := v.ValueInt64()
-	return got, got >= hibernationTimeoutMin && got <= hibernationTimeoutMax
+	if !config.Type.IsUnknown() && instanceType != "app" {
+		for name, v := range map[string]attr.Value{
+			"uses_octane":         config.UsesOctane,
+			"uses_inertia_ssr":    config.UsesInertiaSSR,
+			"hibernation_timeout": config.HibernationTimeout,
+		} {
+			if !v.IsNull() {
+				diags.AddAttributeError(path.Root(name), name+" is only for app instances",
+					fmt.Sprintf("Only an environment's app instance has %s; this one is %q. Set type = \"app\" "+
+						"to manage the environment's app instance.", name, instanceType))
+			}
+		}
+	}
+	if v := config.HibernationTimeout; isSet(v) && v.ValueInt64() != 0 && (v.ValueInt64() < 1 || v.ValueInt64() > 60) {
+		diags.AddAttributeError(path.Root("hibernation_timeout"), "hibernation_timeout is out of range",
+			fmt.Sprintf("hibernation_timeout is in minutes and must be between 1 and 60, or 0 to turn hibernation "+
+				"off; got %d.", v.ValueInt64()))
+	}
 }
 
-// ModifyPlan clears the replica counts when the instance scales automatically.
+// ModifyPlan leaves the replica counts to the platform when it chooses them.
 //
-// min_replicas and max_replicas are Optional+Computed with UseStateForUnknown,
-// so removing them from config does not plan a change -- the prior values are
-// carried forward. Switching an existing instance from "custom" to "auto" would
-// therefore leave the old counts in state and on the server, which is exactly
-// the combination ValidateConfig declares impossible and the API rejects, with
-// no way out: removing them from config does nothing and setting them fails
-// validation.
-//
-// Planning them as null instead makes the transition mean what it says.
+// For "auto" the API sets them to 1 and the plan's replica limit, and for
+// "none" to 1 and 1, whatever the instance had before. min_replicas and
+// max_replicas are Optional+Computed with UseStateForUnknown, so an unset
+// count carries the prior value forward, which is wrong once the scaling type
+// changes: switching from "custom" to "auto" would plan the old counts and the
+// apply would fail with an inconsistent result. An unset count is unknown
+// instead whenever the scaling type is new, and is read back after the apply.
 func (r *InstanceResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	// Nothing to do when the resource is being destroyed.
 	if req.Plan.Raw.IsNull() {
 		return
 	}
 
-	var plan InstanceResourceModel
+	var plan, config InstanceResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	if plan.ScalingType.IsUnknown() || plan.ScalingType.ValueString() != "auto" {
+	scalingType := plan.ScalingType.ValueString()
+	if plan.ScalingType.IsUnknown() || (scalingType != "auto" && scalingType != "none") {
 		return
 	}
+	if !req.State.Raw.IsNull() {
+		var state InstanceResourceModel
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+		if resp.Diagnostics.HasError() || state.ScalingType.Equal(plan.ScalingType) {
+			return
+		}
+	}
 
-	changed := false
-	if !plan.MinReplicas.IsNull() {
-		plan.MinReplicas = types.Int64Null()
-		changed = true
+	if config.MinReplicas.IsNull() {
+		plan.MinReplicas = types.Int64Unknown()
 	}
-	if !plan.MaxReplicas.IsNull() {
-		plan.MaxReplicas = types.Int64Null()
-		changed = true
+	if config.MaxReplicas.IsNull() {
+		plan.MaxReplicas = types.Int64Unknown()
 	}
-	if changed {
-		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+}
+
+// fifoQueueSuffix is what the API appends to a FIFO queue's name. A queue
+// name may have at most 39 characters including it.
+const (
+	fifoQueueSuffix     = ".fifo"
+	maxFifoQueueNameLen = 39 - len(fifoQueueSuffix)
+)
+
+// validateManagedQueueConfig catches what the API would reject or ignore by
+// queue generation, which the size names: current-generation sizes start with
+// "mq.", previous-generation ones with "mq-", such as "mq-pro-256mb".
+func validateManagedQueueConfig(config InstanceResourceModel, diags *diag.Diagnostics) {
+	if config.Type.IsUnknown() || config.Size.IsUnknown() {
+		return
+	}
+	isQueue := config.Type.ValueString() == "managed_queue"
+	legacyQueue := isQueue && strings.HasPrefix(config.Size.ValueString(), "mq-")
+	if isSet(config.Fifo) && config.Fifo.ValueBool() {
+		if !isQueue {
+			diags.AddAttributeError(path.Root("fifo"), "fifo is only for managed queues",
+				fmt.Sprintf("Only a managed_queue instance can be a FIFO queue; this one is %q.", config.Type.ValueString()))
+		}
+		if n := config.Name.ValueString(); isQueue && isSet(config.Name) && len(n) > maxFifoQueueNameLen {
+			diags.AddAttributeError(path.Root("name"), "name is too long for a FIFO queue",
+				fmt.Sprintf("Laravel Cloud adds %q to a FIFO queue's name, which can then have at most %d characters; "+
+					"%q has %d.", fifoQueueSuffix, maxFifoQueueNameLen, n, len(n)))
+		}
+	}
+	if isSet(config.PollingInterval) && !legacyQueue {
+		diags.AddAttributeError(path.Root("polling_interval"), "polling_interval does not apply",
+			fmt.Sprintf("Only previous-generation managed queues have a polling interval; the API ignores it for this "+
+				"instance (type %q, size %q). Remove polling_interval.", config.Type.ValueString(), config.Size.ValueString()))
+	}
+	if legacyQueue && isSet(config.MinReplicas) {
+		diags.AddAttributeError(path.Root("min_replicas"), "min_replicas does not apply to this queue",
+			fmt.Sprintf("Previous-generation managed queues such as size %q always scale to zero when idle, and the API "+
+				"rejects min_replicas for them. Remove min_replicas.", config.Size.ValueString()))
 	}
 }
 

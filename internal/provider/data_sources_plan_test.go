@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
+	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
 
 // The data sources previously had no plan-level coverage at all: nothing drove
@@ -98,35 +100,165 @@ func TestCacheTypesDataSourcePlan(t *testing.T) {
 				tfjsonpath.New("types").AtSliceIndex(0).AtMapKey("type"),
 				knownvalue.StringExact("laravel_valkey")),
 			statecheck.ExpectKnownValue("data.laravel_cloud_cache_types.all",
-				tfjsonpath.New("types").AtSliceIndex(0).AtMapKey("sizes").AtSliceIndex(0).AtMapKey("value"),
-				knownvalue.StringExact("valkey-pro.250mb")),
+				tfjsonpath.New("types").AtSliceIndex(0).AtMapKey("supports_hibernation"),
+				knownvalue.Bool(true)),
+			statecheck.ExpectKnownValue("data.laravel_cloud_cache_types.all",
+				tfjsonpath.New("types").AtSliceIndex(1).AtMapKey("supports_eviction_policy"),
+				knownvalue.Bool(false)),
+			// Only some sizes of a type that can scale to zero accept it.
+			statecheck.ExpectKnownValue("data.laravel_cloud_cache_types.all",
+				tfjsonpath.New("types").AtSliceIndex(0).AtMapKey("sizes"),
+				knownvalue.ListExact([]knownvalue.Check{
+					knownvalue.ObjectExact(map[string]knownvalue.Check{
+						"value": knownvalue.StringExact("valkey-flex-250mb"), "label": knownvalue.StringExact("250 MB"),
+						"supports_hibernation": knownvalue.Bool(true),
+					}),
+					knownvalue.ObjectExact(map[string]knownvalue.Check{
+						"value": knownvalue.StringExact("valkey-pro.250mb"), "label": knownvalue.StringExact("250 MB"),
+						"supports_hibernation": knownvalue.Bool(false),
+					}),
+				})),
 		})
 }
 
-// TestDedicatedClustersDataSourcePlan covers the empty-collection case, which
-// must produce an empty list rather than a null one. A nil Go slice decodes to
-// a null Terraform list, and length()/for_each over null is a hard error, so
-// the assertion below is the point of the test -- it passed `nil` checks
-// before and could not fail.
+// TestDedicatedClustersDataSourcePlan covers the filters, which the API
+// matches as substrings, and the empty-collection case, which must produce an
+// empty list rather than a null one. A nil Go slice decodes to a null
+// Terraform list, and length()/for_each over null is a hard error.
 func TestDedicatedClustersDataSourcePlan(t *testing.T) {
 	_, baseURL := newFakeCloud(t)
-	runDataSourcePlan(t, baseURL, `data "laravel_cloud_dedicated_clusters" "all" {}`,
+	const ds = "data.laravel_cloud_dedicated_clusters"
+	runDataSourcePlan(t, baseURL, `
+data "laravel_cloud_dedicated_clusters" "all" {}
+
+data "laravel_cloud_dedicated_clusters" "databases" {
+  region = "us-east-2"
+  type   = "rds"
+  status = "active"
+}
+
+data "laravel_cloud_dedicated_clusters" "none" {
+  region = "eu-west-1"
+}
+`,
 		[]statecheck.StateCheck{
-			statecheck.ExpectKnownValue("data.laravel_cloud_dedicated_clusters.all",
-				tfjsonpath.New("clusters"), knownvalue.ListSizeExact(0)),
+			statecheck.ExpectKnownValue(ds+".all", tfjsonpath.New("clusters"), knownvalue.ListSizeExact(2)),
+			statecheck.ExpectKnownValue(ds+".databases", tfjsonpath.New("clusters"), knownvalue.ListSizeExact(1)),
+			statecheck.ExpectKnownValue(ds+".databases",
+				tfjsonpath.New("clusters").AtSliceIndex(0).AtMapKey("type"), knownvalue.StringExact("rds-databases")),
+			statecheck.ExpectKnownValue(ds+".none", tfjsonpath.New("clusters"), knownvalue.ListSizeExact(0)),
 		})
 }
 
 func TestEdgeNetworksDataSourcePlan(t *testing.T) {
 	_, baseURL := newFakeCloud(t)
-	runDataSourcePlan(t, baseURL, `data "laravel_cloud_edge_networks" "all" {}`,
+	const ds = "data.laravel_cloud_edge_networks"
+	runDataSourcePlan(t, baseURL, `
+data "laravel_cloud_edge_networks" "all" {}
+
+data "laravel_cloud_edge_networks" "demo" {
+  domain = "acme-demo"
+  status = "available"
+}
+
+data "laravel_cloud_edge_networks" "none" {
+  name = "nothing-matches"
+}
+`,
 		[]statecheck.StateCheck{
-			statecheck.ExpectKnownValue("data.laravel_cloud_edge_networks.all",
-				tfjsonpath.New("edge_networks").AtSliceIndex(0).AtMapKey("domain"),
-				knownvalue.StringExact("laravel.cloud")),
-			statecheck.ExpectKnownValue("data.laravel_cloud_edge_networks.all",
-				tfjsonpath.New("edge_networks").AtSliceIndex(0).AtMapKey("tenancy_type"),
-				knownvalue.StringExact("shared")),
+			statecheck.ExpectKnownValue(ds+".all", tfjsonpath.New("edge_networks"), knownvalue.ListSizeExact(2)),
+			statecheck.ExpectKnownValue(ds+".all",
+				tfjsonpath.New("edge_networks").AtSliceIndex(0).AtMapKey("tenancy_type"), knownvalue.StringExact("shared")),
+			statecheck.ExpectKnownValue(ds+".demo", tfjsonpath.New("edge_networks"), knownvalue.ListSizeExact(1)),
+			statecheck.ExpectKnownValue(ds+".demo",
+				tfjsonpath.New("edge_networks").AtSliceIndex(0).AtMapKey("id"), knownvalue.StringExact("edgenet-0002")),
+			statecheck.ExpectKnownValue(ds+".none", tfjsonpath.New("edge_networks"), knownvalue.ListSizeExact(0)),
+		})
+}
+
+func TestWebsocketServerTypesDataSourcePlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	const ds = "data.laravel_cloud_websocket_server_types.all"
+	runDataSourcePlan(t, baseURL, `data "laravel_cloud_websocket_server_types" "all" {}`,
+		[]statecheck.StateCheck{
+			statecheck.ExpectKnownValue(ds, tfjsonpath.New("types").AtSliceIndex(0).AtMapKey("type"), knownvalue.StringExact("reverb")),
+			statecheck.ExpectKnownValue(ds, tfjsonpath.New("types").AtSliceIndex(0).AtMapKey("regions"),
+				knownvalue.ListExact([]knownvalue.Check{knownvalue.StringExact("us-east-1"), knownvalue.StringExact("us-east-2")})),
+			// A tier the plan does not include is listed, marked unavailable.
+			statecheck.ExpectKnownValue(ds, tfjsonpath.New("types").AtSliceIndex(0).AtMapKey("max_connections").AtSliceIndex(2),
+				knownvalue.ObjectExact(map[string]knownvalue.Check{
+					"value": knownvalue.Int64Exact(10000), "label": knownvalue.StringExact("10,000"),
+					"available": knownvalue.Bool(false),
+				})),
+		})
+}
+
+// TestDatabasePresetsDataSourcePlan checks that type and region reach the
+// API and that each preset's config is kept as the JSON the API returned.
+func TestDatabasePresetsDataSourcePlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	const ds = "data.laravel_cloud_database_presets.mysql"
+	runDataSourcePlan(t, baseURL, `
+data "laravel_cloud_database_presets" "mysql" {
+  type   = "laravel_mysql"
+  region = "us-east-2"
+}
+`,
+		[]statecheck.StateCheck{
+			statecheck.ExpectKnownValue(ds, tfjsonpath.New("presets"), knownvalue.ListSizeExact(2)),
+			statecheck.ExpectKnownValue(ds, tfjsonpath.New("presets").AtSliceIndex(1).AtMapKey("key"), knownvalue.StringExact("prod")),
+			statecheck.ExpectKnownValue(ds, tfjsonpath.New("presets").AtSliceIndex(1).AtMapKey("config"),
+				knownvalue.StringFunc(func(v string) error {
+					var config map[string]any
+					if err := json.Unmarshal([]byte(v), &config); err != nil {
+						return err
+					}
+					if config["size"] != "mysql-flex-2gb" {
+						return fmt.Errorf("config %s does not have size mysql-flex-2gb", v)
+					}
+					return nil
+				})),
+		})
+}
+
+func TestResendDomainsDataSourcePlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	const ds = "data.laravel_cloud_resend_domains.all"
+	records := tfjsonpath.New("domains").AtSliceIndex(0).AtMapKey("records")
+	runDataSourcePlan(t, baseURL, `data "laravel_cloud_resend_domains" "all" {}`,
+		[]statecheck.StateCheck{
+			statecheck.ExpectKnownValue(ds, tfjsonpath.New("domains").AtSliceIndex(0).AtMapKey("name"), knownvalue.StringExact("mail.example.com")),
+			statecheck.ExpectKnownValue(ds, tfjsonpath.New("domains").AtSliceIndex(0).AtMapKey("status"), knownvalue.StringExact("verified")),
+			// Only MX records carry a priority.
+			statecheck.ExpectKnownValue(ds, records.AtSliceIndex(0).AtMapKey("priority"), knownvalue.Null()),
+			statecheck.ExpectKnownValue(ds, records.AtSliceIndex(1).AtMapKey("priority"), knownvalue.Int64Exact(10)),
+		})
+}
+
+// TestResendReusableKeysDataSourcePlan lists the keys of the other
+// environments, once each, and never the environment's own.
+func TestResendReusableKeysDataSourcePlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	for id, key := range map[string]string{"env-a": "shared", "env-b": "shared", "env-c": "own", "env-d": ""} {
+		env := &client.EnvironmentData{ID: id, Type: "environments"}
+		if key != "" {
+			env.Attributes.Resend = &client.EnvironmentResend{KeyName: key}
+		}
+		f.envs[id] = env
+	}
+
+	const ds = "data.laravel_cloud_resend_reusable_keys.c"
+	runDataSourcePlan(t, baseURL, `
+data "laravel_cloud_resend_reusable_keys" "c" {
+  environment_id = "env-c"
+}`,
+		[]statecheck.StateCheck{
+			statecheck.ExpectKnownValue(ds, tfjsonpath.New("keys"), knownvalue.ListExact([]knownvalue.Check{
+				knownvalue.ObjectExact(map[string]knownvalue.Check{
+					"id": knownvalue.StringExact("rkey-shared"), "name": knownvalue.StringExact("shared"),
+					"environment_count": knownvalue.Int64Exact(2),
+				}),
+			})),
 		})
 }
 

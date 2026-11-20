@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
@@ -46,6 +49,9 @@ type DomainResourceModel struct {
 	LastVerifiedAt     types.String `tfsdk:"last_verified_at"`
 	DNSRecords         types.Object `tfsdk:"dns_records"`
 	CreatedAt          types.String `tfsdk:"created_at"`
+
+	WaitForVerification types.Bool  `tfsdk:"wait_for_verification"`
+	VerificationTimeout types.Int64 `tfsdk:"verification_timeout"`
 }
 
 func NewDomainResource() resource.Resource {
@@ -116,7 +122,7 @@ func (r *DomainResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			},
 			"verification_method": schema.StringAttribute{
 				Optional:    true,
-				Description: "Verification method (pre_verification, real_time). Editable in place via the API's update endpoint.",
+				Description: "Verification method (pre_verification, real_time). Changing it updates the domain in place.",
 			},
 			"cloudflare_strategy": schema.StringAttribute{
 				Optional: true,
@@ -190,6 +196,18 @@ func (r *DomainResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			"created_at": schema.StringAttribute{
 				Computed: true,
 			},
+			"wait_for_verification": schema.BoolAttribute{
+				Optional: true,
+				Description: "Whether apply waits for the domain to verify, asking Laravel Cloud to check its DNS " +
+					"records once a minute, for up to verification_timeout minutes. Create the records in dns_records " +
+					"first, for example from a previous apply. A domain that does not verify in time is kept, with a " +
+					"warning. Setting it on an existing domain waits on the next apply.",
+			},
+			"verification_timeout": schema.Int64Attribute{
+				Optional:    true,
+				Description: "Minutes to wait for the domain to verify when wait_for_verification is true. Defaults to 30.",
+				Validators:  []validator.Int64{int64validator.Between(1, 720)},
+			},
 		},
 	}
 }
@@ -200,7 +218,7 @@ func (r *DomainResource) Configure(_ context.Context, req resource.ConfigureRequ
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected resource configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	r.client = c
@@ -241,6 +259,11 @@ func (r *DomainResource) Create(ctx context.Context, req resource.CreateRequest,
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating domain", err.Error())
 		return
+	}
+	if plan.WaitForVerification.ValueBool() {
+		if d := waitForDomainVerification(ctx, r.client, domain.ID, verificationTimeout(plan), &resp.Diagnostics); d != nil {
+			domain = d
+		}
 	}
 
 	mapDomainToState(domain, &plan)
@@ -305,6 +328,7 @@ func (r *DomainResource) Update(ctx context.Context, req resource.UpdateRequest,
 		plan.LastVerifiedAt = state.LastVerifiedAt
 		plan.DNSRecords = state.DNSRecords
 		plan.CreatedAt = state.CreatedAt
+		r.waitOnUpdate(ctx, &plan, state, &resp.Diagnostics)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
 	}
@@ -321,7 +345,19 @@ func (r *DomainResource) Update(ctx context.Context, req resource.UpdateRequest,
 
 	plan.EnvironmentID = state.EnvironmentID
 	mapDomainToState(domain, &plan)
+	r.waitOnUpdate(ctx, &plan, state, &resp.Diagnostics)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// waitOnUpdate waits for the domain to verify when wait_for_verification was
+// just turned on, so setting it on an existing domain waits once.
+func (r *DomainResource) waitOnUpdate(ctx context.Context, plan *DomainResourceModel, state DomainResourceModel, diags *diag.Diagnostics) {
+	if !plan.WaitForVerification.ValueBool() || state.WaitForVerification.ValueBool() {
+		return
+	}
+	if d := waitForDomainVerification(ctx, r.client, state.ID.ValueString(), verificationTimeout(*plan), diags); d != nil {
+		mapDomainToState(d, plan)
+	}
 }
 
 func (r *DomainResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {

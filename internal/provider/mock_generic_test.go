@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -71,12 +72,36 @@ type crudSpec struct {
 	// auto-creating a database inside itself.
 	afterCreate func(f *fakeCloud, id string)
 
+	// validateCreate, if set, can refuse a POST by returning the message the
+	// API answers with a 422.
+	validateCreate func(body map[string]any) string
+
+	// beforeCreate, if set, can refuse a POST by returning the message the
+	// API answers with a 422 -- a database cluster that is busy, for example.
+	beforeCreate func(f *fakeCloud, parentID string) string
+
+	// validatePatch, if set, can refuse a PATCH by returning the message the
+	// API answers with a 422, given the stored attributes and the body.
+	validatePatch func(attrs, patch map[string]any) string
+
+	// beforeGet, if set, runs before an object is read -- to move a status on,
+	// as time passing does on the real API.
+	beforeGet func(f *fakeCloud, id string)
+
+	// beforeDelete, if set, can refuse a DELETE by returning the message the
+	// API answers with a 422 -- a bucket that still has keys, for example.
+	beforeDelete func(f *fakeCloud, id string) string
+
 	// createOnlyAttrs names attributes the API returns when the object is
 	// created and omits from every later response -- credentials, typically.
 	// They are stripped from GET, PATCH and list responses. Modelling this is
 	// what makes it possible to catch a provider that treats their absence as
 	// an empty value and overwrites the stored secret.
 	createOnlyAttrs []string
+
+	// wrapCreate, if set, wraps the generic POST handler, to answer some
+	// requests another way -- a deployment the API queues, for example.
+	wrapCreate func(f *fakeCloud, create http.HandlerFunc) http.HandlerFunc
 }
 
 // withoutCreateOnly returns a copy of attrs with the create-only attributes
@@ -94,7 +119,11 @@ func (s crudSpec) withoutCreateOnly(attrs map[string]any) map[string]any {
 
 // registerCRUD wires a crudSpec's handlers onto the mux.
 func (f *fakeCloud) registerCRUD(mux *http.ServeMux, s crudSpec) {
-	mux.HandleFunc("POST "+s.collectionPattern, f.genCreate(s))
+	create := f.genCreate(s)
+	if s.wrapCreate != nil {
+		create = s.wrapCreate(f, create)
+	}
+	mux.HandleFunc("POST "+s.collectionPattern, create)
 	mux.HandleFunc("GET "+s.itemPattern, f.genGet(s))
 	if s.list {
 		mux.HandleFunc("GET "+s.collectionPattern, f.genList(s))
@@ -114,6 +143,12 @@ func (f *fakeCloud) registerCRUD(mux *http.ServeMux, s crudSpec) {
 func (f *fakeCloud) genCreate(s crudSpec) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body := decodeBody(r)
+		if s.validateCreate != nil {
+			if msg := s.validateCreate(body); msg != "" {
+				writeError(w, http.StatusUnprocessableEntity, errors.New(msg))
+				return
+			}
+		}
 
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -121,6 +156,13 @@ func (f *fakeCloud) genCreate(s crudSpec) http.HandlerFunc {
 		parentID := ""
 		if s.parentWildcard != "" {
 			parentID = r.PathValue(s.parentWildcard)
+		}
+
+		if s.beforeCreate != nil {
+			if msg := s.beforeCreate(f, parentID); msg != "" {
+				writeError(w, http.StatusUnprocessableEntity, errors.New(msg))
+				return
+			}
 		}
 
 		f.seq++
@@ -169,6 +211,9 @@ func (f *fakeCloud) genGet(s crudSpec) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, fmt.Errorf("%s not found", s.typeName))
 			return
 		}
+		if s.beforeGet != nil {
+			s.beforeGet(f, id)
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": f.dataWithParent(s, id, s.withoutCreateOnly(attrs))})
 	}
 }
@@ -190,6 +235,12 @@ func (f *fakeCloud) genPatch(s crudSpec) http.HandlerFunc {
 			f.patches = map[string][]map[string]any{}
 		}
 		f.patches[s.typeName] = append(f.patches[s.typeName], patch)
+		if s.validatePatch != nil {
+			if msg := s.validatePatch(attrs, patch); msg != "" {
+				writeError(w, http.StatusUnprocessableEntity, errors.New(msg))
+				return
+			}
+		}
 		if s.patchFn != nil {
 			s.patchFn(attrs, patch)
 		} else {
@@ -206,6 +257,12 @@ func (f *fakeCloud) genDelete(s crudSpec) http.HandlerFunc {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 
+		if s.beforeDelete != nil {
+			if msg := s.beforeDelete(f, r.PathValue("id")); msg != "" {
+				writeError(w, http.StatusUnprocessableEntity, errors.New(msg))
+				return
+			}
+		}
 		delete(f.objects[s.typeName], r.PathValue("id"))
 		w.WriteHeader(http.StatusNoContent)
 	}

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -338,6 +339,54 @@ resource "laravel_cloud_websocket_application" "wsapp" {
 	})
 }
 
+// TestEnvironmentCacheSameApplyPlan is the fast counterpart of
+// TestAccEnvironmentResource_cacheSameApply. The fake refuses to
+// attach a cache that is creating or updating, as the API does: a cache
+// created in the same apply as its environment must be waited for, and one
+// resized in the same apply as it is attached must be retried.
+func TestEnvironmentCacheSameApplyPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	cache := func(size string) string {
+		return fmt.Sprintf(`
+resource "laravel_cloud_cache" "cache" {
+  name                 = "sessions"
+  type                 = "laravel_valkey"
+  region               = "us-east-2"
+  size                 = %q
+  auto_upgrade_enabled = false
+  is_public            = false
+}
+`, size)
+	}
+	stack := providerCfg(baseURL) + appEnvStack
+	attached := strings.Replace(stack, `  branch         = "main"
+}`, `  branch         = "main"
+  cache_id       = laravel_cloud_cache.cache.id
+}`, 1)
+	checkAttached := func(s *terraform.State) error {
+		envID := s.RootModule().Resources["laravel_cloud_environment.env"].Primary.ID
+		want := s.RootModule().Resources["laravel_cloud_cache.cache"].Primary.ID
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if got := f.attachments[envID]["cache"]; got != want {
+			return fmt.Errorf("attached cache = %q, want %q", got, want)
+		}
+		return nil
+	}
+	empty := resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: attached + cache("valkey-flex-250mb"), Check: checkAttached},
+			{Config: attached + cache("valkey-flex-250mb"), ConfigPlanChecks: empty},
+			{Config: stack + cache("valkey-flex-250mb")},
+			{Config: attached + cache("valkey-flex-1gb"), Check: checkAttached},
+			{Config: attached + cache("valkey-flex-1gb"), ConfigPlanChecks: empty},
+		},
+	})
+}
+
 // TestEnvironmentServingRootPlan changes the directory a static environment
 // serves, which goes out with the environment's current, fixed mode.
 func TestEnvironmentServingRootPlan(t *testing.T) {
@@ -389,6 +438,104 @@ func TestEnvironmentServingRootPlan(t *testing.T) {
 			{
 				Config:           config("dist"),
 				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+		},
+	})
+}
+
+// TestEnvironmentHibernationRefusedPlan covers sleep_timeout on an app
+// instance size that cannot hibernate. The API answers the update
+// with 200 but turns hibernation and the periodic wake-up off, so the apply
+// must fail rather than record settings the environment does not have.
+// Hibernation turned off outside Terraform must also show in the plan, even
+// though the API never reports sleep_timeout itself.
+func TestEnvironmentHibernationRefusedPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	addr := "laravel_cloud_environment.env"
+	sleeping := environmentSettingsConfig(baseURL, `
+  sleep_timeout                = 10
+  hibernation_wake_up_interval = 60`)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: sleeping,
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("sleep_timeout"), knownvalue.Int64Exact(10)),
+				},
+			},
+			// The app instance moves to a Pro size, which needs hibernation
+			// off: the plan shows it, and applying it fails.
+			{
+				PreConfig: func() {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					f.cannotHibernate = map[string]bool{}
+					for id, env := range f.envs {
+						f.cannotHibernate[id] = true
+						env.Attributes.UsesHibernation = ptr(false)
+						env.Attributes.HibernationWakeUpInterval = nil
+					}
+				},
+				Config: sleeping,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectKnownValue(addr, tfjsonpath.New("sleep_timeout"), knownvalue.Int64Exact(10)),
+					},
+				},
+				ExpectError: regexp.MustCompile(`turned hibernation off instead of applying sleep_timeout`),
+			},
+			// Removing both settings converges.
+			{
+				Config: environmentSettingsConfig(baseURL, ""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+		},
+	})
+}
+
+// TestEnvironmentDeployHookURLPlan covers deploy_hook_url, which the
+// API reports while the deploy hook is on. It must follow uses_deploy_hook
+// and, null or not, plan empty when nothing changes.
+func TestEnvironmentDeployHookURLPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	addr := "laravel_cloud_environment.env"
+	on := environmentSettingsConfig(baseURL, "  uses_deploy_hook = true")
+	off := environmentSettingsConfig(baseURL, "  uses_deploy_hook = false")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: on,
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("deploy_hook_url"),
+						knownvalue.StringRegexp(regexp.MustCompile(`^https://cloud\.laravel\.com/deploy-hooks/env-\d+/token$`))),
+				},
+			},
+			{
+				Config: on,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			{
+				Config: off,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectUnknownValue(addr, tfjsonpath.New("deploy_hook_url"))},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("deploy_hook_url"), knownvalue.Null()),
+				},
+			},
+			{
+				Config: off,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
 			},
 		},
 	})

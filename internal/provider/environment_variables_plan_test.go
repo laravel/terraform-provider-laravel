@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -57,6 +58,54 @@ func TestEnvironmentVariablesRemovalPlan(t *testing.T) {
 			},
 		},
 	})
+}
+
+// TestEnvironmentVariablesLimitPlan checks that more variables than an
+// environment can hold fail at plan time. Cloud stores at most 210
+// per environment and takes at most 210 per request, so the plan used to look
+// fine and the apply failed with a 422.
+func TestEnvironmentVariablesLimitPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	countVars := func(want int) func(*terraform.State) error {
+		return func(*terraform.State) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			for envID, vars := range f.vars {
+				if len(vars) != want {
+					return fmt.Errorf("environment %s has %d variables, want %d", envID, len(vars), want)
+				}
+			}
+			return nil
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: environmentVariablesConfig(baseURL, numberedVariables(210)),
+				Check:  countVars(210),
+			},
+			{
+				Config:      environmentVariablesConfig(baseURL, numberedVariables(211)),
+				ExpectError: regexp.MustCompile(`(?s)at most 210 variables per environment.*sets 211`),
+			},
+			{
+				// Nothing was written for the rejected configuration.
+				Config: environmentVariablesConfig(baseURL, numberedVariables(210)),
+				Check:  countVars(210),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+		},
+	})
+}
+
+// numberedVariables is a for expression for a variables map with n keys,
+// TFACC_VAR_000 upwards.
+func numberedVariables(n int) string {
+	return fmt.Sprintf(` for i in range(%d) : format("TFACC_VAR_%%03d", i) => "value-${i}" `, n)
 }
 
 func environmentVariablesConfig(baseURL, vars string) string {
@@ -179,6 +228,68 @@ func TestEnvironmentVariablesIgnoresUnmanagedPlan(t *testing.T) {
 					}
 					return nil
 				},
+			},
+		},
+	})
+}
+
+// TestEnvironmentVariablesHiddenPlan covers a token that can edit variables
+// but not view them. The API then leaves environment_variables out of
+// the environment response. Read took that as an empty list, so every
+// variable looked deleted and every apply rewrote them all. Read now keeps
+// state, so the second plan is empty.
+//
+// It also covers what that token makes likely: deleting keys that are already
+// gone, which the API refuses atomically with a 422, and an empty map, which
+// the API refuses to store.
+func TestEnvironmentVariablesHiddenPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	f.hideVariables = true
+
+	expectVars := func(want map[string]string) func(*terraform.State) error {
+		return func(*terraform.State) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			for envID, vars := range f.vars {
+				if fmt.Sprint(vars) != fmt.Sprint(want) {
+					return fmt.Errorf("environment %s has %v, want %v", envID, vars, want)
+				}
+			}
+			return nil
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// The framework fails the step if the plan after apply is not
+				// empty, which is the endless diff this guards against.
+				Config: environmentVariablesConfig(baseURL, `
+    API_KEY   = "secret"
+    LOG_LEVEL = "debug"
+`),
+				Check: expectVars(map[string]string{"API_KEY": "secret", "LOG_LEVEL": "debug"}),
+			},
+			{
+				// LOG_LEVEL is removed outside Terraform, which this token
+				// cannot see, and then from config. The delete must skip it.
+				PreConfig: func() {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					for _, vars := range f.vars {
+						delete(vars, "LOG_LEVEL")
+					}
+				},
+				Config: environmentVariablesConfig(baseURL, `
+    API_KEY = "secret"
+`),
+				Check: expectVars(map[string]string{"API_KEY": "secret"}),
+			},
+			{
+				// An empty map deletes the last key and stores nothing.
+				Config: environmentVariablesConfig(baseURL, ""),
+				Check:  expectVars(map[string]string{}),
 			},
 		},
 	})

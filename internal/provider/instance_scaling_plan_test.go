@@ -42,9 +42,10 @@ func TestInstanceAutoScalingRejectsReplicasPlan(t *testing.T) {
 	})
 }
 
-// TestInstanceAutoScalingAppliesPlan is the positive case the old schema made
-// impossible: an auto-scaled instance with no replica counts at all. It must
-// plan, apply, and then re-plan empty.
+// TestInstanceAutoScalingAppliesPlan is an auto-scaled instance with no replica
+// counts in config. The API reports 1 up to the plan's replica limit, which the
+// provider used to plan as null, so every create failed with "inconsistent
+// result after apply". It must plan, apply, and then re-plan empty.
 func TestInstanceAutoScalingAppliesPlan(t *testing.T) {
 	_, baseURL := newFakeCloud(t)
 	config := instanceScalingConfig(baseURL, `scaling_type = "auto"`)
@@ -58,6 +59,8 @@ func TestInstanceAutoScalingAppliesPlan(t *testing.T) {
 				Config: config,
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(addr, tfjsonpath.New("scaling_type"), knownvalue.StringExact("auto")),
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("min_replicas"), knownvalue.Int64Exact(1)),
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("max_replicas"), knownvalue.Int64Exact(fakeAutoMaxReplicas)),
 				},
 			},
 			{
@@ -97,14 +100,13 @@ resource "laravel_cloud_instance" "scaled" {
 }
 
 // TestInstanceSwitchToAutoScalingPlan covers moving an existing instance from
-// custom to automatic scaling.
+// custom to automatic scaling and on to none.
 //
 // min_replicas and max_replicas are Optional+Computed with UseStateForUnknown,
-// so removing them from config does not plan a change -- the prior values carry
-// forward. That left an instance with scaling_type "auto" and replica counts
-// still set: the exact combination the validator rejects and the API 422s, with
-// no way out, because removing them from config did nothing and setting them
-// failed validation. The plan must clear them instead.
+// so removing them from config carries the prior values forward. The platform
+// replaces them when the scaling type changes, so the plan must leave them
+// unknown, read them back, and never send them for "auto", which the API
+// rejects.
 func TestInstanceSwitchToAutoScalingPlan(t *testing.T) {
 	_, baseURL := newFakeCloud(t)
 
@@ -124,14 +126,71 @@ func TestInstanceSwitchToAutoScalingPlan(t *testing.T) {
 				Config: instanceScalingConfig(baseURL, `scaling_type = "auto"`),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(addr, tfjsonpath.New("scaling_type"), knownvalue.StringExact("auto")),
-					statecheck.ExpectKnownValue(addr, tfjsonpath.New("min_replicas"), knownvalue.Null()),
-					statecheck.ExpectKnownValue(addr, tfjsonpath.New("max_replicas"), knownvalue.Null()),
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("min_replicas"), knownvalue.Int64Exact(1)),
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("max_replicas"), knownvalue.Int64Exact(fakeAutoMaxReplicas)),
 				},
 			},
 			{
 				Config: instanceScalingConfig(baseURL, `scaling_type = "auto"`),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			{
+				Config: instanceScalingConfig(baseURL, `scaling_type = "none"`),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("min_replicas"), knownvalue.Int64Exact(1)),
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("max_replicas"), knownvalue.Int64Exact(1)),
+				},
+			},
+		},
+	})
+}
+
+// TestInstanceScalingThresholdsPlan covers changing and clearing the CPU and
+// memory thresholds. Update never sent them, so a change failed with
+// "inconsistent result after apply", and a removed threshold stayed set. When
+// scaling stops the API clears them, and setting one then is rejected.
+func TestInstanceScalingThresholdsPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+
+	const addr = "laravel_cloud_instance.scaled"
+	cpu := tfjsonpath.New("scaling_cpu_threshold_percentage")
+	memory := tfjsonpath.New("scaling_memory_threshold_percentage")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: instanceScalingConfig(baseURL, "scaling_type = \"auto\"\n  scaling_cpu_threshold_percentage = 70"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, cpu, knownvalue.Int64Exact(70)),
+					statecheck.ExpectKnownValue(addr, memory, knownvalue.Null()),
+				},
+			},
+			{
+				Config: instanceScalingConfig(baseURL,
+					"scaling_type = \"auto\"\n  scaling_cpu_threshold_percentage = 80\n  scaling_memory_threshold_percentage = 60"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, cpu, knownvalue.Int64Exact(80)),
+					statecheck.ExpectKnownValue(addr, memory, knownvalue.Int64Exact(60)),
+				},
+			},
+			{
+				Config: instanceScalingConfig(baseURL, "scaling_type = \"custom\"\n  min_replicas = 2\n  scaling_memory_threshold_percentage = 60"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, cpu, knownvalue.Null()),
+					statecheck.ExpectKnownValue(addr, memory, knownvalue.Int64Exact(60)),
+				},
+			},
+			{
+				Config:      instanceScalingConfig(baseURL, "scaling_type = \"none\"\n  scaling_memory_threshold_percentage = 60"),
+				ExpectError: regexp.MustCompile(`scaling_memory_threshold_percentage cannot be used without scaling`),
+			},
+			{
+				Config: instanceScalingConfig(baseURL, `scaling_type = "none"`),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, memory, knownvalue.Null()),
 				},
 			},
 		},

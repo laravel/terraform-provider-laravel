@@ -3,6 +3,7 @@ package provider
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -209,10 +210,42 @@ resource "laravel_cloud_cache" "cache" {
   region               = "us-east-2"
   size                 = "1gb"
   auto_upgrade_enabled = false
-  is_public            = false
 %s
 }
 `, extra)
+}
+
+// TestCacheElastiCacheIsPublicPlan covers is_public for ElastiCache:
+// the API stores false whatever create sends and refuses to change it, so
+// leaving it out applies and re-plans cleanly, true is refused at plan time
+// instead of drifting, and types other than ElastiCache still require it.
+func TestCacheElastiCacheIsPublicPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	addr := "laravel_cloud_cache.cache"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      cacheConfig(baseURL, `  is_public = true`),
+				ExpectError: regexp.MustCompile(`is_public must be false for ElastiCache caches`),
+			},
+			{
+				Config:      strings.Replace(valkeyFlexConfig(baseURL, "sessions", ""), "  is_public            = false\n", "", 1),
+				ExpectError: regexp.MustCompile(`is_public is required for laravel_valkey caches`),
+			},
+			{
+				Config: cacheConfig(baseURL, ""),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("is_public"), knownvalue.Bool(false)),
+				},
+			},
+			{
+				Config:           cacheConfig(baseURL, `  is_public = false`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+		},
+	})
 }
 
 // TestCacheClusterIDPlan covers cluster_id: sent on create, stable on re-plan
@@ -255,6 +288,120 @@ func TestCacheClusterIDPlan(t *testing.T) {
 				}},
 				Check: sentClusterID("dc-2"),
 			},
+		},
+	})
+}
+
+// TestApplicationRootDirectoryClearedPlan covers Laravel Cloud clearing
+// root_directory when the repository changes to one without that directory.
+// Unset in the configuration, the cleared value is read back; still
+// configured, the apply fails and the next plan refuses to replace the
+// application, which would delete its environments.
+func TestApplicationRootDirectoryClearedPlan(t *testing.T) {
+	addr := "laravel_cloud_application.app"
+	withRepo := func(baseURL, repo, extra string) string {
+		return strings.Replace(applicationConfig(baseURL, extra), `"acme/monorepo"`, fmt.Sprintf("%q", repo), 1)
+	}
+
+	t.Run("unset", func(t *testing.T) {
+		_, baseURL := newFakeCloud(t)
+		resource.Test(t, resource.TestCase{
+			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			Steps: []resource.TestStep{
+				{Config: applicationConfig(baseURL, `  root_directory = "apps/web"`)},
+				{
+					Config: withRepo(baseURL, "acme/site", ""),
+					ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
+						plancheck.ExpectUnknownValue(addr, tfjsonpath.New("root_directory")),
+					}},
+					ConfigStateChecks: []statecheck.StateCheck{
+						statecheck.ExpectKnownValue(addr, tfjsonpath.New("root_directory"), knownvalue.Null()),
+					},
+				},
+			},
+		})
+	})
+
+	t.Run("configured", func(t *testing.T) {
+		_, baseURL := newFakeCloud(t)
+		cleared := regexp.MustCompile(`Laravel Cloud cleared root_directory`)
+		resource.Test(t, resource.TestCase{
+			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			Steps: []resource.TestStep{
+				{Config: applicationConfig(baseURL, `  root_directory = "apps/web"`)},
+				{
+					Config:      withRepo(baseURL, "acme/site", `  root_directory = "apps/web"`),
+					ExpectError: cleared,
+				},
+				{
+					// Planning again fails too, instead of replacing.
+					Config:      withRepo(baseURL, "acme/site", `  root_directory = "apps/web"`),
+					PlanOnly:    true,
+					ExpectError: cleared,
+				},
+				{
+					Config:           withRepo(baseURL, "acme/site", ""),
+					ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+					ConfigStateChecks: []statecheck.StateCheck{
+						statecheck.ExpectKnownValue(addr, tfjsonpath.New("root_directory"), knownvalue.Null()),
+					},
+				},
+				{
+					// Any other directory is a new application, as before.
+					Config: withRepo(baseURL, "acme/site", `  root_directory = "apps/api"`),
+					ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(addr, plancheck.ResourceActionDestroyBeforeCreate),
+					}},
+				},
+			},
+		})
+	})
+}
+
+// TestSlugPlan sends a configured slug for an application and an environment,
+// both on create, which takes none, and on update.
+func TestSlugPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	config := func(app, env string) string {
+		return applicationConfig(baseURL, fmt.Sprintf("  slug = %q", app)) + fmt.Sprintf(`
+resource "laravel_cloud_environment" "env" {
+  application_id = laravel_cloud_application.app.id
+  name           = "staging"
+  branch         = "main"
+  slug           = %q
+}
+`, env)
+	}
+	check := func(app, env string) []statecheck.StateCheck {
+		return []statecheck.StateCheck{
+			statecheck.ExpectKnownValue("laravel_cloud_application.app", tfjsonpath.New("slug"), knownvalue.StringExact(app)),
+			statecheck.ExpectKnownValue("laravel_cloud_environment.env", tfjsonpath.New("slug"), knownvalue.StringExact(env)),
+		}
+	}
+	remote := func(app, env string) resource.TestCheckFunc {
+		return func(*terraform.State) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			for _, a := range f.apps {
+				if a.Attributes.Slug != app {
+					return fmt.Errorf("API application slug = %q, want %q", a.Attributes.Slug, app)
+				}
+			}
+			for _, e := range f.envs {
+				if e.Attributes.Name == "staging" && e.Attributes.Slug != env {
+					return fmt.Errorf("API environment slug = %q, want %q", e.Attributes.Slug, env)
+				}
+			}
+			return nil
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config("acme-web", "stage"), ConfigStateChecks: check("acme-web", "stage"), Check: remote("acme-web", "stage")},
+			{Config: config("acme-www", "staging-2"), ConfigStateChecks: check("acme-www", "staging-2"), Check: remote("acme-www", "staging-2")},
 		},
 	})
 }

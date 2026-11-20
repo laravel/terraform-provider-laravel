@@ -2,9 +2,8 @@
 
 Manage [Laravel Cloud](https://cloud.laravel.com) infrastructure as code.
 
-> **BETA RELEASE**: The Terraform Provider for the Laravel Cloud API is in Early Access and
-> subject to change, so provider resources and attributes may change between
-> releases.
+> **Beta release.** The provider is in early access. Its resources and attributes
+> may change between releases.
 
 ## Requirements
 
@@ -26,7 +25,7 @@ terraform {
 }
 
 provider "laravel" {
-  # Set token here or via the LARAVEL_CLOUD_API_TOKEN env var
+  # Set the token here or in the LARAVEL_CLOUD_API_TOKEN environment variable
 }
 ```
 
@@ -40,13 +39,13 @@ terraform plan
 
 ## Authentication
 
-The provider requires a Laravel Cloud API token. Set it via environment variable:
+The provider needs a Laravel Cloud API token. Set it in an environment variable:
 
 ```sh
 export LARAVEL_CLOUD_API_TOKEN="your-token-here"
 ```
 
-Or configure it directly in the provider block:
+Or set it in the provider block:
 
 ```hcl
 provider "laravel" {
@@ -60,8 +59,8 @@ If neither is set, the provider falls back to the token saved by the
 The token is read from `~/.config/cloud/config.json`, or from
 `~/.config/cloud/<host>-config.json` when `base_url` points at another host,
 matching where the CLI keeps it. If you are logged in to more than one
-organization the CLI holds several tokens, and the provider asks you to set the
-token explicitly rather than guess which organization to manage.
+organization, the CLI holds several tokens, and the provider asks you to set the
+token instead of guessing which organization to manage.
 
 ## Resources
 
@@ -71,8 +70,10 @@ token explicitly rather than guess which organization to manage.
 | `laravel_cloud_environment` | Environment within an application |
 | `laravel_cloud_instance` | Compute instance within an environment |
 | `laravel_cloud_domain` | Custom domain for an environment |
+| `laravel_cloud_edge_network_rule` | Custom firewall, rate limit or cache rule on a dedicated edge network |
 | `laravel_cloud_database_cluster` | Database cluster (MySQL, Postgres, Neon) |
 | `laravel_cloud_database` | Database schema within a cluster |
+| `laravel_cloud_database_user` | User in a database cluster, with access to some of its databases |
 | `laravel_cloud_database_snapshot` | Point-in-time database snapshot |
 | `laravel_cloud_database_restore` | Restore a database from a snapshot |
 | `laravel_cloud_cache` | Cache store (Valkey / Redis) |
@@ -81,6 +82,7 @@ token explicitly rather than guess which organization to manage.
 | `laravel_cloud_background_process` | Background worker process |
 | `laravel_cloud_scheduled_command` | Command run on a cron schedule on an instance |
 | `laravel_cloud_environment_variables` | Environment variables for an environment |
+| `laravel_cloud_environment_internal_networking` | Internal networking for an environment on a dedicated cluster |
 | `laravel_cloud_secret` | Organization secret, encrypted before it is sent |
 | `laravel_cloud_environment_secret` | Attach a secret to an environment |
 | `laravel_cloud_environment_resend` | Resend email sending for an environment |
@@ -89,17 +91,21 @@ token explicitly rather than guess which organization to manage.
 | `laravel_cloud_websocket_server` | WebSocket server |
 | `laravel_cloud_websocket_application` | WebSocket application |
 
-## Data Sources
+## Data sources
 
-| Data Source | Description |
+| Data source | Description |
 |---|---|
 | `laravel_cloud_organization` | Current organization details |
 | `laravel_cloud_dedicated_clusters` | Available dedicated clusters |
 | `laravel_cloud_instance_sizes` | Available instance sizes |
 | `laravel_cloud_database_types` | Available database types |
+| `laravel_cloud_database_presets` | Database cluster presets for a type and region |
 | `laravel_cloud_cache_types` | Available cache types |
+| `laravel_cloud_websocket_server_types` | WebSocket server types, regions and connection tiers |
 | `laravel_cloud_regions` | Available regions |
 | `laravel_cloud_ip_addresses` | IP addresses for allowlisting |
+| `laravel_cloud_resend_domains` | Resend sending domains and their DNS records |
+| `laravel_cloud_resend_reusable_keys` | Resend sending keys an environment can reuse |
 | `laravel_cloud_edge_networks` | Edge networks (CDN zones) available to the organization |
 
 ## Development

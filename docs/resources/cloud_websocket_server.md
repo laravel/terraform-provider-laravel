@@ -4,11 +4,14 @@ page_title: "laravel_cloud_websocket_server Resource - Laravel Cloud"
 subcategory: ""
 description: |-
   Manages a Laravel Cloud WebSocket server (cluster).
+  Laravel Cloud creates every server with a default WebSocket application named production, which this resource does not manage. It shares the server's max_connections with any laravel_cloud_websocket_application on the server, and its name is taken, so an application named production cannot be created on the same server.
 ---
 
 # laravel_cloud_websocket_server (Resource)
 
 Manages a Laravel Cloud WebSocket server (cluster).
+
+Laravel Cloud creates every server with a default WebSocket application named `production`, which this resource does not manage. It shares the server's `max_connections` with any `laravel_cloud_websocket_application` on the server, and its name is taken, so an application named `production` cannot be created on the same server.
 
 ## Example Usage
 
@@ -28,10 +31,10 @@ resource "laravel_cloud_websocket_server" "example" {
 
 ### Required
 
-- `max_connections` (Number) Maximum concurrent connections.
+- `max_connections` (Number) Maximum concurrent connections: 100, 200, 500, 2000, 5000 or 10000. Changing it splits the connections evenly across the server's applications again.
 - `name` (String) Server name.
 - `region` (String) Cloud region.
-- `type` (String) Server type (e.g. reverb).
+- `type` (String) Server type (such as reverb).
 
 ### Read-Only
 

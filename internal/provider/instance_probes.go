@@ -74,7 +74,7 @@ func instanceProbesSchema() schema.SingleNestedAttribute {
 	return schema.SingleNestedAttribute{
 		Optional: true,
 		Description: "Custom health checks for an app instance's web process. Only app instances accept them, " +
-			"and only on plans with health checks; manage one by importing the environment's app instance. " +
+			"and only on plans with health checks; set type = \"app\" to manage the environment's app instance. " +
 			"The checks configured here replace all existing ones, and a check left out uses the platform " +
 			"default. When unset, Terraform leaves the instance's health checks alone, including any the " +
 			"platform set up itself; removing the attribute once set resets every check to the platform default.",
