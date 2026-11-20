@@ -210,10 +210,42 @@ resource "laravel_cloud_cache" "cache" {
   region               = "us-east-2"
   size                 = "1gb"
   auto_upgrade_enabled = false
-  is_public            = false
 %s
 }
 `, extra)
+}
+
+// TestCacheElastiCacheIsPublicPlan covers is_public for ElastiCache:
+// the API stores false whatever create sends and refuses to change it, so
+// leaving it out applies and re-plans cleanly, true is refused at plan time
+// instead of drifting, and types other than ElastiCache still require it.
+func TestCacheElastiCacheIsPublicPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	addr := "laravel_cloud_cache.cache"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      cacheConfig(baseURL, `  is_public = true`),
+				ExpectError: regexp.MustCompile(`is_public must be false for ElastiCache caches`),
+			},
+			{
+				Config:      strings.Replace(valkeyFlexConfig(baseURL, "sessions", ""), "  is_public            = false\n", "", 1),
+				ExpectError: regexp.MustCompile(`is_public is required for laravel_valkey caches`),
+			},
+			{
+				Config: cacheConfig(baseURL, ""),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("is_public"), knownvalue.Bool(false)),
+				},
+			},
+			{
+				Config:           cacheConfig(baseURL, `  is_public = false`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+		},
+	})
 }
 
 // TestCacheClusterIDPlan covers cluster_id: sent on create, stable on re-plan

@@ -96,8 +96,11 @@ func (r *CacheResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				Description: "Cache name (3-40 characters, lowercase alphanumeric with hyphens/underscores).",
 			},
 			"type": schema.StringAttribute{
-				Required:    true,
-				Description: "Cache type (upstash_redis, laravel_valkey).",
+				Required: true,
+				Description: "Cache type: laravel_valkey, or aws_elasticache_valkey or aws_elasticache_redis, which " +
+					"run on one of the organization's dedicated (Private Cloud) ElastiCache clusters. The " +
+					"laravel_cloud_cache_types data source lists the types, their regions and sizes. " +
+					"upstash_redis is deprecated and the API no longer creates it.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -110,8 +113,11 @@ func (r *CacheResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				},
 			},
 			"size": schema.StringAttribute{
-				Required:    true,
-				Description: "Cache size (250mb to 500gb).",
+				Required: true,
+				Description: "Cache size, which depends on the type. laravel_valkey takes valkey-flex-* sizes " +
+					"(250mb to 2.5gb, which can scale to zero) or valkey-pro.* sizes (250mb to 50gb); the " +
+					"ElastiCache types take an elasticache.* node type, such as elasticache.cache.t4g.micro. " +
+					"The laravel_cloud_cache_types data source lists the sizes each type accepts.",
 			},
 			"status": schema.StringAttribute{
 				Computed:    true,
@@ -119,11 +125,17 @@ func (r *CacheResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			},
 			"auto_upgrade_enabled": schema.BoolAttribute{
 				Required:    true,
-				Description: "Enable automatic upgrades.",
+				Description: "Enable automatic upgrades. The ElastiCache types do not support it, so set it to false for them.",
 			},
 			"is_public": schema.BoolAttribute{
-				Required:    true,
-				Description: "Whether the cache is publicly accessible.",
+				Optional: true,
+				Computed: true,
+				Description: "Whether the cache is publicly accessible. Required for laravel_valkey. ElastiCache " +
+					"caches are always private: leave it out or set it to false, because the API stores " +
+					"false whatever is sent and refuses to change it.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"eviction_policy": schema.StringAttribute{
 				Optional: true,
@@ -160,12 +172,15 @@ func (r *CacheResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			},
 			"cluster_id": schema.StringAttribute{
 				Optional: true,
-				Description: "Dedicated cluster ID, from the laravel_cloud_dedicated_clusters data source. " +
-					"Only cache types that run on a dedicated cluster accept it, and the cluster must be " +
-					"in the cache's region. When omitted for such a type, the API picks the " +
-					"organization's dedicated cluster in that region. Changing this forces a new cache: " +
-					"the API's update endpoint does not accept it, and it is never reported back, so an " +
-					"imported cache leaves it null.",
+				Description: "Dedicated ElastiCache cluster ID, from the laravel_cloud_dedicated_clusters data " +
+					"source (type elasticache-clusters). Only the ElastiCache types accept it, and the cluster " +
+					"must be active and in the cache's region. When omitted, the API picks one of the " +
+					"organization's dedicated ElastiCache clusters in that region, in no defined order, so " +
+					"set it when the organization has more than one there. Create-only: no API endpoint " +
+					"reports a cache's cluster, so Terraform cannot read it back, detect a cache on another " +
+					"cluster, or fill it in on import. An imported cache leaves it null, and adding it to " +
+					"the configuration afterwards records it without replacing the cache. Changing a " +
+					"recorded value forces a new cache, as the update endpoint does not accept it.",
 				PlanModifiers: []planmodifier.String{
 					requiresReplaceUnlessImported(),
 				},
@@ -387,17 +402,42 @@ func (r *CacheResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 	}
 }
 
-// ValidateConfig turns the API's pairing of uses_hibernation and
-// hibernation_timeout into plan-time errors. The API rejects
+// ValidateConfig turns the API's rules for is_public, and its pairing of
+// uses_hibernation and hibernation_timeout, into plan-time errors. The API rejects
 // uses_hibernation = true without a timeout, and with scale to zero off it
 // stores no timeout, so a configured one would never be read back.
 func (r *CacheResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var config CacheResourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
-	if resp.Diagnostics.HasError() || config.UsesHibernation.IsUnknown() || config.HibernationTimeout.IsUnknown() {
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
+	// ElastiCache caches are always private: the API stores is_public =
+	// false whatever create sends, and its update endpoint refuses to change
+	// it. Every other type requires it.
+	if !config.Type.IsUnknown() && !config.Type.IsNull() {
+		switch {
+		case isElastiCacheType(config.Type.ValueString()) && config.IsPublic.ValueBool():
+			resp.Diagnostics.AddAttributeError(
+				path.Root("is_public"),
+				"is_public must be false for ElastiCache caches",
+				"AWS ElastiCache caches are always private: the API stores is_public = false and "+
+					"refuses to change it. Remove is_public or set it to false.",
+			)
+		case !isElastiCacheType(config.Type.ValueString()) && config.IsPublic.IsNull():
+			resp.Diagnostics.AddAttributeError(
+				path.Root("is_public"),
+				"Missing required argument",
+				fmt.Sprintf("is_public is required for %s caches. Only the ElastiCache types, which are "+
+					"always private, may leave it out.", config.Type.ValueString()),
+			)
+		}
+	}
+
+	if config.UsesHibernation.IsUnknown() || config.HibernationTimeout.IsUnknown() {
+		return
+	}
 	hibernates := config.UsesHibernation.ValueBool()
 	switch {
 	case hibernates && config.HibernationTimeout.IsNull():
@@ -451,6 +491,12 @@ func (hibernationTimeoutFollowsUsesHibernation) PlanModifyInt64(ctx context.Cont
 	default:
 		resp.PlanValue = types.Int64Null()
 	}
+}
+
+// isElastiCacheType reports whether a cache type runs on AWS ElastiCache
+// (aws_elasticache_valkey, aws_elasticache_redis).
+func isElastiCacheType(t string) bool {
+	return strings.HasPrefix(t, "aws_elasticache_")
 }
 
 func (r *CacheResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {

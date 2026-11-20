@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -30,6 +31,43 @@ func TestAccCacheResource_basic(t *testing.T) {
 				ResourceName:      "laravel_cloud_cache.test",
 				ImportState:       true,
 				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+// TestAccCacheResource_elasticacheIsPublic: is_public was
+// required, but the API always stores false for ElastiCache and refuses to
+// change it, so true drifted on every plan and then failed to apply. It only
+// plans, so no ElastiCache cache is created: true is refused at plan time,
+// and leaving it out plans a create.
+func TestAccCacheResource_elasticacheIsPublic(t *testing.T) {
+	config := func(extra string) string {
+		return fmt.Sprintf(`
+resource "laravel_cloud_cache" "test" {
+  name                 = %q
+  type                 = "aws_elasticache_valkey"
+  region               = "us-east-2"
+  size                 = "elasticache.cache.t4g.micro"
+  auto_upgrade_enabled = false
+%s
+}
+`, testAccName(), extra)
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      config(`  is_public = true`),
+				PlanOnly:    true,
+				ExpectError: regexp.MustCompile(`is_public must be false for ElastiCache caches`),
+			},
+			{
+				Config:             config(""),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
 			},
 		},
 	})
