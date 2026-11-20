@@ -7,7 +7,7 @@ afterthought.
 | Piece | Production | Staging |
 |---|---|---|
 | Branch | `main` | `develop` |
-| Web instance | `flex.c-2vcpu-1gb`, Octane, autoscaled on CPU/memory | `flex.c-1vcpu-256mb`, fixed at 1 replica |
+| Web instance | `flex.c-2vcpu-1gb`, Octane, autoscaled on CPU/memory | `flex-512mb`, fixed at 1 replica, hibernates after 5 minutes |
 | Database | `invoicing_production` | `invoicing_staging` |
 | Cache | Valkey 250mb | none — database drivers |
 | Domain | `invoicing.example.com` + `www` redirect | assigned vanity domain |

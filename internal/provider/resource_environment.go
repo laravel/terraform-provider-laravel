@@ -284,8 +284,8 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 			"uses_hibernation": schema.BoolAttribute{
 				Computed: true,
-				Description: "Whether the environment hibernates when idle. Set it with sleep_timeout here, or " +
-					"hibernation_timeout on the app instance (laravel_cloud_instance), which also turns it off.",
+				Description: "Whether the environment hibernates when idle. Set it with hibernation_timeout on the app " +
+					"instance (laravel_cloud_instance with type = \"app\"), which also turns it off, or the deprecated sleep_timeout here.",
 				PlanModifiers: []planmodifier.Bool{
 					followsAttributes{"sleep_timeout"},
 				},
@@ -376,7 +376,11 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 					"instead, and the apply fails. The API reports whether hibernation is on but not this value, " +
 					"so hibernation turned off outside Terraform shows in the next plan, and a changed value does not. " +
 					"It is the same setting as the app instance's hibernation_timeout (laravel_cloud_instance), so set it in " +
-					"only one place. The API cannot turn hibernation off through the environment; use the instance for that.",
+					"only one place. The API cannot turn hibernation off through the environment; use the instance for that. " +
+					"Deprecated: use hibernation_timeout on a laravel_cloud_instance with type = \"app\".",
+				DeprecationMessage: "Use hibernation_timeout on a laravel_cloud_instance with type = \"app\", which takes over " +
+					"the environment's app instance and can also turn hibernation off (0). sleep_timeout will be removed " +
+					"in a future major version.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},

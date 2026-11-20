@@ -113,9 +113,12 @@ resource "laravel_cloud_environment" "production" {
   color = "green"
 }
 
+# The app instance Laravel Cloud creates with the environment, taken over
+# rather than created.
 resource "laravel_cloud_instance" "production_web" {
   environment_id = laravel_cloud_environment.production.id
   name           = "web"
+  type           = "app"
   size           = "flex.c-2vcpu-1gb"
   uses_octane    = true
 
@@ -183,20 +186,23 @@ resource "laravel_cloud_environment" "staging" {
 
   uses_push_to_deploy = true
 
-  # Let staging fall asleep quickly -- it spends most of the week idle.
-  sleep_timeout = 5
-
   color = "orange"
 }
 
+# The app instance Laravel Cloud creates with the environment, taken over
+# rather than created.
 resource "laravel_cloud_instance" "staging_web" {
   environment_id = laravel_cloud_environment.staging.id
   name           = "web"
-  size           = "flex.c-1vcpu-256mb"
+  type           = "app"
+  size           = "flex-512mb"
 
   scaling_type = "custom"
   min_replicas = 1
   max_replicas = 1
+
+  # Let staging fall asleep quickly -- it spends most of the week idle.
+  hibernation_timeout = 5
 }
 
 resource "laravel_cloud_environment_variables" "staging" {
