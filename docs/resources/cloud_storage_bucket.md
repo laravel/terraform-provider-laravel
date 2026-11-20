@@ -24,14 +24,14 @@ resource "laravel_cloud_storage_bucket" "example" {
 
 ### Required
 
-- `key_name` (String) Name for the initial access key (3-40 characters).
-- `name` (String) Bucket name (3-40 characters, lowercase alphanumeric with hyphens/underscores).
+- `key_name` (String) Name for the initial access key (2-40 characters).
+- `name` (String) Bucket name (2-40 characters, lowercase alphanumeric with hyphens/underscores).
 
 ### Optional
 
 - `allowed_origins` (List of String, Deprecated) Allowed CORS origins.
 - `cors_settings` (Attributes) CORS configuration for the bucket. (see [below for nested schema](#nestedatt--cors_settings))
-- `jurisdiction` (String) Bucket jurisdiction: 'default' or 'eu'. Defaults to 'default'.
+- `jurisdiction` (String) Bucket jurisdiction: 'default', 'eu' or 'us'. Defaults to 'default'.
 - `key_permission` (String) Permission for the initial key: 'read_write' or 'read_only'. Defaults to 'read_write'.
 - `location_hint` (String) Where to place the bucket: automatic, wnam (western North America), enam (eastern North America), weur (western Europe), eeur (eastern Europe), apac (Asia-Pacific) or oc (Oceania). The platform defaults to automatic, the only value allowed outside the default jurisdiction. Changing it forces a new bucket.
 - `visibility` (String) Bucket visibility: 'private' or 'public'. Defaults to 'private'.

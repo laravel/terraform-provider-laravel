@@ -71,7 +71,7 @@ func (r *StorageBucketResource) Schema(_ context.Context, _ resource.SchemaReque
 			},
 			"name": schema.StringAttribute{
 				Required:    true,
-				Description: "Bucket name (3-40 characters, lowercase alphanumeric with hyphens/underscores).",
+				Description: "Bucket name (2-40 characters, lowercase alphanumeric with hyphens/underscores).",
 			},
 			"visibility": schema.StringAttribute{
 				Optional:    true,
@@ -82,7 +82,7 @@ func (r *StorageBucketResource) Schema(_ context.Context, _ resource.SchemaReque
 			"jurisdiction": schema.StringAttribute{
 				Optional:    true,
 				Computed:    true,
-				Description: "Bucket jurisdiction: 'default' or 'eu'. Defaults to 'default'.",
+				Description: "Bucket jurisdiction: 'default', 'eu' or 'us'. Defaults to 'default'.",
 				Default:     stringdefault.StaticString("default"),
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -104,7 +104,7 @@ func (r *StorageBucketResource) Schema(_ context.Context, _ resource.SchemaReque
 			},
 			"key_name": schema.StringAttribute{
 				Required:    true,
-				Description: "Name for the initial access key (3-40 characters).",
+				Description: "Name for the initial access key (2-40 characters).",
 				PlanModifiers: []planmodifier.String{
 					requiresReplaceUnlessImported(),
 				},
@@ -114,6 +114,9 @@ func (r *StorageBucketResource) Schema(_ context.Context, _ resource.SchemaReque
 				Computed:    true,
 				Description: "Permission for the initial key: 'read_write' or 'read_only'. Defaults to 'read_write'.",
 				Default:     stringdefault.StaticString("read_write"),
+				Validators: []validator.String{
+					stringvalidator.OneOf("read_write", "read_only"),
+				},
 				PlanModifiers: []planmodifier.String{
 					requiresReplaceUnlessImported(),
 				},
