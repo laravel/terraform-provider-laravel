@@ -330,9 +330,13 @@ func (f *fakeCloud) newEnvironment(appID, name, branch string) *client.Environme
 		ID:   id,
 		Type: "environments",
 		Attributes: client.EnvironmentAttributes{
-			Name:            name,
-			Slug:            slugify(name),
-			Status:          "active",
+			Name:   name,
+			Slug:   slugify(name),
+			Status: "active",
+			// The real API picks a random color; the timeouts are its defaults.
+			Color:           ptr("blue"),
+			Timeout:         ptr(int64(20)),
+			ShutdownTimeout: ptr(int64(30)),
 			PHPMajorVersion: "8.4",
 			NodeVersion:     "20",
 			VanityDomain:    &vanity,
@@ -478,10 +482,18 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 	if req.UsesOctane != nil {
 		a.UsesOctane = *req.UsesOctane
 	}
-	// color, timeout, sleep_timeout, shutdown_timeout and
-	// uses_purge_edge_cache_on_deploy are accepted here and deliberately
-	// dropped: the real API has no response attribute for any of them, and a
-	// fake that echoed them back would mask a non-converging plan.
+	if req.Color != nil {
+		a.Color = req.Color
+	}
+	if req.Timeout != nil {
+		a.Timeout = ptr(int64(*req.Timeout))
+	}
+	if req.ShutdownTimeout != nil {
+		a.ShutdownTimeout = ptr(int64(*req.ShutdownTimeout))
+	}
+	// sleep_timeout and uses_purge_edge_cache_on_deploy are accepted here and
+	// deliberately dropped: the real API has no response attribute for either,
+	// and a fake that echoed them back would mask a non-converging plan.
 	// php_version is sent as "major:minor"; the API only ever reports the major
 	// version back via php_major_version.
 	if req.PHPVersion != nil {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
 
 func TestAccEnvironmentResource_basic(t *testing.T) {
@@ -36,11 +37,10 @@ func TestAccEnvironmentResource_basic(t *testing.T) {
 				ResourceName:      "laravel_cloud_environment.test",
 				ImportState:       true,
 				ImportStateVerify: true,
-				// application_id is not in the GET response; branch and timeout
-				// are write-only (the API accepts them but never reports them
-				// back), so an imported environment cannot know them and leaves
-				// them null.
-				ImportStateVerifyIgnore: []string{"application_id", "branch", "timeout"},
+				// application_id is not in the GET response and branch is
+				// write-only (the API accepts it but never reports it back), so
+				// an imported environment cannot know them and leaves them null.
+				ImportStateVerifyIgnore: []string{"application_id", "branch"},
 			},
 		},
 	})
@@ -159,6 +159,79 @@ func TestAccEnvironmentResource_vanityDomain(t *testing.T) {
 			},
 		},
 	})
+}
+
+// TestAccEnvironmentResource_readBack covers color, timeout and
+// shutdown_timeout, which the API reports. An unset shutdown_timeout
+// takes the API's value, and a change made outside Terraform shows in the next
+// plan and is put back.
+func TestAccEnvironmentResource_readBack(t *testing.T) {
+	appName := testAccName()
+	var envID string
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccEnvironmentReadBackConfig(appName),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("laravel_cloud_environment.test", "color", "red"),
+					resource.TestCheckResourceAttr("laravel_cloud_environment.test", "timeout", "30"),
+					// Unset, so it is the platform default rather than null.
+					resource.TestCheckResourceAttr("laravel_cloud_environment.test", "shutdown_timeout", "30"),
+					func(s *terraform.State) error {
+						envID = s.RootModule().Resources["laravel_cloud_environment.test"].Primary.ID
+						return nil
+					},
+				),
+			},
+			// The dashboard changes color and timeout: the plan must notice.
+			{
+				PreConfig: func() {
+					color, timeout := "green", 45
+					if _, err := testAccClient().UpdateEnvironment(context.Background(), envID,
+						client.UpdateEnvironmentRequest{Color: &color, Timeout: &timeout}); err != nil {
+						t.Fatalf("changing the environment outside Terraform: %v", err)
+					}
+				},
+				Config:             testAccEnvironmentReadBackConfig(appName),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+			{
+				Config: testAccEnvironmentReadBackConfig(appName),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("laravel_cloud_environment.test", "color", "red"),
+					resource.TestCheckResourceAttr("laravel_cloud_environment.test", "timeout", "30"),
+				),
+			},
+			{
+				ResourceName:            "laravel_cloud_environment.test",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"application_id", "branch", "php_version"},
+			},
+		},
+	})
+}
+
+func testAccEnvironmentReadBackConfig(appName string) string {
+	return fmt.Sprintf(`
+resource "laravel_cloud_application" "test" {
+  name       = %[1]q
+  repository = %[2]q
+  region     = "us-east-2"
+}
+
+resource "laravel_cloud_environment" "test" {
+  application_id = laravel_cloud_application.test.id
+  name           = "staging"
+  branch         = %[3]q
+  color          = "red"
+  timeout        = 30
+}
+`, appName, testAccRepository(), testAccBranch())
 }
 
 func testAccEnvironmentVanityConfig(appName, vanity string) string {

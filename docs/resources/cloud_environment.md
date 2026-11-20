@@ -49,7 +49,7 @@ resource "laravel_cloud_environment" "example" {
 - `cache_id` (String) Cache to attach.
 - `cache_strategy` (String) Cache strategy (default, bypass).
 - `cluster_id` (String) Dedicated cluster ID. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
-- `color` (String) Environment color (blue, green, orange, purple, red, yellow, cyan, gray). Write-only: the API accepts this but never reports it back, so a change made outside Terraform cannot be detected and state keeps the configured value.
+- `color` (String) Environment color (blue, green, orange, purple, red, yellow, cyan, gray). Leave unset to keep the color Laravel Cloud picked when it created the environment.
 - `database_id` (String) ID of the database to attach (a laravel_cloud_database, not its cluster). Removing it detaches the database.
 - `database_schema_id` (String, Deprecated) Deprecated alias for database_id.
 - `deploy_command` (String) Custom deploy command (max 2000 chars).
@@ -70,11 +70,11 @@ resource "laravel_cloud_environment" "example" {
 - `response_headers_hsts_preload` (Boolean) Whether the HSTS header asks for preloading. Needs include_subdomains and a max_age of at least 31536000.
 - `response_headers_robots_tag` (String) X-Robots-Tag response header: "index, follow" or "noindex, nofollow".
 - `serving_root` (String) Directory a static environment serves, relative to the repository ("." for the top level). Only static environments accept it.
-- `shutdown_timeout` (Number) Shutdown timeout (1-600). Write-only: the API accepts this but never reports it back, so drift cannot be detected.
+- `shutdown_timeout` (Number) Seconds to wait before stopping the previous deployment's instances, so they can finish their requests and jobs (1-600). Applies on the next deployment. Leave unset to keep the platform default.
 - `sleep_timeout` (Number) Sleep timeout (1-60). Write-only: the API accepts this but never reports it back, so drift cannot be detected.
 - `slug` (String)
 - `start_command` (String) Command that starts a dynamic application that is not PHP, e.g. "gunicorn myproject.wsgi" (max 255 chars). Required by the API for dynamic JavaScript, Python, Ruby, Go, Rust and Java applications, and rejected for PHP and static ones.
-- `timeout` (Number) Request timeout (5-60 seconds). Write-only: the API accepts this but never reports it back, so drift cannot be detected.
+- `timeout` (Number) Seconds the environment waits for the application to respond before timing out (5-60). Applies on the next deployment. Leave unset to keep the platform default.
 - `uses_deploy_hook` (Boolean)
 - `uses_octane` (Boolean)
 - `uses_purge_edge_cache_on_deploy` (Boolean) Whether a deploy purges the edge cache. Write-only: the API accepts this but never reports it back, so drift cannot be detected.

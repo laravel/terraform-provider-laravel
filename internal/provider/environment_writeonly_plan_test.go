@@ -15,19 +15,20 @@ import (
 )
 
 // TestEnvironmentWriteOnlyAttributesPlan guards the environment attributes the
-// API accepts on PATCH but never returns: color, timeout, sleep_timeout,
-// shutdown_timeout and uses_purge_edge_cache_on_deploy.
+// API accepts on PATCH but never returns -- sleep_timeout and
+// uses_purge_edge_cache_on_deploy -- next to color, timeout and
+// shutdown_timeout, which it does return.
 //
-// These are the classic non-converging-diff trap. When the provider decoded
-// them as response fields they came back as the Go zero value on every refresh,
-// overwrote the configured value in state, and every subsequent plan proposed
-// writing them again -- forever, with no apply ever reaching a steady state.
+// Write-only attributes are the classic non-converging-diff trap. When the
+// provider decoded them as response fields they came back as the Go zero value
+// on every refresh, overwrote the configured value in state, and every
+// subsequent plan proposed writing them again -- forever, with no apply ever
+// reaching a steady state.
 //
-// The test sets all five, applies, and then asserts an empty follow-up plan.
-// It fails loudly if anything starts reading them back from the response again.
+// The test sets them all, applies, and then asserts an empty follow-up plan.
 //
-// cache_strategy is covered too, for the opposite reason: it IS readable, but
-// only from network_settings.cache.strategy rather than a top-level attribute.
+// cache_strategy is covered too: it is readable, but only from
+// network_settings.cache.strategy rather than a top-level attribute.
 func TestEnvironmentWriteOnlyAttributesPlan(t *testing.T) {
 	_, baseURL := newFakeCloud(t)
 	config := environmentWriteOnlyConfig(baseURL)
@@ -67,9 +68,10 @@ func TestEnvironmentWriteOnlyAttributesPlan(t *testing.T) {
 
 // TestEnvironmentWriteOnlyOmittedPlan covers the same attributes when they are
 // NOT set in config. They are Optional+Computed, so Terraform requires them to
-// be known after apply -- and because the API returns no value to adopt, they
-// must resolve to null. A fabricated zero value here would be re-sent on every
-// apply and would also read as a change away from the user's intent.
+// be known after apply. color, timeout and shutdown_timeout take what the API
+// reports (they used to stay null). The write-only ones have no value
+// to adopt and must resolve to null: a fabricated zero value would be re-sent on
+// every apply and would also read as a change away from the user's intent.
 func TestEnvironmentWriteOnlyOmittedPlan(t *testing.T) {
 	_, baseURL := newFakeCloud(t)
 	config := environmentMinimalConfig(baseURL)
@@ -82,10 +84,10 @@ func TestEnvironmentWriteOnlyOmittedPlan(t *testing.T) {
 			{
 				Config: config,
 				ConfigStateChecks: []statecheck.StateCheck{
-					statecheck.ExpectKnownValue(envAddr, tfjsonpath.New("color"), knownvalue.Null()),
-					statecheck.ExpectKnownValue(envAddr, tfjsonpath.New("timeout"), knownvalue.Null()),
+					statecheck.ExpectKnownValue(envAddr, tfjsonpath.New("color"), knownvalue.StringExact("blue")),
+					statecheck.ExpectKnownValue(envAddr, tfjsonpath.New("timeout"), knownvalue.Int64Exact(20)),
 					statecheck.ExpectKnownValue(envAddr, tfjsonpath.New("sleep_timeout"), knownvalue.Null()),
-					statecheck.ExpectKnownValue(envAddr, tfjsonpath.New("shutdown_timeout"), knownvalue.Null()),
+					statecheck.ExpectKnownValue(envAddr, tfjsonpath.New("shutdown_timeout"), knownvalue.Int64Exact(30)),
 					statecheck.ExpectKnownValue(envAddr, tfjsonpath.New("uses_purge_edge_cache_on_deploy"), knownvalue.Null()),
 				},
 			},
@@ -95,6 +97,60 @@ func TestEnvironmentWriteOnlyOmittedPlan(t *testing.T) {
 					PreApply: []plancheck.PlanCheck{
 						plancheck.ExpectEmptyPlan(),
 					},
+				},
+			},
+		},
+	})
+}
+
+// TestEnvironmentReadBackDriftPlan covers color, timeout and shutdown_timeout
+// changed outside Terraform. The API reports them, so the next plan
+// must put the configured values back.
+func TestEnvironmentReadBackDriftPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	config := environmentWriteOnlyConfig(baseURL)
+
+	const envAddr = "laravel_cloud_environment.writeonly"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config},
+			{
+				// The dashboard changes all three.
+				PreConfig: func() {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					for _, env := range f.envs {
+						env.Attributes.Color = ptr("green")
+						env.Attributes.Timeout = ptr(int64(50))
+						env.Attributes.ShutdownTimeout = ptr(int64(90))
+					}
+				},
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(envAddr, plancheck.ResourceActionUpdate),
+						plancheck.ExpectKnownValue(envAddr, tfjsonpath.New("color"), knownvalue.StringExact("purple")),
+						plancheck.ExpectKnownValue(envAddr, tfjsonpath.New("timeout"), knownvalue.Int64Exact(45)),
+						plancheck.ExpectKnownValue(envAddr, tfjsonpath.New("shutdown_timeout"), knownvalue.Int64Exact(20)),
+					},
+				},
+				Check: func(*terraform.State) error {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					last := f.envUpdates[len(f.envUpdates)-1]
+					if last.Color == nil || *last.Color != "purple" || last.Timeout == nil || *last.Timeout != 45 ||
+						last.ShutdownTimeout == nil || *last.ShutdownTimeout != 20 {
+						return fmt.Errorf("last environment update = %+v, want color purple, timeout 45, shutdown_timeout 20", last)
+					}
+					return nil
+				},
+			},
+			{
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
 				},
 			},
 		},

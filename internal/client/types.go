@@ -112,17 +112,21 @@ type EnvironmentData struct {
 // EnvironmentAttributes mirrors EnvironmentResource.attributes in the public
 // OpenAPI spec. Only fields the API actually returns belong here.
 //
-// Several environment settings -- color, timeout, sleep_timeout,
-// shutdown_timeout, uses_purge_edge_cache_on_deploy, uses_vanity_domain -- are
-// accepted by PATCH but are *write-only*: they appear nowhere in the response
-// schema. Decoding them here would silently yield the zero value on every read
-// and overwrite the configured value in state, producing a plan that never
-// converges. They are deliberately absent; see mapEnvironmentToState, which
-// leaves the configured values untouched.
+// A few environment settings -- sleep_timeout, uses_purge_edge_cache_on_deploy
+// and uses_vanity_domain -- are accepted by PATCH but are *write-only*: they
+// appear nowhere in the response. Decoding them here would silently yield the
+// zero value on every read and overwrite the configured value in state,
+// producing a plan that never converges. They are deliberately absent; see
+// mapEnvironmentToState, which leaves the configured values untouched.
 type EnvironmentAttributes struct {
 	Name   string `json:"name"`
 	Slug   string `json:"slug"`
 	Status string `json:"status"`
+	// Color, Timeout and ShutdownTimeout are pointers so that a response
+	// without them keeps the prior value rather than reading as empty.
+	Color           *string `json:"color,omitempty"`
+	Timeout         *int64  `json:"timeout,omitempty"`
+	ShutdownTimeout *int64  `json:"shutdown_timeout,omitempty"`
 	// PHPMajorVersion is the read-only major version returned by the API
 	// (e.g. "8.4"). The writable php_version sent on update uses the
 	// "8.4:1" form, so the two are deliberately distinct fields.

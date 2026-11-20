@@ -87,6 +87,12 @@ func keepStringIfAbsent(dst *types.String, api *string) {
 	}
 }
 
+func keepInt64IfAbsent(dst *types.Int64, api *int64) {
+	if api != nil {
+		*dst = types.Int64Value(*api)
+	}
+}
+
 func keepBoolIfAbsent(dst *types.Bool, api *bool) {
 	if api != nil {
 		*dst = types.BoolValue(*api)

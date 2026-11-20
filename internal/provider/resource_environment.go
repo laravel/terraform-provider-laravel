@@ -143,8 +143,7 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Optional: true,
 				Computed: true,
 				Description: "Environment color (blue, green, orange, purple, red, yellow, cyan, gray). " +
-					"Write-only: the API accepts this but never reports it back, so a change made " +
-					"outside Terraform cannot be detected and state keeps the configured value.",
+					"Leave unset to keep the color Laravel Cloud picked when it created the environment.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -264,8 +263,8 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"timeout": schema.Int64Attribute{
 				Optional: true,
 				Computed: true,
-				Description: "Request timeout (5-60 seconds). Write-only: the API accepts this " +
-					"but never reports it back, so drift cannot be detected.",
+				Description: "Seconds the environment waits for the application to respond before timing out (5-60). " +
+					"Applies on the next deployment. Leave unset to keep the platform default.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -282,8 +281,8 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"shutdown_timeout": schema.Int64Attribute{
 				Optional: true,
 				Computed: true,
-				Description: "Shutdown timeout (1-600). Write-only: the API accepts this but " +
-					"never reports it back, so drift cannot be detected.",
+				Description: "Seconds to wait before stopping the previous deployment's instances, so they can finish " +
+					"their requests and jobs (1-600). Applies on the next deployment. Leave unset to keep the platform default.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -626,18 +625,18 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	setUnknownBoolFromAPI(&plan.UsesDeployHook, env.Attributes.UsesDeployHook)
 	setUnknownBoolFromAPI(&plan.UsesOctane, env.Attributes.UsesOctane)
 	setUnknownStringFromAPI(&plan.CacheStrategy, env.Attributes.NetworkSettings.Cache.Strategy)
+	setUnknownStringPtrFromAPI(&plan.Color, env.Attributes.Color)
+	setUnknownInt64PtrFromAPI(&plan.Timeout, env.Attributes.Timeout)
+	setUnknownInt64PtrFromAPI(&plan.ShutdownTimeout, env.Attributes.ShutdownTimeout)
 	setUnknownSettingsFromAPI(&plan, env)
 
 	// The remaining Optional+Computed attributes are write-only: the API
 	// accepts them on PATCH but never returns them, so there is no value to
 	// adopt. Resolve them to null rather than to a fabricated zero value,
 	// which would then be re-sent on every apply.
-	resolveUnknownStringToNull(&plan.Color)
 	resolveUnknownBoolToNull(&plan.UsesVanityDomain)
 	resolveUnknownBoolToNull(&plan.UsesPurgeEdgeCacheOnDeploy)
-	resolveUnknownInt64ToNull(&plan.Timeout)
 	resolveUnknownInt64ToNull(&plan.SleepTimeout)
-	resolveUnknownInt64ToNull(&plan.ShutdownTimeout)
 
 	// If the user specified values that differ from API defaults, attempt
 	// to PATCH the environment so the remote state matches the plan.
@@ -741,6 +740,12 @@ func setUnknownStringPtrFromAPI(field *types.String, apiVal *string) {
 func setUnknownBoolFromAPI(field *types.Bool, apiVal bool) {
 	if field.IsUnknown() {
 		*field = types.BoolValue(apiVal)
+	}
+}
+
+func setUnknownInt64PtrFromAPI(field *types.Int64, apiVal *int64) {
+	if field.IsUnknown() {
+		*field = types.Int64PointerValue(apiVal)
 	}
 }
 
@@ -1172,10 +1177,8 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 		req.NodeVersion = &v
 		hasUpdates = true
 	}
-	// color is write-only: it is never echoed back, so it cannot be compared
-	// against the response. Send it whenever the user set it.
-	if v := plan.Color.ValueString(); !plan.Color.IsNull() && !plan.Color.IsUnknown() {
-		req.Color = &v
+	if isSet(plan.Color) && !plan.Color.Equal(types.StringPointerValue(env.Attributes.Color)) {
+		req.Color = plan.Color.ValueStringPointer()
 		hasUpdates = true
 	}
 	if !plan.UsesPushToDeploy.IsNull() && !plan.UsesPushToDeploy.IsUnknown() && plan.UsesPushToDeploy.ValueBool() != env.Attributes.UsesPushToDeploy {
@@ -1188,7 +1191,7 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 		req.UsesOctane = &v
 		hasUpdates = true
 	}
-	if !plan.Timeout.IsNull() && !plan.Timeout.IsUnknown() {
+	if isSet(plan.Timeout) && !plan.Timeout.Equal(types.Int64PointerValue(env.Attributes.Timeout)) {
 		v := int(plan.Timeout.ValueInt64())
 		req.Timeout = &v
 		hasUpdates = true
@@ -1198,7 +1201,7 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 		req.SleepTimeout = &v
 		hasUpdates = true
 	}
-	if !plan.ShutdownTimeout.IsNull() && !plan.ShutdownTimeout.IsUnknown() {
+	if isSet(plan.ShutdownTimeout) && !plan.ShutdownTimeout.Equal(types.Int64PointerValue(env.Attributes.ShutdownTimeout)) {
 		v := int(plan.ShutdownTimeout.ValueInt64())
 		req.ShutdownTimeout = &v
 		hasUpdates = true
@@ -1298,13 +1301,16 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 	state.CreatedAt = types.StringPointerValue(env.Attributes.CreatedAt)
 	state.BuildCommand = types.StringPointerValue(env.Attributes.BuildCommand)
 	state.DeployCommand = types.StringPointerValue(env.Attributes.DeployCommand)
+	keepStringIfAbsent(&state.Color, env.Attributes.Color)
+	keepInt64IfAbsent(&state.Timeout, env.Attributes.Timeout)
+	keepInt64IfAbsent(&state.ShutdownTimeout, env.Attributes.ShutdownTimeout)
 	mapSettingsToState(env, state)
 
-	// color, timeout, sleep_timeout, shutdown_timeout,
-	// uses_purge_edge_cache_on_deploy and uses_vanity_domain are write-only:
-	// PATCH accepts them but the response never carries them back. Writing a
-	// zero value here would fight the configuration on every refresh, so the
-	// configured values are left in place and drift on them is not detectable.
+	// sleep_timeout, uses_purge_edge_cache_on_deploy and uses_vanity_domain
+	// are write-only: PATCH accepts them but the response never carries them
+	// back. Writing a zero value here would fight the configuration on every
+	// refresh, so the configured values are left in place and drift on them is
+	// not detectable.
 }
 
 // phpVersionFromMajor rebuilds php_version from the major version the API
