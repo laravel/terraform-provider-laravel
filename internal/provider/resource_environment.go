@@ -42,6 +42,7 @@ type EnvironmentResourceModel struct {
 	Branch                     types.String `tfsdk:"branch"`
 	Slug                       types.String `tfsdk:"slug"`
 	Status                     types.String `tfsdk:"status"`
+	Running                    types.Bool   `tfsdk:"running"`
 	Color                      types.String `tfsdk:"color"`
 	ClusterID                  types.String `tfsdk:"cluster_id"`
 	PHPVersion                 types.String `tfsdk:"php_version"`
@@ -139,6 +140,17 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Description: "Current environment status.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"running": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Description: "Whether the environment is running. Set false to stop it, which cancels a deployment in " +
+					"progress, and true to start it again, which deploys the latest commit; Terraform waits for that " +
+					"deployment to succeed. Only an environment that has been deployed can be stopped. Leave unset to " +
+					"leave it as it is.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"color": schema.StringAttribute{
@@ -748,6 +760,15 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	// Still unknown when no follow-up update was needed or it failed.
 	setUnknownStringPtrFromAPI(&plan.DeployHookURL, env.Attributes.DeployHookURL)
 
+	// The environment exists, so failing to start or stop it is a warning,
+	// and state records whether it really is running for the next plan.
+	var runningDiags diag.Diagnostics
+	if !applyRunning(ctx, r.client, env.ID, &plan, environmentRunning(plan.Status.ValueString()), &runningDiags) {
+		resp.Diagnostics.AddWarning("Could not start or stop the environment after creating it",
+			runningDiags.Errors()[0].Detail()+" Run 'terraform apply' again to retry.")
+		plan.Running = types.BoolValue(environmentRunning(plan.Status.ValueString()))
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -901,7 +922,9 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 		if plan.DeployHookURL.IsUnknown() {
 			plan.DeployHookURL = state.DeployHookURL
 		}
-		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		if applyRunning(ctx, r.client, state.ID.ValueString(), &plan, state.Running.ValueBool(), &resp.Diagnostics) {
+			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		}
 		return
 	}
 
@@ -928,6 +951,10 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 	plan.Slug = types.StringValue(updated.Attributes.Slug)
 	// Turning the deploy hook on or off creates or drops its URL.
 	setUnknownStringPtrFromAPI(&plan.DeployHookURL, updated.Attributes.DeployHookURL)
+	// Started after the update, so its deployment has the new settings.
+	if !applyRunning(ctx, r.client, state.ID.ValueString(), &plan, state.Running.ValueBool(), &resp.Diagnostics) {
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -1184,6 +1211,7 @@ func (r *EnvironmentResource) ModifyPlan(ctx context.Context, req resource.Modif
 		if planHook.Equal(stateHook) {
 			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("deploy_hook_url"), stateHookURL)...)
 		}
+		modifyRunningPlan(ctx, req, resp)
 	}
 
 	var dbID, schemaID types.String
@@ -1367,6 +1395,7 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 	state.Name = types.StringValue(env.Attributes.Name)
 	state.Slug = types.StringValue(env.Attributes.Slug)
 	state.Status = types.StringValue(env.Attributes.Status)
+	state.Running = types.BoolValue(environmentRunning(env.Attributes.Status))
 	// php_version is not echoed by the API in the form it is sent, so it is
 	// left untouched here to preserve the configured value; the read-only
 	// major version is surfaced via php_major_version instead. An import

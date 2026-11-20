@@ -115,3 +115,71 @@ func (f *fakeCloud) queuedDeploymentData(id string) map[string]any {
 	d["relationships"] = rels
 	return d
 }
+
+// startEnvironment starts a stopped environment the way the API does: it
+// answers with a new deployment, and the environment stays stopped until that
+// deployment succeeds (see finishStartDeployment).
+func (f *fakeCloud) startEnvironment(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	envID := r.PathValue("id")
+	env, ok := f.envs[envID]
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Errorf("environment not found"))
+		return
+	}
+	if env.Attributes.Status != "stopped" {
+		writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("The environment is already running."))
+		return
+	}
+	f.seq++
+	id := fmt.Sprintf("deploy-%d", f.seq)
+	attrs := seedDeployment(nil, envID)
+	attrs["status"] = "build.running"
+	if f.objects["deployment"] == nil {
+		f.objects["deployment"] = map[string]map[string]any{}
+	}
+	f.objects["deployment"][id] = attrs
+	f.children["deployment:"+envID] = append(f.children["deployment:"+envID], id)
+	if f.parents["deployment"] == nil {
+		f.parents["deployment"] = map[string]string{}
+	}
+	f.parents["deployment"][id] = envID
+	writeJSON(w, http.StatusOK, jsonAPIObject(id, "deployments", attrs))
+}
+
+// finishStartDeployment moves a deployment that starts an environment on to
+// succeeded the first time it is read, and the environment to running.
+func finishStartDeployment(f *fakeCloud, id string) {
+	attrs := f.objects["deployment"][id]
+	if attrs["status"] != "build.running" {
+		return
+	}
+	attrs["status"] = "deployment.succeeded"
+	if env := f.envs[f.parents["deployment"][id]]; env != nil {
+		env.Attributes.Status = "running"
+	}
+}
+
+// stopEnvironment stops an environment, which the API refuses for one that
+// has never been deployed or is already stopped.
+func (f *fakeCloud) stopEnvironment(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := r.PathValue("id")
+	env, ok := f.envs[id]
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Errorf("environment not found"))
+		return
+	}
+	if len(f.children["deployment:"+id]) == 0 {
+		writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("The environment does not have a current deployment."))
+		return
+	}
+	if env.Attributes.Status == "stopped" {
+		writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("The environment is already stopped."))
+		return
+	}
+	env.Attributes.Status = "stopped"
+	writeJSON(w, http.StatusOK, environmentDoc(env))
+}

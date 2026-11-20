@@ -355,6 +355,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			// No PATCH, no DELETE (deployments are immutable and cannot be undone).
 			seed:       seedDeployment,
 			wrapCreate: queueDeploymentCreate,
+			beforeGet:  finishStartDeployment,
 		},
 		{
 			typeName: "command", idPrefix: "command", parentWildcard: "eid",

@@ -163,6 +163,9 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	envInterval := environmentBusyInterval
 	environmentBusyInterval = time.Millisecond
 	t.Cleanup(func() { environmentBusyInterval = envInterval })
+	startInterval := environmentStartInterval
+	environmentStartInterval = time.Millisecond
+	t.Cleanup(func() { environmentStartInterval = startInterval })
 	queueInterval := queueAvailableInterval
 	queueAvailableInterval = time.Millisecond
 	t.Cleanup(func() { queueAvailableInterval = queueInterval })
@@ -183,6 +186,8 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	mux.HandleFunc("PATCH /environments/{id}", f.updateEnvironment)
 	mux.HandleFunc("PUT /environments/{id}/vanity-domain", f.setVanityDomain)
 	mux.HandleFunc("DELETE /environments/{id}", f.deleteEnvironment)
+	mux.HandleFunc("POST /environments/{id}/start", f.startEnvironment)
+	mux.HandleFunc("POST /environments/{id}/stop", f.stopEnvironment)
 	mux.HandleFunc("GET /queued-deployments/{id}", f.getQueuedDeployment)
 
 	// All other resources are served by the generic JSON:API engine.

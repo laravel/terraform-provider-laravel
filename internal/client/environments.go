@@ -69,6 +69,27 @@ func (c *Client) UpdateEnvironment(ctx context.Context, id string, req UpdateEnv
 	return &doc.Data, nil
 }
 
+// StartEnvironment starts a stopped environment by deploying it. The
+// environment reports itself running only once that deployment succeeds.
+// Like CreateDeployment, the deployment may come back queued.
+func (c *Client) StartEnvironment(ctx context.Context, id string) (deployment *DeploymentData, queued *QueuedDeploymentData, err error) {
+	var doc Document[json.RawMessage]
+	if err := c.do(ctx, "POST", fmt.Sprintf("/environments/%s/start", id), nil, &doc); err != nil {
+		return nil, nil, err
+	}
+	return decodeDeployment(doc.Data)
+}
+
+// StopEnvironment stops an environment, cancelling a deployment in progress.
+// The API refuses it for an environment that has never been deployed.
+func (c *Client) StopEnvironment(ctx context.Context, id string) (*EnvironmentData, error) {
+	var doc Document[EnvironmentData]
+	if err := c.do(ctx, "POST", fmt.Sprintf("/environments/%s/stop", id), nil, &doc); err != nil {
+		return nil, err
+	}
+	return &doc.Data, nil
+}
+
 func (c *Client) DeleteEnvironment(ctx context.Context, id string) error {
 	return c.do(ctx, "DELETE", fmt.Sprintf("/environments/%s", id), nil, nil)
 }

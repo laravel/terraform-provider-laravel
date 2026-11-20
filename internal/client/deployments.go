@@ -28,16 +28,22 @@ func (c *Client) CreateDeployment(ctx context.Context, environmentID string) (de
 	if err := c.do(ctx, "POST", fmt.Sprintf("/environments/%s/deployments", environmentID), nil, &doc); err != nil {
 		return nil, nil, err
 	}
+	return decodeDeployment(doc.Data)
+}
+
+// decodeDeployment decodes a response that holds either a deployment or a
+// queued deployment.
+func decodeDeployment(data json.RawMessage) (deployment *DeploymentData, queued *QueuedDeploymentData, err error) {
 	var head ResourceIdentifier
-	if err := json.Unmarshal(doc.Data, &head); err != nil {
+	if err := json.Unmarshal(data, &head); err != nil {
 		return nil, nil, fmt.Errorf("decoding deployment: %w", err)
 	}
 	if head.Type == QueuedDeploymentType {
 		queued = &QueuedDeploymentData{}
-		err = json.Unmarshal(doc.Data, queued)
+		err = json.Unmarshal(data, queued)
 	} else {
 		deployment = &DeploymentData{}
-		err = json.Unmarshal(doc.Data, deployment)
+		err = json.Unmarshal(data, deployment)
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("decoding deployment: %w", err)
