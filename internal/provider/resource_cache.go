@@ -6,19 +6,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
 
 var (
-	_ resource.Resource                = &CacheResource{}
-	_ resource.ResourceWithImportState = &CacheResource{}
+	_ resource.Resource                   = &CacheResource{}
+	_ resource.ResourceWithImportState    = &CacheResource{}
+	_ resource.ResourceWithValidateConfig = &CacheResource{}
 )
 
 type CacheResource struct {
@@ -35,6 +39,8 @@ type CacheResourceModel struct {
 	AutoUpgradeEnabled types.Bool   `tfsdk:"auto_upgrade_enabled"`
 	IsPublic           types.Bool   `tfsdk:"is_public"`
 	EvictionPolicy     types.String `tfsdk:"eviction_policy"`
+	UsesHibernation    types.Bool   `tfsdk:"uses_hibernation"`
+	HibernationTimeout types.Int64  `tfsdk:"hibernation_timeout"`
 	ClusterID          types.String `tfsdk:"cluster_id"`
 	Connection         types.Object `tfsdk:"connection_details"`
 	CreatedAt          types.String `tfsdk:"created_at"`
@@ -119,8 +125,37 @@ func (r *CacheResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				Description: "Whether the cache is publicly accessible.",
 			},
 			"eviction_policy": schema.StringAttribute{
-				Optional:    true,
-				Description: "Eviction policy (Valkey only, defaults to allkeys-lru).",
+				Optional: true,
+				Computed: true,
+				Description: "Eviction policy, for cache types that support one (supports_eviction_policy in " +
+					"the laravel_cloud_cache_types data source). When omitted, the API uses allkeys-lru " +
+					"for those types and reports null for the rest.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"uses_hibernation": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Description: "Scale to zero: the cache sleeps after hibernation_timeout idle minutes. Only " +
+					"sizes whose supports_hibernation is true in the laravel_cloud_cache_types data source " +
+					"accept it (the Laravel Valkey Flex sizes). When omitted, the API's default applies, " +
+					"which is false: unlike the dashboard, the API does not turn it on for Flex caches.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"hibernation_timeout": schema.Int64Attribute{
+				Optional: true,
+				Computed: true,
+				Description: "Idle minutes before the cache sleeps, 1 to 60. Required when uses_hibernation " +
+					"is true, and not allowed otherwise: the API clears it while scale to zero is off.",
+				Validators: []validator.Int64{
+					int64validator.Between(1, 60),
+				},
+				PlanModifiers: []planmodifier.Int64{
+					hibernationTimeoutFollowsUsesHibernation{},
+				},
 			},
 			"cluster_id": schema.StringAttribute{
 				Optional: true,
@@ -179,13 +214,17 @@ func (r *CacheResource) Create(ctx context.Context, req resource.CreateRequest, 
 		AutoUpgradeEnabled: plan.AutoUpgradeEnabled.ValueBool(),
 		IsPublic:           plan.IsPublic.ValueBool(),
 	}
-	if !plan.EvictionPolicy.IsNull() {
+	if !plan.EvictionPolicy.IsNull() && !plan.EvictionPolicy.IsUnknown() {
 		v := plan.EvictionPolicy.ValueString()
 		createReq.EvictionPolicy = &v
 	}
 	if !plan.ClusterID.IsNull() {
 		v := plan.ClusterID.ValueString()
 		createReq.ClusterID = &v
+	}
+	if !plan.UsesHibernation.IsNull() && !plan.UsesHibernation.IsUnknown() {
+		createReq.UsesHibernation = plan.UsesHibernation.ValueBoolPointer()
+		createReq.HibernationTimeout = plan.HibernationTimeout.ValueInt64Pointer()
 	}
 
 	cache, err := r.client.CreateCache(ctx, createReq)
@@ -270,6 +309,12 @@ func (r *CacheResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		v := plan.EvictionPolicy.ValueString()
 		updateReq.EvictionPolicy = &v
 	}
+	// The API requires hibernation_timeout whenever uses_hibernation is sent
+	// as true, so a change to either sends both.
+	if !plan.UsesHibernation.Equal(state.UsesHibernation) || !plan.HibernationTimeout.Equal(state.HibernationTimeout) {
+		updateReq.UsesHibernation = plan.UsesHibernation.ValueBoolPointer()
+		updateReq.HibernationTimeout = plan.HibernationTimeout.ValueInt64Pointer()
+	}
 
 	// Nothing the API can update changed -- the change is to cluster_id being
 	// recorded after an import. Send nothing and keep the computed values.
@@ -316,6 +361,72 @@ func (r *CacheResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 	}
 }
 
+// ValidateConfig turns the API's pairing of uses_hibernation and
+// hibernation_timeout into plan-time errors. The API rejects
+// uses_hibernation = true without a timeout, and with scale to zero off it
+// stores no timeout, so a configured one would never be read back.
+func (r *CacheResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var config CacheResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() || config.UsesHibernation.IsUnknown() || config.HibernationTimeout.IsUnknown() {
+		return
+	}
+
+	hibernates := config.UsesHibernation.ValueBool()
+	switch {
+	case hibernates && config.HibernationTimeout.IsNull():
+		resp.Diagnostics.AddAttributeError(
+			path.Root("hibernation_timeout"),
+			"hibernation_timeout is required when uses_hibernation is true",
+			"Set hibernation_timeout to the idle minutes, 1 to 60, before the cache sleeps.",
+		)
+	case !hibernates && !config.HibernationTimeout.IsNull():
+		resp.Diagnostics.AddAttributeError(
+			path.Root("hibernation_timeout"),
+			"hibernation_timeout requires uses_hibernation = true",
+			"The API clears the timeout while scale to zero is off. Set uses_hibernation = true, "+
+				"or remove hibernation_timeout.",
+		)
+	}
+}
+
+// hibernationTimeoutFollowsUsesHibernation plans an omitted hibernation_timeout
+// from uses_hibernation: null once scale to zero is planned off, because the
+// API clears the timeout then, and otherwise the stored timeout, so removing
+// both attributes from config keeps the cache as it is instead of sending
+// uses_hibernation = true without the timeout the API requires with it.
+type hibernationTimeoutFollowsUsesHibernation struct{}
+
+func (hibernationTimeoutFollowsUsesHibernation) Description(context.Context) string {
+	return "Null while uses_hibernation is false; otherwise keeps the stored value when omitted."
+}
+
+func (m hibernationTimeoutFollowsUsesHibernation) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (hibernationTimeoutFollowsUsesHibernation) PlanModifyInt64(ctx context.Context, req planmodifier.Int64Request, resp *planmodifier.Int64Response) {
+	if !req.ConfigValue.IsNull() || req.State.Raw.IsNull() {
+		return
+	}
+	// Read uses_hibernation from config, falling back to state as its
+	// UseStateForUnknown does: the plan passed here does not have that
+	// modifier's result yet.
+	var uses types.Bool
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("uses_hibernation"), &uses)...)
+	if uses.IsNull() {
+		resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("uses_hibernation"), &uses)...)
+	}
+	switch {
+	case uses.IsUnknown():
+		return
+	case uses.ValueBool():
+		resp.PlanValue = req.StateValue
+	default:
+		resp.PlanValue = types.Int64Null()
+	}
+}
+
 func (r *CacheResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
@@ -329,6 +440,9 @@ func mapCacheToState(c *client.CacheData, state *CacheResourceModel) {
 	state.Status = types.StringValue(c.Attributes.Status)
 	state.AutoUpgradeEnabled = types.BoolValue(c.Attributes.AutoUpgradeEnabled)
 	state.IsPublic = types.BoolValue(c.Attributes.IsPublic)
+	state.EvictionPolicy = types.StringPointerValue(c.Attributes.EvictionPolicy)
+	state.UsesHibernation = types.BoolValue(c.Attributes.UsesHibernation)
+	state.HibernationTimeout = types.Int64PointerValue(c.Attributes.HibernationTimeout)
 	state.CreatedAt = types.StringPointerValue(c.Attributes.CreatedAt)
 
 	// The API reports an empty connection block whenever an operation is in

@@ -98,8 +98,24 @@ func TestCacheTypesDataSourcePlan(t *testing.T) {
 				tfjsonpath.New("types").AtSliceIndex(0).AtMapKey("type"),
 				knownvalue.StringExact("laravel_valkey")),
 			statecheck.ExpectKnownValue("data.laravel_cloud_cache_types.all",
-				tfjsonpath.New("types").AtSliceIndex(0).AtMapKey("sizes").AtSliceIndex(0).AtMapKey("value"),
-				knownvalue.StringExact("valkey-pro.250mb")),
+				tfjsonpath.New("types").AtSliceIndex(0).AtMapKey("supports_hibernation"),
+				knownvalue.Bool(true)),
+			statecheck.ExpectKnownValue("data.laravel_cloud_cache_types.all",
+				tfjsonpath.New("types").AtSliceIndex(1).AtMapKey("supports_eviction_policy"),
+				knownvalue.Bool(false)),
+			// Only some sizes of a type that can scale to zero accept it.
+			statecheck.ExpectKnownValue("data.laravel_cloud_cache_types.all",
+				tfjsonpath.New("types").AtSliceIndex(0).AtMapKey("sizes"),
+				knownvalue.ListExact([]knownvalue.Check{
+					knownvalue.ObjectExact(map[string]knownvalue.Check{
+						"value": knownvalue.StringExact("valkey-flex-250mb"), "label": knownvalue.StringExact("250 MB"),
+						"supports_hibernation": knownvalue.Bool(true),
+					}),
+					knownvalue.ObjectExact(map[string]knownvalue.Check{
+						"value": knownvalue.StringExact("valkey-pro.250mb"), "label": knownvalue.StringExact("250 MB"),
+						"supports_hibernation": knownvalue.Bool(false),
+					}),
+				})),
 		})
 }
 

@@ -47,3 +47,58 @@ resource "laravel_cloud_cache" "test" {
 }
 `, name)
 }
+
+// TestAccCacheResource_hibernation: a Valkey Flex cache created
+// through the API never scales to zero unless uses_hibernation is sent, which
+// the provider could not do. Scale to zero is set on create, its timeout
+// changed and then turned off in place, and eviction_policy, which the API
+// defaults to allkeys-lru, is read back.
+func TestAccCacheResource_hibernation(t *testing.T) {
+	rName := testAccName()
+	addr := "laravel_cloud_cache.test"
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccCacheHibernationConfig(rName, "uses_hibernation = true\n  hibernation_timeout = 5"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(addr, "uses_hibernation", "true"),
+					resource.TestCheckResourceAttr(addr, "hibernation_timeout", "5"),
+					resource.TestCheckResourceAttr(addr, "eviction_policy", "allkeys-lru"),
+				),
+			},
+			{
+				ResourceName:      addr,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			{
+				Config: testAccCacheHibernationConfig(rName, "uses_hibernation = true\n  hibernation_timeout = 10"),
+				Check:  resource.TestCheckResourceAttr(addr, "hibernation_timeout", "10"),
+			},
+			{
+				Config: testAccCacheHibernationConfig(rName, "uses_hibernation = false"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(addr, "uses_hibernation", "false"),
+					resource.TestCheckNoResourceAttr(addr, "hibernation_timeout"),
+				),
+			},
+		},
+	})
+}
+
+func testAccCacheHibernationConfig(name, hibernation string) string {
+	return fmt.Sprintf(`
+resource "laravel_cloud_cache" "test" {
+  name                 = %[1]q
+  type                 = "laravel_valkey"
+  region               = "us-east-2"
+  size                 = "valkey-flex-250mb"
+  auto_upgrade_enabled = false
+  is_public            = false
+  %[2]s
+}
+`, name, hibernation)
+}

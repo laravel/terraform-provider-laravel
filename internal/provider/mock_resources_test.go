@@ -24,6 +24,11 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			typeName: "cache", idPrefix: "cache",
 			collectionPattern: "/caches", itemPattern: "/caches/{id}",
 			patch: true, del: true,
+			validateCreate: func(body map[string]any) string {
+				cacheType, _ := body["type"].(string)
+				size, _ := body["size"].(string)
+				return cacheHibernationError(body, cacheType, size)
+			},
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
 				a["status"] = "available"
@@ -31,7 +36,37 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 					"hostname": "cache.test.local", "port": 6379,
 					"protocol": "tcp", "username": "default", "password": "cache-secret",
 				}
+				// The API's defaults: allkeys-lru for Valkey (an empty
+				// string arrives as null), and scale to zero off unless
+				// asked for, whatever the size.
+				if p, _ := a["eviction_policy"].(string); p == "" {
+					a["eviction_policy"] = nil
+					if a["type"] == "laravel_valkey" {
+						a["eviction_policy"] = "allkeys-lru"
+					}
+				}
+				if a["uses_hibernation"] != true {
+					a["uses_hibernation"] = false
+					a["hibernation_timeout"] = nil
+				}
 				return a
+			},
+			validatePatch: func(attrs, patch map[string]any) string {
+				size, _ := attrs["size"].(string)
+				if s, ok := patch["size"].(string); ok {
+					size = s
+				}
+				cacheType, _ := attrs["type"].(string)
+				return cacheHibernationError(patch, cacheType, size)
+			},
+			// With scale to zero off the API clears the timeout.
+			patchFn: func(attrs, patch map[string]any) {
+				for k, v := range patch {
+					attrs[k] = v
+				}
+				if attrs["uses_hibernation"] != true {
+					attrs["hibernation_timeout"] = nil
+				}
 			},
 		},
 		{
@@ -830,4 +865,23 @@ func syncInstanceScaling(a map[string]any) {
 		a["min_replicas"], a["max_replicas"] = 1, 1
 		a["scaling_cpu_threshold_percentage"], a["scaling_memory_threshold_percentage"] = nil, nil
 	}
+}
+
+// cacheHibernationError is the API's 422 for a create or update body that
+// turns scale to zero on: it needs a timeout in the same request, a Valkey
+// cache, and a size that scales to zero (the Flex sizes).
+func cacheHibernationError(body map[string]any, cacheType, size string) string {
+	if body["uses_hibernation"] != true {
+		return ""
+	}
+	if body["hibernation_timeout"] == nil {
+		return "The hibernation timeout field is required when uses hibernation is true."
+	}
+	if cacheType != "laravel_valkey" {
+		return "Scale to zero is not available for this cache type."
+	}
+	if !strings.HasPrefix(size, "valkey-flex-") {
+		return "Scale to zero is not available for this cache size."
+	}
+	return ""
 }

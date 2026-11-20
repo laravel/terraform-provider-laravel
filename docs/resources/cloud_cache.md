@@ -20,6 +20,10 @@ resource "laravel_cloud_cache" "example" {
   size                 = "valkey-flex-250mb"
   auto_upgrade_enabled = true
   is_public            = false
+
+  # Scale to zero after 5 idle minutes. The API leaves it off unless set.
+  uses_hibernation    = true
+  hibernation_timeout = 5
 }
 ```
 
@@ -38,7 +42,9 @@ resource "laravel_cloud_cache" "example" {
 ### Optional
 
 - `cluster_id` (String) Dedicated cluster ID, from the laravel_cloud_dedicated_clusters data source. Only cache types that run on a dedicated cluster accept it, and the cluster must be in the cache's region. When omitted for such a type, the API picks the organization's dedicated cluster in that region. Changing this forces a new cache: the API's update endpoint does not accept it, and it is never reported back, so an imported cache leaves it null.
-- `eviction_policy` (String) Eviction policy (Valkey only, defaults to allkeys-lru).
+- `eviction_policy` (String) Eviction policy, for cache types that support one (supports_eviction_policy in the laravel_cloud_cache_types data source). When omitted, the API uses allkeys-lru for those types and reports null for the rest.
+- `hibernation_timeout` (Number) Idle minutes before the cache sleeps, 1 to 60. Required when uses_hibernation is true, and not allowed otherwise: the API clears it while scale to zero is off.
+- `uses_hibernation` (Boolean) Scale to zero: the cache sleeps after hibernation_timeout idle minutes. Only sizes whose supports_hibernation is true in the laravel_cloud_cache_types data source accept it (the Laravel Valkey Flex sizes). When omitted, the API's default applies, which is false: unlike the dashboard, the API does not turn it on for Flex caches.
 
 ### Read-Only
 

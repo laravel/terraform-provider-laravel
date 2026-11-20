@@ -587,6 +587,9 @@ type CacheAttributes struct {
 	Size               string           `json:"size"`
 	AutoUpgradeEnabled bool             `json:"auto_upgrade_enabled"`
 	IsPublic           bool             `json:"is_public"`
+	EvictionPolicy     *string          `json:"eviction_policy"`
+	UsesHibernation    bool             `json:"uses_hibernation"`
+	HibernationTimeout *int64           `json:"hibernation_timeout"`
 	Connection         *CacheConnection `json:"connection"`
 	CreatedAt          *string          `json:"created_at"`
 }
@@ -617,6 +620,12 @@ type CreateCacheRequest struct {
 	AutoUpgradeEnabled bool    `json:"auto_upgrade_enabled"`
 	IsPublic           bool    `json:"is_public"`
 	EvictionPolicy     *string `json:"eviction_policy,omitempty"`
+	// UsesHibernation is scale to zero. The API defaults it to false when it
+	// is not sent, unlike the dashboard, which turns it on for Flex sizes.
+	UsesHibernation *bool `json:"uses_hibernation,omitempty"`
+	// HibernationTimeout is the idle minutes before the cache sleeps (1-60),
+	// required when UsesHibernation is true.
+	HibernationTimeout *int64 `json:"hibernation_timeout,omitempty"`
 	// ClusterID picks the dedicated cluster for a cache type that runs on one.
 	// Create-only, and never reported back on the cache.
 	ClusterID *string `json:"cluster_id,omitempty"`
@@ -628,6 +637,8 @@ type UpdateCacheRequest struct {
 	AutoUpgradeEnabled *bool   `json:"auto_upgrade_enabled,omitempty"`
 	IsPublic           *bool   `json:"is_public,omitempty"`
 	EvictionPolicy     *string `json:"eviction_policy,omitempty"`
+	UsesHibernation    *bool   `json:"uses_hibernation,omitempty"`
+	HibernationTimeout *int64  `json:"hibernation_timeout,omitempty"`
 }
 
 // ---------------------------------------------------------------------
@@ -1069,16 +1080,19 @@ type CacheTypesResponse struct {
 }
 
 type CacheTypeInfo struct {
-	Type                string          `json:"type"`
-	Label               string          `json:"label"`
-	Regions             []string        `json:"regions"`
-	Sizes               []CacheSizeInfo `json:"sizes"`
-	SupportsAutoUpgrade bool            `json:"supports_auto_upgrade"`
+	Type                   string          `json:"type"`
+	Label                  string          `json:"label"`
+	Regions                []string        `json:"regions"`
+	Sizes                  []CacheSizeInfo `json:"sizes"`
+	SupportsAutoUpgrade    bool            `json:"supports_auto_upgrade"`
+	SupportsEvictionPolicy bool            `json:"supports_eviction_policy"`
+	SupportsHibernation    bool            `json:"supports_hibernation"`
 }
 
 type CacheSizeInfo struct {
-	Value string `json:"value"`
-	Label string `json:"label"`
+	Value               string `json:"value"`
+	Label               string `json:"label"`
+	SupportsHibernation bool   `json:"supports_hibernation"`
 }
 
 // QueueStatusValue holds the managed-queue status. The public spec types it as

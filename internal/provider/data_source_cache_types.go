@@ -22,16 +22,19 @@ type CacheTypesDataSourceModel struct {
 }
 
 type CacheTypeItemModel struct {
-	Type                types.String         `tfsdk:"type"`
-	Label               types.String         `tfsdk:"label"`
-	Regions             []types.String       `tfsdk:"regions"`
-	SupportsAutoUpgrade types.Bool           `tfsdk:"supports_auto_upgrade"`
-	Sizes               []CacheSizeItemModel `tfsdk:"sizes"`
+	Type                   types.String         `tfsdk:"type"`
+	Label                  types.String         `tfsdk:"label"`
+	Regions                []types.String       `tfsdk:"regions"`
+	SupportsAutoUpgrade    types.Bool           `tfsdk:"supports_auto_upgrade"`
+	SupportsEvictionPolicy types.Bool           `tfsdk:"supports_eviction_policy"`
+	SupportsHibernation    types.Bool           `tfsdk:"supports_hibernation"`
+	Sizes                  []CacheSizeItemModel `tfsdk:"sizes"`
 }
 
 type CacheSizeItemModel struct {
-	Value types.String `tfsdk:"value"`
-	Label types.String `tfsdk:"label"`
+	Value               types.String `tfsdk:"value"`
+	Label               types.String `tfsdk:"label"`
+	SupportsHibernation types.Bool   `tfsdk:"supports_hibernation"`
 }
 
 func NewCacheTypesDataSource() datasource.DataSource {
@@ -72,6 +75,15 @@ func (d *CacheTypesDataSource) Schema(_ context.Context, _ datasource.SchemaRequ
 							Computed:    true,
 							Description: "Whether this type supports automatic upgrades.",
 						},
+						"supports_eviction_policy": schema.BoolAttribute{
+							Computed:    true,
+							Description: "Whether this type accepts an eviction_policy.",
+						},
+						"supports_hibernation": schema.BoolAttribute{
+							Computed: true,
+							Description: "Whether this type can scale to zero. Only the sizes whose own " +
+								"supports_hibernation is true accept uses_hibernation.",
+						},
 						"sizes": schema.ListNestedAttribute{
 							Computed:    true,
 							Description: "Available sizes for this cache type.",
@@ -84,6 +96,10 @@ func (d *CacheTypesDataSource) Schema(_ context.Context, _ datasource.SchemaRequ
 									"label": schema.StringAttribute{
 										Computed:    true,
 										Description: "Human-friendly label.",
+									},
+									"supports_hibernation": schema.BoolAttribute{
+										Computed:    true,
+										Description: "Whether a cache of this size accepts uses_hibernation (scale to zero).",
 									},
 								},
 							},
@@ -123,9 +139,11 @@ func (d *CacheTypesDataSource) Read(ctx context.Context, _ datasource.ReadReques
 
 	for _, ct := range cacheTypes {
 		item := CacheTypeItemModel{
-			Type:                types.StringValue(ct.Type),
-			Label:               types.StringValue(ct.Label),
-			SupportsAutoUpgrade: types.BoolValue(ct.SupportsAutoUpgrade),
+			Type:                   types.StringValue(ct.Type),
+			Label:                  types.StringValue(ct.Label),
+			SupportsAutoUpgrade:    types.BoolValue(ct.SupportsAutoUpgrade),
+			SupportsEvictionPolicy: types.BoolValue(ct.SupportsEvictionPolicy),
+			SupportsHibernation:    types.BoolValue(ct.SupportsHibernation),
 			// Empty nested collections must be empty lists, not null ones.
 			Regions: []types.String{},
 			Sizes:   []CacheSizeItemModel{},
@@ -135,8 +153,9 @@ func (d *CacheTypesDataSource) Read(ctx context.Context, _ datasource.ReadReques
 		}
 		for _, s := range ct.Sizes {
 			item.Sizes = append(item.Sizes, CacheSizeItemModel{
-				Value: types.StringValue(s.Value),
-				Label: types.StringValue(s.Label),
+				Value:               types.StringValue(s.Value),
+				Label:               types.StringValue(s.Label),
+				SupportsHibernation: types.BoolValue(s.SupportsHibernation),
 			})
 		}
 		state.Types = append(state.Types, item)

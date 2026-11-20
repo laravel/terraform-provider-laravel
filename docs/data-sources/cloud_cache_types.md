@@ -33,6 +33,8 @@ Read-Only:
 - `regions` (List of String) Regions where this cache type is available.
 - `sizes` (Attributes List) Available sizes for this cache type. (see [below for nested schema](#nestedatt--types--sizes))
 - `supports_auto_upgrade` (Boolean) Whether this type supports automatic upgrades.
+- `supports_eviction_policy` (Boolean) Whether this type accepts an eviction_policy.
+- `supports_hibernation` (Boolean) Whether this type can scale to zero. Only the sizes whose own supports_hibernation is true accept uses_hibernation.
 - `type` (String) Type identifier (e.g. upstash_redis, laravel_valkey).
 
 <a id="nestedatt--types--sizes"></a>
@@ -41,4 +43,5 @@ Read-Only:
 Read-Only:
 
 - `label` (String) Human-friendly label.
+- `supports_hibernation` (Boolean) Whether a cache of this size accepts uses_hibernation (scale to zero).
 - `value` (String) Size value (e.g. 250mb).

@@ -56,9 +56,22 @@ func registerDataSourceRoutes(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, map[string]any{"data": []any{
 			map[string]any{
 				"name": "laravel_valkey", "type": "laravel_valkey", "label": "Laravel Valkey",
-				"regions":               []any{"us-east-2"},
-				"sizes":                 []any{map[string]any{"value": "valkey-pro.250mb", "label": "250 MB"}},
-				"supports_auto_upgrade": true,
+				"regions": []any{"us-east-2"},
+				"sizes": []any{
+					map[string]any{"value": "valkey-flex-250mb", "label": "250 MB", "supports_hibernation": true},
+					map[string]any{"value": "valkey-pro.250mb", "label": "250 MB", "supports_hibernation": false},
+				},
+				"supports_auto_upgrade":    true,
+				"supports_eviction_policy": true,
+				"supports_hibernation":     true,
+			},
+			map[string]any{
+				"type": "upstash_redis", "label": "Upstash Redis",
+				"regions":                  []any{"us-east-2"},
+				"sizes":                    []any{map[string]any{"value": "250mb", "label": "250 MB", "supports_hibernation": false}},
+				"supports_auto_upgrade":    false,
+				"supports_eviction_policy": false,
+				"supports_hibernation":     false,
 			},
 		}})
 	})
