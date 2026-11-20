@@ -258,3 +258,50 @@ func TestCacheClusterIDPlan(t *testing.T) {
 		},
 	})
 }
+
+// TestSlugPlan sends a configured slug for an application and an environment,
+// both on create, which takes none, and on update.
+func TestSlugPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	config := func(app, env string) string {
+		return applicationConfig(baseURL, fmt.Sprintf("  slug = %q", app)) + fmt.Sprintf(`
+resource "laravel_cloud_environment" "env" {
+  application_id = laravel_cloud_application.app.id
+  name           = "staging"
+  branch         = "main"
+  slug           = %q
+}
+`, env)
+	}
+	check := func(app, env string) []statecheck.StateCheck {
+		return []statecheck.StateCheck{
+			statecheck.ExpectKnownValue("laravel_cloud_application.app", tfjsonpath.New("slug"), knownvalue.StringExact(app)),
+			statecheck.ExpectKnownValue("laravel_cloud_environment.env", tfjsonpath.New("slug"), knownvalue.StringExact(env)),
+		}
+	}
+	remote := func(app, env string) resource.TestCheckFunc {
+		return func(*terraform.State) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			for _, a := range f.apps {
+				if a.Attributes.Slug != app {
+					return fmt.Errorf("API application slug = %q, want %q", a.Attributes.Slug, app)
+				}
+			}
+			for _, e := range f.envs {
+				if e.Attributes.Name == "staging" && e.Attributes.Slug != env {
+					return fmt.Errorf("API environment slug = %q, want %q", e.Attributes.Slug, env)
+				}
+			}
+			return nil
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config("acme-web", "stage"), ConfigStateChecks: check("acme-web", "stage"), Check: remote("acme-web", "stage")},
+			{Config: config("acme-www", "staging-2"), ConfigStateChecks: check("acme-www", "staging-2"), Check: remote("acme-www", "staging-2")},
+		},
+	})
+}

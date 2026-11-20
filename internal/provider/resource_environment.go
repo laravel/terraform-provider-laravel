@@ -622,7 +622,9 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 
 	// Set server-generated fields from the API response.
 	plan.ID = types.StringValue(env.ID)
-	plan.Slug = types.StringValue(env.Attributes.Slug)
+	// A configured slug is sent in the follow-up update below: the create
+	// endpoint takes none.
+	setUnknownStringFromAPI(&plan.Slug, env.Attributes.Slug)
 	plan.Status = types.StringValue(env.Attributes.Status)
 	plan.PHPMajorVersion = types.StringValue(env.Attributes.PHPMajorVersion)
 	setVanityFromAPI(&plan, env)
@@ -923,7 +925,7 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 	plan.ID = state.ID
 	plan.ApplicationID = state.ApplicationID
 	plan.CreatedAt = state.CreatedAt
-	plan.Slug = state.Slug
+	plan.Slug = types.StringValue(updated.Attributes.Slug)
 	// Turning the deploy hook on or off creates or drops its URL.
 	setUnknownStringPtrFromAPI(&plan.DeployHookURL, updated.Attributes.DeployHookURL)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
@@ -1046,6 +1048,10 @@ func buildEnvironmentUpdateFromStateDiff(plan, state EnvironmentResourceModel) *
 	if !plan.Branch.Equal(state.Branch) {
 		v := plan.Branch.ValueString()
 		req.Branch = &v
+		hasUpdates = true
+	}
+	if isSet(plan.Slug) && !plan.Slug.Equal(state.Slug) {
+		req.Slug = plan.Slug.ValueStringPointer()
 		hasUpdates = true
 	}
 	if !plan.Color.Equal(state.Color) {
@@ -1229,6 +1235,10 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 
 	if v := plan.Name.ValueString(); !plan.Name.IsNull() && !plan.Name.IsUnknown() && v != env.Attributes.Name {
 		req.Name = &v
+		hasUpdates = true
+	}
+	if isSet(plan.Slug) && plan.Slug.ValueString() != env.Attributes.Slug {
+		req.Slug = plan.Slug.ValueStringPointer()
 		hasUpdates = true
 	}
 	// Branch is write-only (not in the API response). On adoption we must

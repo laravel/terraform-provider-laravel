@@ -202,8 +202,24 @@ func (r *ApplicationResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
+	// The create endpoint takes no slug, so a configured one is set by an
+	// update straight after. The application exists by then, so a failure is a
+	// warning: state keeps the configured slug, and the next refresh shows the
+	// generated one and plans the change again.
+	if isSet(plan.Slug) && plan.Slug.ValueString() != app.Attributes.Slug {
+		updated, err := r.client.UpdateApplication(ctx, app.ID, client.UpdateApplicationRequest{Slug: plan.Slug.ValueStringPointer()})
+		if err != nil {
+			resp.Diagnostics.AddAttributeWarning(path.Root("slug"), "Could not set the slug after creating the application",
+				"The application was created, but setting its slug failed: "+err.Error()+". Run 'terraform apply' again to retry.")
+		} else {
+			app = updated
+		}
+	}
+
 	plan.ID = types.StringValue(app.ID)
-	plan.Slug = types.StringValue(app.Attributes.Slug)
+	if !isSet(plan.Slug) {
+		plan.Slug = types.StringValue(app.Attributes.Slug)
+	}
 	plan.SlackChannel = types.StringPointerValue(app.Attributes.SlackChannel)
 	plan.AvatarURL = types.StringPointerValue(app.Attributes.AvatarURL)
 	plan.CreatedAt = types.StringPointerValue(app.Attributes.CreatedAt)
