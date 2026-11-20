@@ -67,7 +67,7 @@ func (r *WebsocketServerResource) Schema(_ context.Context, _ resource.SchemaReq
 			},
 			"type": schema.StringAttribute{
 				Required:    true,
-				Description: "Server type (e.g. reverb).",
+				Description: "Server type (such as reverb).",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -111,7 +111,7 @@ func (r *WebsocketServerResource) Configure(_ context.Context, req resource.Conf
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected resource configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	r.client = c

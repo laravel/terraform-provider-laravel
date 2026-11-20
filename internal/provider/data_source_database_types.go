@@ -52,7 +52,7 @@ func (d *DatabaseTypesDataSource) Schema(_ context.Context, _ datasource.SchemaR
 					Attributes: map[string]schema.Attribute{
 						"type": schema.StringAttribute{
 							Computed:    true,
-							Description: "Type identifier (e.g. laravel_mysql, aws_rds_postgres). A type whose \"versions\" list is empty is a retired identifier that bakes the version into the type, such as laravel_mysql_84.",
+							Description: "Type identifier (such as laravel_mysql, aws_rds_postgres). A type whose \"versions\" list is empty is a retired identifier that bakes the version into the type, such as laravel_mysql_84.",
 						},
 						"label": schema.StringAttribute{
 							Computed:    true,
@@ -66,7 +66,7 @@ func (d *DatabaseTypesDataSource) Schema(_ context.Context, _ datasource.SchemaR
 						"sizes": schema.ListAttribute{
 							Computed:    true,
 							ElementType: types.StringType,
-							Description: "Available sizes for this database type (e.g. mysql-flex-1gb, db.m8g.large). Empty for serverless types.",
+							Description: "Available sizes for this database type (such as mysql-flex-1gb, db.m8g.large). Empty for serverless types.",
 						},
 						"versions": schema.ListAttribute{
 							Computed:    true,
@@ -87,7 +87,7 @@ func (d *DatabaseTypesDataSource) Configure(_ context.Context, req datasource.Co
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Data Source Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected data source configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	d.client = c

@@ -62,7 +62,7 @@ resource "laravel_cloud_environment" "example" {
 - `nightwatch_token_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Nightwatch environment token as a write-only argument (Terraform 1.11 or later): it is sent and never stored in plan or state. Because Terraform cannot see it change, it is sent only on create and when nightwatch_token_wo_version changes; bump the version to rotate it. Removing both disconnects Nightwatch.
 - `nightwatch_token_wo_version` (Number) Version of nightwatch_token_wo. Changing it sends the current nightwatch_token_wo.
 - `node_version` (String) Node.js version.
-- `php_version` (String) PHP version to run, in the API's "major:minor" form (e.g. "8.4:1"). The API reports only the major version (see php_major_version), so an import derives this from it. A version changed outside Terraform is not detected.
+- `php_version` (String) PHP version to run, in the API's "major:minor" form (such as "8.4:1"). The API reports only the major version (see php_major_version), so an import derives this from it. A version changed outside Terraform is not detected.
 - `post_deploy_command` (String) Commands that run after a deployment goes live, one per line, such as "php artisan queue:restart" (max 2000 chars). A failure does not roll the deployment back. Only organizations with post-deploy commands enabled can set it, and not on preview or static environments; where Laravel Cloud does not offer it, the plan warns and the apply fails. Null when not reported.
 - `response_headers_content_type` (String) X-Content-Type-Options response header: nosniff or none.
 - `response_headers_frame` (String) X-Frame-Options response header: deny, sameorigin or all.
@@ -76,7 +76,7 @@ resource "laravel_cloud_environment" "example" {
 - `shutdown_timeout` (Number) Seconds to wait before stopping the previous deployment's instances, so they can finish their requests and jobs (1-600). Applies on the next deployment. Leave unset to keep the platform default.
 - `sleep_timeout` (Number, Deprecated) Minutes without requests before the environment hibernates (1-60). Only instance sizes that can hibernate (Flex) take it: on a Pro size Laravel Cloud turns hibernation off instead, and the apply fails. The API reports whether hibernation is on but not this value, so hibernation turned off outside Terraform shows in the next plan, and a changed value does not. It is the same setting as the app instance's hibernation_timeout (laravel_cloud_instance), so set it in only one place. The API cannot turn hibernation off through the environment; use the instance for that. Deprecated: use hibernation_timeout on a laravel_cloud_instance with type = "app".
 - `slug` (String)
-- `start_command` (String) Command that starts a dynamic application that is not PHP, e.g. "gunicorn myproject.wsgi" (max 255 chars). Required by the API for dynamic JavaScript, Python, Ruby, Go, Rust and Java applications, and rejected for PHP and static ones.
+- `start_command` (String) Command that starts a dynamic application that is not PHP, such as "gunicorn myproject.wsgi" (max 255 chars). Required by the API for dynamic JavaScript, Python, Ruby, Go, Rust and Java applications, and rejected for PHP and static ones.
 - `timeout` (Number) Seconds the environment waits for the application to respond before timing out (5-60). Applies on the next deployment. Leave unset to keep the platform default.
 - `uses_deploy_hook` (Boolean)
 - `uses_octane` (Boolean)
@@ -92,10 +92,10 @@ resource "laravel_cloud_environment" "example" {
 - `created_from_automation` (Boolean) Whether the environment is a preview environment created for a pull request.
 - `deploy_hook_url` (String, Sensitive) URL that deploys the environment when it receives a POST request, such as from CI. Null while uses_deploy_hook is false, or when the API token lacks permission to edit deploy hooks. Anyone with the URL can deploy.
 - `display_name` (String) Name shown in the dashboard: the name, or a preview environment's pull request title.
-- `framework` (String) Framework Laravel Cloud detected in the branch (e.g. laravel, nextjs).
+- `framework` (String) Framework Laravel Cloud detected in the branch (such as laravel, nextjs).
 - `id` (String) The ID of this resource.
-- `language` (String) Language of the environment (e.g. php, javascript).
-- `php_major_version` (String) Major PHP version reported by the API (e.g. "8.4").
+- `language` (String) Language of the environment (such as php, javascript).
+- `php_major_version` (String) Major PHP version reported by the API (such as "8.4").
 - `pull_request` (Attributes) The pull request a preview environment deploys. Null for other environments. (see [below for nested schema](#nestedatt--pull_request))
 - `status` (String) Current environment status.
 - `uses_hibernation` (Boolean) Whether the environment hibernates when idle. Set it with hibernation_timeout on the app instance (laravel_cloud_instance with type = "app"), which also turns it off, or the deprecated sleep_timeout here.

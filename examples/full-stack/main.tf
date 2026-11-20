@@ -1,9 +1,9 @@
 # ===========================================================================
-# Tier 1 -- core resources (13)
+# Tier 1: core resources (9, plus 2 conditional and 2 commented out)
 #
-# Plain CRUD resources that a default `apply` creates. The four
-# side-effecting resources (deployment / command / snapshot / restore) live
-# in side-effecting.tf, gated behind var.enable_side_effecting.
+# Plain CRUD resources that a default `apply` creates. The side-effecting
+# resources (deployment and command, plus the commented-out snapshot and
+# restore) live in side-effecting.tf, gated behind var.enable_side_effecting.
 #
 # Attribute values mirror the plan-check tests in
 # internal/provider/resources_plan_test.go, which is the source of truth for
@@ -44,7 +44,7 @@ resource "laravel_cloud_instance" "web" {
   max_replicas   = 1
 }
 
-# Not available on every deployment -- off by default so a plain `apply`
+# Not available on every deployment, so off by default and a plain `apply`
 # stays green. Enable with -var enable_api_blocked=true. See README.
 resource "laravel_cloud_background_process" "worker" {
   count = var.enable_api_blocked ? 1 : 0
@@ -79,18 +79,18 @@ resource "laravel_cloud_domain" "domain" {
 # it finishes. A plain apply/destroy of this example would therefore block for
 # a long time, or give up and leave a billable database behind.
 #
-# The configuration is kept here as a worked reference -- the config_schema
+# The configuration is kept here as a worked reference. The config_schema
 # traps below are real and were hit in practice. Uncomment this block, the
 # database_cluster_status output at the end of this file, and the snapshot and
 # restore resources in side-effecting.tf to exercise them.
 #
 # The API requires the full config_schema for laravel_mysql_84: size (enum),
 # storage (5-1000 GB), is_public, uses_scheduled_snapshots, retention_days
-# (0-30). Discover them via GET /databases/types.
+# (0-30). GET /databases/types lists them.
 #
 # Every key the API echoes back must be present here, and with the exact value
 # the API stores. `config` is an opaque JSON string, so Read writes the
-# server's version straight into state -- any key omitted (or spelled
+# server's version straight into state. Any key omitted (or spelled
 # differently) shows up as a diff on the next plan. Two traps, both hit in
 # practice:
 #   - size must be a database size from the enum ("mysql-flex-512mb"), NOT an
@@ -120,7 +120,7 @@ resource "laravel_cloud_domain" "domain" {
 
 # --- Cache ----------------------------------------------------------------
 
-# NOTE: type "upstash_redis" is currently un-createable on dev -- the API both
+# Type "upstash_redis" cannot be created on dev, because the API both
 # requires is_public AND rejects it for that type (a backend catch-22). Use
 # laravel_valkey, which accepts is_public=false. See GET /caches/types for
 # types/sizes/regions.

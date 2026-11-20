@@ -74,12 +74,12 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 			"repository": schema.StringAttribute{
 				Required: true,
-				Description: "Source code repository (e.g. laravel/laravel). " +
+				Description: "Source code repository (such as laravel/laravel). " +
 					"Use the owner/name form the platform reports: after an import, a URL or different casing shows as a change, and applying it updates the application's repository.",
 			},
 			"region": schema.StringAttribute{
 				Required:    true,
-				Description: "Cloud region (e.g. us-east-1).",
+				Description: "Cloud region (such as us-east-1).",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -207,14 +207,14 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 			"framework": schema.StringAttribute{
 				Computed:    true,
-				Description: "Framework of the default environment, as Laravel Cloud detected it (e.g. laravel, nextjs).",
+				Description: "Framework of the default environment, as Laravel Cloud detected it (such as laravel, nextjs).",
 				PlanModifiers: []planmodifier.String{
 					followsAttributes{"repository", "default_environment_id"},
 				},
 			},
 			"language": schema.StringAttribute{
 				Computed:    true,
-				Description: "Language of the default environment (e.g. php, javascript).",
+				Description: "Language of the default environment (such as php, javascript).",
 				PlanModifiers: []planmodifier.String{
 					followsAttributes{"repository", "default_environment_id"},
 				},
@@ -257,7 +257,7 @@ func (r *ApplicationResource) Configure(_ context.Context, req resource.Configur
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected resource configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	r.client = c

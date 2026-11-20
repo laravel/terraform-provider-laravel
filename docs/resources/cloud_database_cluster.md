@@ -42,7 +42,7 @@ resource "laravel_cloud_database_cluster" "example" {
 - `config` (String) JSON-encoded configuration specific to the database type (required by the API). For Laravel MySQL, storage_autoscale_max_gb turns on automatic storage upsizing up to that many GiB; the API leaves it off unless it is set. While it is on, storage is a minimum: storage the platform has grown past it is not a change, and is never sent back. To turn upsizing off, set storage_autoscale_max_gb = null; removing the key leaves the cluster's setting as it is.
 - `name` (String) Cluster name (3-40 characters, lowercase alphanumeric).
 - `region` (String) Cloud region.
-- `type` (String) Database type (e.g. laravel_mysql, aws_rds_mysql, aws_rds_postgres, neon_serverless_postgres). These take a separate "version"; the retired identifiers that bake the version into the type, such as laravel_mysql_84, are still accepted but should not be used for new clusters. List the available types with the laravel_cloud_database_types data source.
+- `type` (String) Database type (such as laravel_mysql, aws_rds_mysql, aws_rds_postgres, neon_serverless_postgres). These take a separate "version"; the retired identifiers that bake the version into the type, such as laravel_mysql_84, are still accepted but should not be used for new clusters. List the available types with the laravel_cloud_database_types data source.
 
 ### Optional
 

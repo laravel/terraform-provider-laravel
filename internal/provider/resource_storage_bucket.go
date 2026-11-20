@@ -121,7 +121,7 @@ func (r *StorageBucketResource) Schema(_ context.Context, _ resource.SchemaReque
 				Optional:           true,
 				Description:        "Allowed CORS origins.",
 				ElementType:        types.StringType,
-				DeprecationMessage: "allowed_origins is an alias for cors_settings.allowed_origins -- writing either updates both. It was announced for removal from the Laravel Cloud API on May 17, 2026 but is still served; use cors_settings.allowed_origins instead.",
+				DeprecationMessage: "allowed_origins is an alias for cors_settings.allowed_origins, and writing either updates both. It was announced for removal from the Laravel Cloud API on May 17, 2026 but is still served; use cors_settings.allowed_origins instead.",
 			},
 			"cors_settings": schema.SingleNestedAttribute{
 				Optional:    true,
@@ -178,7 +178,7 @@ func (r *StorageBucketResource) Configure(_ context.Context, req resource.Config
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected resource configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	r.client = c

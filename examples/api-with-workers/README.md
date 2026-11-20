@@ -1,9 +1,8 @@
 # API with queue workers, a scheduler and websockets
 
-A queue-heavy JSON API ("Acme Ledger"). The web tier stays deliberately small
-because it does little more than validate a request and dispatch a job; the
-work happens on a separate queue instance, and clients watch results land over
-Reverb instead of polling.
+A queue-heavy JSON API ("Acme Ledger"). The web tier is small because it only
+validates a request and dispatches a job. The work happens on a separate queue
+instance, and clients get results over Reverb instead of polling.
 
 ## The shape
 
@@ -18,19 +17,19 @@ cache   Valkey 500mb, eviction_policy = noeviction  (it holds jobs)
 reverb  websocket server + application, credentials wired into env vars
 ```
 
-Three details in here are the ones people get wrong:
+Three details are easy to get wrong:
 
 - **The queue instance is `type = "managed_queue"`**, so it scales to zero when
   idle. `min_replicas` does not apply to it, and the API rejects
   `min_replicas`/`max_replicas` for `scaling_type = "auto"` generally.
 - **The queue cache uses `eviction_policy = "noeviction"`.** The default
-  `allkeys-lru` will silently evict queued jobs under memory pressure.
+  `allkeys-lru` evicts queued jobs under memory pressure without any error.
 - **The scheduler is its own instance.** Enable `uses_scheduler` on the web
   tier and every replica fires the same scheduled command.
 
 Reverb credentials (`app_id`, `key`, `secret`, hostname) are read off the
-resources and fed into `laravel_cloud_environment_variables`, so they are never
-pasted in by hand.
+resources and fed into `laravel_cloud_environment_variables`, so nobody
+copies them by hand.
 
 ## What to change before running
 

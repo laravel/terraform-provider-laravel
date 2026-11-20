@@ -8,6 +8,6 @@ terraform {
 }
 
 provider "laravel" {
-  # Token via the LARAVEL_CLOUD_API_TOKEN env var.
+  # Set the token in the LARAVEL_CLOUD_API_TOKEN environment variable.
   # base_url defaults to https://cloud.laravel.com/api
 }

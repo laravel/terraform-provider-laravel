@@ -8,8 +8,8 @@ terraform {
 }
 
 provider "laravel" {
-  # The API token may also be supplied via the LARAVEL_CLOUD_API_TOKEN
-  # environment variable, which is preferred over committing it to config.
+  # You can also set the API token in the LARAVEL_CLOUD_API_TOKEN
+  # environment variable, which is safer than committing it to config.
   # If neither is set, the token saved by `cloud auth` is used.
   # token = "..."
 

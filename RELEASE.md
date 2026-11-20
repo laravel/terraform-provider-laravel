@@ -1,4 +1,4 @@
-# Releasing the Laravel Cloud Terraform Provider
+# Releasing the Laravel Cloud Terraform provider
 
 ## Prerequisites
 
@@ -6,8 +6,8 @@
    the `laravel` namespace
 2. Repository secrets configured (and the release token, see
    [Release token](#release-token)):
-   - `GPG_PRIVATE_KEY` — ASCII-armored GPG private key
-   - `GPG_PASSPHRASE` — only required if the signing key carries a passphrase.
+   - `GPG_PRIVATE_KEY`: the ASCII-armored GPG private key
+   - `GPG_PASSPHRASE`: required only if the signing key has a passphrase.
      The current release key (rsa4096 `B8F24FC7CA47EF85`,
      `terraform-provider@laravel.com`) does not, so this secret is unset and
      `${{ secrets.GPG_PASSPHRASE }}` resolves to the empty string, which
@@ -33,12 +33,12 @@ tracks new GitHub releases on its own.
    releases with valid semver tags are imported; later ones are picked up
    automatically.
 
-The provider's source address is `laravel/laravel` — the namespace is the
-GitHub org and the provider name is the repository suffix. This is what
+The provider's source address is `laravel/laravel`. The namespace is the
+GitHub org, and the provider name is the repository suffix. This is what
 `main.go` serves as `registry.terraform.io/laravel/laravel` and what
 `docs/index.md` tells users to put in `required_providers`.
 
-## Creating a Release
+## Creating a release
 
 Releases are cut by [release-please](https://github.com/googleapis/release-please)
 (`.github/workflows/release-please.yml`). There is no changelog to edit and no
@@ -73,7 +73,7 @@ tag to push.
    `.github/workflows/release.yml`, which:
 
    - Validates the tag is semver and not lower than the latest tag
-   - Builds binaries for all supported platforms via GoReleaser
+   - Builds binaries for all supported platforms with GoReleaser
    - Creates SHA256 checksums and signs them with GPG
    - Attaches `terraform-registry-manifest.json` as `<project>_<version>_manifest.json`
    - Uploads everything into the draft and then publishes it
@@ -109,14 +109,14 @@ propose the same version again.
 Once the GitHub release is published, the Terraform Registry picks up the new
 version automatically (after the provider has been registered once).
 
-### Registry Requirements
+### Registry requirements
 
 - The repository must be public and named `terraform-provider-laravel`
 - `terraform-registry-manifest.json` must be present at the repo root and
   attached to the release
 - Release artifacts must be signed with the GPG key registered on the Registry
 
-## Version Scheme
+## Version scheme
 
 This provider follows [Semantic Versioning](https://semver.org/):
 

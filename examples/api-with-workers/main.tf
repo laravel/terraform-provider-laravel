@@ -1,5 +1,5 @@
 # ===========================================================================
-# Acme Ledger -- a queue-heavy JSON API with a scheduler and a Reverb
+# Acme Ledger: a queue-heavy JSON API with a scheduler and a Reverb
 # websocket tier.
 #
 # The web instance stays small because it does almost nothing but accept
@@ -86,7 +86,7 @@ resource "laravel_cloud_instance" "queue" {
   visibility_timeout = 300
   shutdown_timeout   = 120
 
-  # Follow the app to sleep -- there is nothing to process while it is down.
+  # Sleep when the app sleeps. There is nothing to process while it is down.
   sleep_with_app = true
 }
 
@@ -164,8 +164,10 @@ resource "laravel_cloud_websocket_application" "ledger" {
 resource "laravel_cloud_environment_variables" "production" {
   environment_id = laravel_cloud_environment.production.id
 
-  # This resource owns the environment's entire variable set: anything set in
-  # the dashboard but missing here is removed on apply.
+  # This resource sets the variables listed here and deletes a variable when
+  # it is removed from this map. Variables set in the dashboard and never
+  # listed here are left alone, but a key listed here overwrites the
+  # dashboard's value on every apply.
   variables = {
     APP_ENV   = "production"
     APP_DEBUG = "false"

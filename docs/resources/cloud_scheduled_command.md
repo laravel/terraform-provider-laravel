@@ -26,9 +26,9 @@ resource "laravel_cloud_scheduled_command" "nightly_reports" {
 
 ### Required
 
-- `command` (String) The command to run (max 500 chars), e.g. "php artisan reports:send". Each command can be scheduled only once per instance.
+- `command` (String) The command to run (max 500 chars), such as "php artisan reports:send". Each command can be scheduled only once per instance.
 - `instance_id` (String) Parent instance ID.
-- `schedule` (String) A five-field cron expression, evaluated in UTC (e.g. "0 3 * * *"). The @yearly, @annually, @monthly, @weekly, @daily, @midnight and @hourly descriptors are also accepted.
+- `schedule` (String) A five-field cron expression, evaluated in UTC (such as "0 3 * * *"). The @yearly, @annually, @monthly, @weekly, @daily, @midnight and @hourly descriptors are also accepted.
 
 ### Optional
 

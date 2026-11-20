@@ -27,8 +27,8 @@ resource "laravel_cloud_application" "example" {
 ### Required
 
 - `name` (String) Application name (3-40 characters).
-- `region` (String) Cloud region (e.g. us-east-1).
-- `repository` (String) Source code repository (e.g. laravel/laravel). Use the owner/name form the platform reports: after an import, a URL or different casing shows as a change, and applying it updates the application's repository.
+- `region` (String) Cloud region (such as us-east-1).
+- `repository` (String) Source code repository (such as laravel/laravel). Use the owner/name form the platform reports: after an import, a URL or different casing shows as a change, and applying it updates the application's repository.
 
 ### Optional
 
@@ -47,9 +47,9 @@ resource "laravel_cloud_application" "example" {
 
 - `avatar_url` (String) Application avatar URL.
 - `created_at` (String) Creation timestamp.
-- `framework` (String) Framework of the default environment, as Laravel Cloud detected it (e.g. laravel, nextjs).
+- `framework` (String) Framework of the default environment, as Laravel Cloud detected it (such as laravel, nextjs).
 - `id` (String) Application ID.
-- `language` (String) Language of the default environment (e.g. php, javascript).
+- `language` (String) Language of the default environment (such as php, javascript).
 - `notes` (String) Notes on the application, set in the dashboard. Null when there are none or the API token cannot view them.
 - `repository_default_branch` (String) Default branch of the repository.
 

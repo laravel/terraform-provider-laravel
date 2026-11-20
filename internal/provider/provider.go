@@ -47,14 +47,14 @@ func (p *LaravelCloudProvider) Schema(_ context.Context, _ provider.SchemaReques
 		Description: "Manage Laravel Cloud resources.",
 		Attributes: map[string]schema.Attribute{
 			"token": schema.StringAttribute{
-				Description: "Laravel Cloud API token. Can also be set via the LARAVEL_CLOUD_API_TOKEN environment " +
+				Description: "Laravel Cloud API token. You can also set it with the LARAVEL_CLOUD_API_TOKEN environment " +
 					"variable. If neither is set, the token saved by the Laravel Cloud CLI (`cloud auth`) " +
 					"in ~/.config/cloud is used.",
 				Optional:  true,
 				Sensitive: true,
 			},
 			"base_url": schema.StringAttribute{
-				Description: "Override the Laravel Cloud API base URL. Can also be set via the " +
+				Description: "Override the Laravel Cloud API base URL. You can also set it with the " +
 					"LARAVEL_CLOUD_BASE_URL environment variable. Defaults to " +
 					"https://cloud.laravel.com/api.",
 				Optional: true,
@@ -63,7 +63,7 @@ func (p *LaravelCloudProvider) Schema(_ context.Context, _ provider.SchemaReques
 				Description: fmt.Sprintf("The most API requests the provider sends a minute. Laravel Cloud allows "+
 					"120 a minute per organization, shared by every token and every run, and refuses the rest. "+
 					"The provider spaces its requests to stay under this, so a large apply slows down instead "+
-					"of failing. Can also be set via the LARAVEL_CLOUD_MAX_REQUESTS_PER_MINUTE environment "+
+					"of failing. You can also set it with the LARAVEL_CLOUD_MAX_REQUESTS_PER_MINUTE environment "+
 					"variable. Defaults to %d. Set 0 to turn pacing off. The budget is per provider process: "+
 					"lower it when several Terraform runs use the same organization at once, since their "+
 					"requests together can still exceed Laravel Cloud's limit.", client.DefaultMaxRequestsPerMinute),
@@ -74,7 +74,7 @@ func (p *LaravelCloudProvider) Schema(_ context.Context, _ provider.SchemaReques
 				Description: fmt.Sprintf("The most requests a minute the provider sends to the routes Laravel "+
 					"Cloud limits to 30 a minute per organization: creating applications, environments, "+
 					"instances, database clusters, snapshots, restores, buckets, caches, WebSocket servers and "+
-					"secrets, and updating instances. Can also be set via the "+
+					"secrets, and updating instances. You can also set it with the "+
 					"LARAVEL_CLOUD_MAX_CREATE_REQUESTS_PER_MINUTE environment variable. Defaults to %d. "+
 					"Set 0 to turn this limit off.", client.DefaultMaxCreateRequestsPerMinute),
 				Optional:   true,
@@ -116,10 +116,10 @@ func (p *LaravelCloudProvider) Configure(ctx context.Context, req provider.Confi
 	if config.Token.IsUnknown() {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("token"),
-			"Unknown API Token",
+			"Unknown API token",
 			"The Laravel Cloud API token is not known until apply, because it is derived "+
 				"from a resource that has not been created yet. Apply that resource first, "+
-				"or supply the token via the LARAVEL_CLOUD_API_TOKEN environment variable.",
+				"or set the token with the LARAVEL_CLOUD_API_TOKEN environment variable.",
 		)
 		return
 	}
@@ -146,11 +146,11 @@ func (p *LaravelCloudProvider) Configure(ctx context.Context, req provider.Confi
 		cliTok, cliPath, err := cliToken(baseURL)
 		if err != nil {
 			resp.Diagnostics.AddError(
-				"Unable to Read Laravel Cloud CLI Token",
-				"No API token was set in the provider configuration or via the LARAVEL_CLOUD_API_TOKEN "+
+				"Unable to read the Laravel Cloud CLI token",
+				"No API token was set in the provider configuration or in the LARAVEL_CLOUD_API_TOKEN "+
 					"environment variable, so the provider looked for one saved by the Laravel Cloud CLI "+
 					"and could not use it: "+err.Error()+". Set the token in the provider configuration "+
-					"or via LARAVEL_CLOUD_API_TOKEN.",
+					"or in LARAVEL_CLOUD_API_TOKEN.",
 			)
 			return
 		}
@@ -162,8 +162,8 @@ func (p *LaravelCloudProvider) Configure(ctx context.Context, req provider.Confi
 
 	if token == "" {
 		resp.Diagnostics.AddError(
-			"Missing API Token",
-			"The Laravel Cloud API token must be set in the provider configuration, via the "+
+			"Missing API token",
+			"Set the Laravel Cloud API token in the provider configuration, in the "+
 				"LARAVEL_CLOUD_API_TOKEN environment variable, or by logging in with the Laravel "+
 				"Cloud CLI (`cloud auth`).",
 		)
@@ -179,12 +179,12 @@ func (p *LaravelCloudProvider) Configure(ctx context.Context, req provider.Confi
 	// apply from failing.
 	perMinute, err := rateLimit(config.MaxRequestsPerMinute, "LARAVEL_CLOUD_MAX_REQUESTS_PER_MINUTE", client.DefaultMaxRequestsPerMinute)
 	if err != nil {
-		resp.Diagnostics.AddAttributeError(path.Root("max_requests_per_minute"), "Invalid Rate Limit", err.Error())
+		resp.Diagnostics.AddAttributeError(path.Root("max_requests_per_minute"), "Invalid rate limit", err.Error())
 		return
 	}
 	createPerMinute, err := rateLimit(config.MaxCreateRequestsPerMinute, "LARAVEL_CLOUD_MAX_CREATE_REQUESTS_PER_MINUTE", client.DefaultMaxCreateRequestsPerMinute)
 	if err != nil {
-		resp.Diagnostics.AddAttributeError(path.Root("max_create_requests_per_minute"), "Invalid Rate Limit", err.Error())
+		resp.Diagnostics.AddAttributeError(path.Root("max_create_requests_per_minute"), "Invalid rate limit", err.Error())
 		return
 	}
 	opts = append(opts, client.WithRateLimits(perMinute, createPerMinute))
