@@ -158,6 +158,9 @@ type EnvironmentAttributes struct {
 	HibernationWakeUpInterval *int64              `json:"hibernation_wake_up_interval"`
 	// Resend is null when Resend is not attached.
 	Resend *EnvironmentResend `json:"resend"`
+	// InternalNetworking says whether other environments on the same
+	// dedicated cluster can reach this one over the private network.
+	InternalNetworking *EnvironmentInternalNetworking `json:"internal_networking,omitempty"`
 	// EnvironmentVariables is the environment's variables, keys and plaintext
 	// values both. There is no GET on /environments/{id}/variables -- that
 	// route answers 405 and accepts POST only -- so this is the only way to
