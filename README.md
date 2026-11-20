@@ -73,6 +73,7 @@ token explicitly rather than guess which organization to manage.
 | `laravel_cloud_domain` | Custom domain for an environment |
 | `laravel_cloud_database_cluster` | Database cluster (MySQL, Postgres, Neon) |
 | `laravel_cloud_database` | Database schema within a cluster |
+| `laravel_cloud_database_user` | User in a database cluster, with access to some of its databases |
 | `laravel_cloud_database_snapshot` | Point-in-time database snapshot |
 | `laravel_cloud_database_restore` | Restore a database from a snapshot |
 | `laravel_cloud_cache` | Cache store (Valkey / Redis) |

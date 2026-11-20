@@ -147,6 +147,7 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	// All other resources are served by the generic JSON:API engine.
 	f.registerGenericResources(mux)
 	f.registerSecretRoutes(mux)
+	f.registerDatabaseUserRoutes(mux)
 	f.registerEnvironmentExtraRoutes(mux)
 
 	srv := httptest.NewServer(mux)

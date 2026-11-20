@@ -580,6 +580,60 @@ type CreateDatabaseRequest struct {
 }
 
 // ---------------------------------------------------------------------
+// Database user
+// ---------------------------------------------------------------------
+
+type DatabaseUserData struct {
+	ID         string                 `json:"id"`
+	Type       string                 `json:"type"`
+	Attributes DatabaseUserAttributes `json:"attributes"`
+	// Relationships is reported only for what the request includes:
+	// include=databases is what lists the databases the user may access.
+	Relationships DatabaseUserRelationships `json:"relationships"`
+}
+
+type DatabaseUserAttributes struct {
+	Username string `json:"username"`
+	// Type is read_write, read_only, or superuser for the cluster's own
+	// user, which cannot be changed or deleted.
+	Type      string  `json:"type"`
+	Status    string  `json:"status"`
+	CreatedAt *string `json:"created_at"`
+	// Password is returned by the create response only.
+	Password *string `json:"password"`
+}
+
+type DatabaseUserRelationships struct {
+	Databases struct {
+		Data []ResourceIdentifier `json:"data"`
+	} `json:"databases"`
+}
+
+// DatabaseIDs returns the ids of the databases the user may access.
+func (u DatabaseUserData) DatabaseIDs() []string {
+	ids := make([]string, 0, len(u.Relationships.Databases.Data))
+	for _, d := range u.Relationships.Databases.Data {
+		ids = append(ids, d.ID)
+	}
+	return ids
+}
+
+type CreateDatabaseUserRequest struct {
+	Username string `json:"username"`
+	Type     string `json:"type"`
+	// Databases is required, and an empty list grants access to none, so it
+	// is never omitted.
+	Databases []string `json:"databases"`
+}
+
+// UpdateDatabaseUserRequest replaces both fields: type and databases are each
+// required on every update.
+type UpdateDatabaseUserRequest struct {
+	Type      string   `json:"type"`
+	Databases []string `json:"databases"`
+}
+
+// ---------------------------------------------------------------------
 // Cache
 // ---------------------------------------------------------------------
 

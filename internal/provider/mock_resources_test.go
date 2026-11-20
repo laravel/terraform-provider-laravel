@@ -113,6 +113,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 				delete(attrs, "create_default_database")
 				// A new cluster is "creating", which the API counts as busy.
 				f.busy[clusterID] = clusterCreatingRefusals
+				f.addClusterSuperuser(clusterID)
 				if sent && createDefault == false {
 					return
 				}

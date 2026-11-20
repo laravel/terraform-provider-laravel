@@ -144,6 +144,7 @@ func (p *LaravelCloudProvider) Resources(_ context.Context) []func() resource.Re
 		NewDomainResource,
 		NewDatabaseClusterResource,
 		NewDatabaseResource,
+		NewDatabaseUserResource,
 		NewCacheResource,
 		NewStorageBucketResource,
 		NewStorageBucketKeyResource,
