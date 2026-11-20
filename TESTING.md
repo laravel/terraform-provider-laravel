@@ -46,7 +46,9 @@ create-then-destroy cycle either blocks the run for a long time or leaves a
 billable database behind. Its behaviour is covered by the plan tests below,
 which exercise the same code paths against the in-memory fake in under a
 second. Uncomment it in `internal/provider/resource_database_cluster_test.go`
-to run it against a real API.
+to run it against a real API. `TestAccDatabaseCluster_storageAutoscale` does
+run a Laravel MySQL cluster live, with `create_default_database = false` so it
+destroys cleanly; it takes under a minute in the test organization.
 
 ### Running a Specific Test
 

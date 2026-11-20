@@ -161,8 +161,12 @@ func (r *DatabaseClusterResource) Schema(_ context.Context, _ resource.SchemaReq
 					"destroy fails and names the databases that are in the way.",
 			},
 			"config": schema.StringAttribute{
-				Required:    true,
-				Description: "JSON-encoded configuration specific to the database type (required by the API).",
+				Required: true,
+				Description: "JSON-encoded configuration specific to the database type (required by the API). " +
+					"For Laravel MySQL, storage_autoscale_max_gb turns on automatic storage upsizing up to that many GiB; " +
+					"the API leaves it off unless it is set. While it is on, storage is a minimum: storage the platform " +
+					"has grown past it is not a change, and is never sent back. To turn upsizing off, set " +
+					"storage_autoscale_max_gb = null; removing the key leaves the cluster's setting as it is.",
 				PlanModifiers: []planmodifier.String{
 					keepEquivalentConfig{},
 				},
@@ -306,6 +310,14 @@ func (r *DatabaseClusterResource) Update(ctx context.Context, req resource.Updat
 		if err := json.Unmarshal([]byte(plan.Config.ValueString()), &cfg); err != nil {
 			resp.Diagnostics.AddError("Invalid config JSON", err.Error())
 			return
+		}
+		if _, ok := cfg["storage"]; ok {
+			current, err := r.client.GetDatabaseCluster(ctx, state.ID.ValueString())
+			if err != nil {
+				resp.Diagnostics.AddError("Error reading database cluster", err.Error())
+				return
+			}
+			keepGrownStorage(cfg, current.Attributes.Config)
 		}
 		updateReq.Config = cfg
 	}
@@ -553,11 +565,54 @@ func configEquivalent(planned, recorded types.String) bool {
 	}
 	for k, v := range want {
 		actual, ok := have[k]
-		if !ok || !jsonEqual(v, actual) {
+		if !ok || !configValueSatisfied(k, v, actual, have) {
 			return false
 		}
 	}
 	return true
+}
+
+// configValueSatisfied reports whether a config key's value, as reported back
+// in have, satisfies the configured one.
+//
+// With automatic storage scaling on (storage_autoscale_max_gb is not null),
+// the platform grows storage by itself as the disk fills, and the API refuses
+// to shrink it. The configured storage is then a minimum: a larger value read
+// back is the autoscaler's work, not drift, and planning the configured value
+// back would be a diff no apply can make.
+func configValueSatisfied(key string, want, actual any, have map[string]any) bool {
+	if jsonEqual(want, actual) {
+		return true
+	}
+	if key != "storage" || have["storage_autoscale_max_gb"] == nil {
+		return false
+	}
+	w, wok := want.(float64)
+	a, aok := actual.(float64)
+	return wok && aok && a >= w
+}
+
+// keepGrownStorage drops storage from an update when automatic storage scaling
+// has already grown the cluster past the configured value.
+//
+// The API refuses storage below the current value, and any storage change
+// within six hours of the last one, so sending the configured minimum back
+// would fail every update -- even one that only changes another key. When the
+// update turns autoscaling off (an explicit null), storage is sent as
+// configured, so a value below the current one fails rather than leaving a
+// diff that never converges.
+func keepGrownStorage(cfg, current map[string]any) {
+	want, ok := cfg["storage"].(float64)
+	if !ok {
+		return
+	}
+	ceiling := current["storage_autoscale_max_gb"]
+	if v, set := cfg["storage_autoscale_max_gb"]; set {
+		ceiling = v
+	}
+	if have, ok := current["storage"].(float64); ok && ceiling != nil && want < have {
+		delete(cfg, "storage")
+	}
 }
 
 // objectFullyKnown reports whether an object and every attribute in it are
@@ -640,14 +695,12 @@ func reconcileDatabaseConfig(configured types.String, apiConfig map[string]any) 
 	merged := make(map[string]any, len(want))
 	for k, v := range want {
 		actual, present := apiConfig[k]
-		if !present {
+		if !present || configValueSatisfied(k, v, actual, apiConfig) {
 			merged[k] = v
 			continue
 		}
 		merged[k] = actual
-		if !jsonEqual(v, actual) {
-			drifted = true
-		}
+		drifted = true
 	}
 	if !drifted {
 		return configured

@@ -80,6 +80,10 @@ type crudSpec struct {
 	// API answers with a 422 -- a database cluster that is busy, for example.
 	beforeCreate func(f *fakeCloud, parentID string) string
 
+	// validatePatch, if set, can refuse a PATCH by returning the message the
+	// API answers with a 422, given the stored attributes and the body.
+	validatePatch func(attrs, patch map[string]any) string
+
 	// beforeDelete, if set, can refuse a DELETE by returning the message the
 	// API answers with a 422 -- a bucket that still has keys, for example.
 	beforeDelete func(f *fakeCloud, id string) string
@@ -216,6 +220,12 @@ func (f *fakeCloud) genPatch(s crudSpec) http.HandlerFunc {
 			f.patches = map[string][]map[string]any{}
 		}
 		f.patches[s.typeName] = append(f.patches[s.typeName], patch)
+		if s.validatePatch != nil {
+			if msg := s.validatePatch(attrs, patch); msg != "" {
+				writeError(w, http.StatusUnprocessableEntity, errors.New(msg))
+				return
+			}
+		}
 		if s.patchFn != nil {
 			s.patchFn(attrs, patch)
 		} else {

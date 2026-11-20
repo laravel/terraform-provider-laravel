@@ -39,6 +39,27 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			collectionPattern: "/databases/clusters", itemPattern: "/databases/clusters/{id}",
 			patch: true, del: true,
 			seed: seedCluster,
+			// The API refuses to shrink storage, which matters once
+			// autoscaling has grown it past the configured value.
+			validatePatch: func(attrs, patch map[string]any) string {
+				cfg, _ := attrs["config"].(map[string]any)
+				body, _ := patch["config"].(map[string]any)
+				want, sent := body["storage"].(float64)
+				if have, ok := cfg["storage"].(float64); sent && ok && want < have {
+					return "The storage value must be between the current value and 1000."
+				}
+				return ""
+			},
+			// The API merges the sent config over the cluster's current one.
+			patchFn: func(attrs, patch map[string]any) {
+				cfg, _ := attrs["config"].(map[string]any)
+				merged := cloneMap(cfg)
+				body, _ := patch["config"].(map[string]any)
+				for k, v := range body {
+					merged[k] = v
+				}
+				attrs["config"] = merged
+			},
 			// The platform creates a database inside every new cluster unless
 			// create_default_database is false. It is not managed by
 			// Terraform, and it is what makes a cluster impossible to delete
