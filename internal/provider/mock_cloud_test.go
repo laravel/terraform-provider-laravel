@@ -92,6 +92,41 @@ type fakeCloud struct {
 	// queued holds those queued deployments. See mock_deployments_test.go.
 	queueDeployments int
 	queued           map[string]*fakeQueuedDeployment
+
+	// throttleReads makes that many of the next GETs answer 429 as Laravel
+	// Cloud's rate limiter does, and throttleWrites that many of the next
+	// writes answer the bare 302 to the app root it sends for a throttled
+	// write.
+	throttleReads, throttleWrites int
+}
+
+// throttle wraps the fake's routes with Laravel Cloud's rate-limit responses
+// while throttleReads or throttleWrites last.
+func (f *fakeCloud) throttle(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		read := r.Method == http.MethodGet && f.throttleReads > 0
+		write := r.Method != http.MethodGet && f.throttleWrites > 0
+		if read {
+			f.throttleReads--
+		}
+		if write {
+			f.throttleWrites--
+		}
+		f.mu.Unlock()
+		switch {
+		case read:
+			w.Header().Set("Retry-After", "0")
+			w.Header().Set("X-RateLimit-Limit", "120")
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			writeError(w, http.StatusTooManyRequests, fmt.Errorf("Too Many Attempts."))
+		case write:
+			w.Header().Set("Location", "https://cloud.laravel.com")
+			w.WriteHeader(http.StatusFound)
+		default:
+			next.ServeHTTP(w, r)
+		}
+	})
 }
 
 // newFakeCloud starts an httptest.Server backed by a fresh in-memory store and
@@ -153,7 +188,11 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	f.registerDatabaseUserRoutes(mux)
 	f.registerEnvironmentExtraRoutes(mux)
 
-	srv := httptest.NewServer(mux)
+	// Pacing would only slow the fake down; TestRateLimitedReadsPlan covers
+	// what the provider does when Laravel Cloud's limits are reached.
+	disablePacing(t)
+
+	srv := httptest.NewServer(f.throttle(mux))
 	t.Cleanup(srv.Close)
 	return f, srv.URL
 }
@@ -617,6 +656,13 @@ func (f *fakeCloud) deleteEnvironment(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// disablePacing turns off the provider's client-side rate limits for a test
+// against a fake API.
+func disablePacing(t *testing.T) {
+	t.Setenv("LARAVEL_CLOUD_MAX_REQUESTS_PER_MINUTE", "0")
+	t.Setenv("LARAVEL_CLOUD_MAX_CREATE_REQUESTS_PER_MINUTE", "0")
+}
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
