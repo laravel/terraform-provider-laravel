@@ -44,6 +44,9 @@ type ApplicationData struct {
 	ID         string                `json:"id"`
 	Type       string                `json:"type"`
 	Attributes ApplicationAttributes `json:"attributes"`
+	// Relationships is reported only for what the request includes; see
+	// GetApplication.
+	Relationships ApplicationRelationships `json:"relationships"`
 }
 
 type ApplicationAttributes struct {
@@ -1158,6 +1161,14 @@ func (r Relationship) RelatedID() string {
 // InstanceRelationships are the relationships on an instance resource object.
 type InstanceRelationships struct {
 	Environment Relationship `json:"environment"`
+}
+
+// ApplicationRelationships are the relationships on an application resource
+// object.
+type ApplicationRelationships struct {
+	// DefaultEnvironment is the environment the application was created with,
+	// unless another was made the default since. The API refuses to delete it.
+	DefaultEnvironment Relationship `json:"defaultEnvironment"`
 }
 
 // EnvironmentRelationships are the relationships on an environment resource

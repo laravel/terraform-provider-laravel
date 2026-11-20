@@ -899,9 +899,46 @@ func (r *EnvironmentResource) Delete(ctx context.Context, req resource.DeleteReq
 		}
 	}
 
+	// The API refuses to delete an application's default environment, which
+	// this resource manages when it took over the one created with the
+	// application. Deleting the application deletes it, so it is only dropped
+	// from state here. Any failure to tell falls through to the delete, whose
+	// error then says why.
+	if r.isDefaultEnvironment(ctx, state) {
+		resp.Diagnostics.AddWarning(
+			"Default environment not deleted",
+			fmt.Sprintf("Environment %q is its application's default environment, which Laravel Cloud cannot delete "+
+				"on its own. It was removed from Terraform state and is deleted along with the application. To delete "+
+				"it sooner, make another environment the application's default first.", state.Name.ValueString()),
+		)
+		return
+	}
+
 	if err := r.client.DeleteEnvironment(ctx, envID); err != nil {
 		resp.Diagnostics.AddError("Error deleting environment", err.Error())
 	}
+}
+
+// isDefaultEnvironment reports whether the environment is its application's
+// default environment. An imported environment has no application_id in
+// state, so the application is then looked up from the environment.
+func (r *EnvironmentResource) isDefaultEnvironment(ctx context.Context, state EnvironmentResourceModel) bool {
+	appID := state.ApplicationID.ValueString()
+	if appID == "" {
+		env, err := r.client.GetEnvironment(ctx, state.ID.ValueString())
+		if err != nil {
+			return false
+		}
+		appID = env.Relationships.Application.RelatedID()
+	}
+	if appID == "" {
+		return false
+	}
+	app, err := r.client.GetApplication(ctx, appID)
+	if err != nil {
+		return false
+	}
+	return app.Relationships.DefaultEnvironment.RelatedID() == state.ID.ValueString()
 }
 
 func (r *EnvironmentResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {

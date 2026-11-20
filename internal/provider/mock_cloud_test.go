@@ -159,7 +159,46 @@ func (f *fakeCloud) createApplication(w http.ResponseWriter, r *http.Request) {
 	// starter_kit is create-only and not reported back.
 	f.appCreates = append(f.appCreates, req)
 	f.apps[id] = app
-	writeJSON(w, http.StatusCreated, client.Document[client.ApplicationData]{Data: *app})
+
+	// Like the real API, the application comes with a default environment on
+	// the repository's default branch, which the API refuses to delete.
+	branch := fakeDefaultBranch(req.Repository)
+	env := f.newEnvironment(id, defaultEnvironmentName(branch), branch)
+	app.Relationships.DefaultEnvironment = client.Relationship{
+		Data: &client.ResourceIdentifier{Type: "environments", ID: env.ID},
+	}
+	writeJSON(w, http.StatusCreated, client.Document[client.ApplicationData]{Data: f.applicationView(r, app)})
+}
+
+// fakeDefaultBranch is the default branch of a repository. laravel/laravel's
+// is really 13.x; the fake gives every other repository main.
+func fakeDefaultBranch(repository string) string {
+	if repository == "laravel/laravel" {
+		return "13.x"
+	}
+	return "main"
+}
+
+// defaultEnvironmentName names an application's default environment the way
+// Laravel Cloud does: "production" for a production-like branch, otherwise
+// the branch with characters outside [A-Za-z0-9 _-] made spaces, so 13.x
+// gives "13 x".
+func defaultEnvironmentName(branch string) string {
+	switch strings.ToLower(branch) {
+	case "production", "prod", "main", "master", "live":
+		return "production"
+	}
+	return strings.TrimSpace(regexp.MustCompile(`[^A-Za-z0-9 _-]`).ReplaceAllString(branch, " "))
+}
+
+// applicationView renders an application as the API does: relationships only
+// when the request includes them.
+func (f *fakeCloud) applicationView(r *http.Request, app *client.ApplicationData) client.ApplicationData {
+	out := *app
+	if !strings.Contains(r.URL.Query().Get("include"), "defaultEnvironment") {
+		out.Relationships = client.ApplicationRelationships{}
+	}
+	return out
 }
 
 func (f *fakeCloud) getApplication(w http.ResponseWriter, r *http.Request) {
@@ -171,7 +210,7 @@ func (f *fakeCloud) getApplication(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("application not found"))
 		return
 	}
-	writeJSON(w, http.StatusOK, client.Document[client.ApplicationData]{Data: *app})
+	writeJSON(w, http.StatusOK, client.Document[client.ApplicationData]{Data: f.applicationView(r, app)})
 }
 
 func (f *fakeCloud) updateApplication(w http.ResponseWriter, r *http.Request) {
@@ -202,14 +241,25 @@ func (f *fakeCloud) updateApplication(w http.ResponseWriter, r *http.Request) {
 	if req.Repository != nil {
 		app.Attributes.Repository = &client.ApplicationRepository{FullName: *req.Repository}
 	}
-	writeJSON(w, http.StatusOK, client.Document[client.ApplicationData]{Data: *app})
+	if req.DefaultEnvironmentID != nil {
+		app.Relationships.DefaultEnvironment = client.Relationship{
+			Data: &client.ResourceIdentifier{Type: "environments", ID: *req.DefaultEnvironmentID},
+		}
+	}
+	writeJSON(w, http.StatusOK, client.Document[client.ApplicationData]{Data: f.applicationView(r, app)})
 }
 
 func (f *fakeCloud) deleteApplication(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	delete(f.apps, r.PathValue("id"))
+	// Deleting an application deletes its environments with it.
+	id := r.PathValue("id")
+	for _, envID := range f.appEnvs[id] {
+		delete(f.envs, envID)
+	}
+	delete(f.appEnvs, id)
+	delete(f.apps, id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -257,19 +307,24 @@ func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	appID := r.PathValue("id")
+	env := f.newEnvironment(r.PathValue("id"), req.Name, req.Branch)
+	writeJSON(w, http.StatusCreated, environmentDoc(env))
+}
+
+// newEnvironment stores a freshly created environment. The caller holds f.mu.
+func (f *fakeCloud) newEnvironment(appID, name, branch string) *client.EnvironmentData {
 	f.seq++
 	id := fmt.Sprintf("env-%d", f.seq)
 	// Like the real API, every new environment gets a generated vanity
 	// hostname in the organization's zone.
-	vanity := fmt.Sprintf("%s-%s-%d.%s", appID, slugify(req.Name), f.seq, fakeVanityZone)
+	vanity := fmt.Sprintf("%s-%s-%d.%s", appID, slugify(name), f.seq, fakeVanityZone)
 	// Defaults model a freshly-created environment before any settings PATCH.
 	env := &client.EnvironmentData{
 		ID:   id,
 		Type: "environments",
 		Attributes: client.EnvironmentAttributes{
-			Name:            req.Name,
-			Slug:            slugify(req.Name),
+			Name:            name,
+			Slug:            slugify(name),
 			Status:          "active",
 			PHPMajorVersion: "8.4",
 			NodeVersion:     "20",
@@ -290,11 +345,11 @@ func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		},
 		// The API models branch as a relationship, so the name is only
 		// reachable through the document's included section.
-		BranchName: req.Branch,
+		BranchName: branch,
 	}
 	f.envs[id] = env
 	f.appEnvs[appID] = append(f.appEnvs[appID], id)
-	writeJSON(w, http.StatusCreated, environmentDoc(env))
+	return env
 }
 
 // fakeVanityZone is the zone vanity hostnames live in. An organization's zone
@@ -441,7 +496,15 @@ func (f *fakeCloud) deleteEnvironment(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	delete(f.envs, r.PathValue("id"))
+	id := r.PathValue("id")
+	for _, app := range f.apps {
+		if app.Relationships.DefaultEnvironment.RelatedID() == id {
+			writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("You cannot delete the production environment. "+
+				"To delete it, first set another environment as the production environment."))
+			return
+		}
+	}
+	delete(f.envs, id)
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -43,6 +43,18 @@ func testAccRepository() string {
 	return defaultTestRepository
 }
 
+// testAccFixture returns the value of an environment variable naming a fixture
+// that only some test organizations have, such as a repository with a
+// particular layout. The test is skipped when it is not set.
+func testAccFixture(t *testing.T, name string) string {
+	t.Helper()
+	v := os.Getenv(name)
+	if v == "" {
+		t.Skipf("%s is not set", name)
+	}
+	return v
+}
+
 // testAccBranch returns the branch acceptance tests should deploy.
 func testAccBranch() string {
 	if v := os.Getenv("LARAVEL_CLOUD_TEST_BRANCH"); v != "" {

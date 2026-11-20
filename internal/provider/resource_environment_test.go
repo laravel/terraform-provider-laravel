@@ -1,11 +1,13 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
 func TestAccEnvironmentResource_basic(t *testing.T) {
@@ -15,7 +17,11 @@ func TestAccEnvironmentResource_basic(t *testing.T) {
 		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
-			// Create and Read — adopts the auto-created "production" environment
+			// Create and Read. laravel/laravel's default branch, 13.x, is not
+			// production-like, so the application's default environment is
+			// named "13 x" and this "production" environment is a new one.
+			// TestAccEnvironmentResource_adoptDefault covers taking over the
+			// default environment.
 			{
 				Config: testAccEnvironmentConfig(appName),
 				Check: resource.ComposeAggregateTestCheckFunc(
@@ -38,6 +44,61 @@ func TestAccEnvironmentResource_basic(t *testing.T) {
 			},
 		},
 	})
+}
+
+// TestAccEnvironmentResource_adoptDefault takes over the environment Laravel
+// Cloud creates with the application and then destroys it. The API
+// refuses to delete an application's default environment, so destroy must
+// leave it to the application's own deletion.
+func TestAccEnvironmentResource_adoptDefault(t *testing.T) {
+	appName := testAccName()
+	// Laravel Cloud names an application's default environment "production"
+	// when the repository's default branch is production-like (main, master,
+	// prod, live or production), so a "production" environment takes it over.
+	repository := testAccFixture(t, "LARAVEL_CLOUD_TEST_MAIN_BRANCH_REPOSITORY")
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fmt.Sprintf(`
+resource "laravel_cloud_application" "test" {
+  name       = %[1]q
+  repository = %[2]q
+  region     = "us-east-2"
+}
+
+resource "laravel_cloud_environment" "test" {
+  application_id = laravel_cloud_application.test.id
+  name           = "production"
+  branch         = "main"
+}
+`, appName, repository),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("laravel_cloud_environment.test", "name", "production"),
+					testAccCheckDefaultEnvironment("laravel_cloud_application.test", "laravel_cloud_environment.test"),
+				),
+			},
+		},
+	})
+}
+
+// testAccCheckDefaultEnvironment checks that the environment is the
+// application's default one, so the test really covers taking it over.
+func testAccCheckDefaultEnvironment(appResource, envResource string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		appID := s.RootModule().Resources[appResource].Primary.ID
+		envID := s.RootModule().Resources[envResource].Primary.ID
+		app, err := testAccClient().GetApplication(context.Background(), appID)
+		if err != nil {
+			return err
+		}
+		if got := app.Relationships.DefaultEnvironment.RelatedID(); got != envID {
+			return fmt.Errorf("application %s has default environment %q, want the managed environment %q", appID, got, envID)
+		}
+		return nil
+	}
 }
 
 func TestAccEnvironmentResource_update(t *testing.T) {
