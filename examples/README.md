@@ -9,7 +9,7 @@ deployment shape.
 |---|---|
 | [`basic-app/`](basic-app) | The smallest useful config: one application, one production environment. |
 | [`saas-multi-env/`](saas-multi-env) | A SaaS with production and staging off one app: a shared database cluster, separate databases, and a cache and custom domain on production only. |
-| [`api-with-workers/`](api-with-workers) | A queue-heavy API with a managed queue instance, worker and custom background processes, a dedicated scheduler, and a Reverb websocket tier. |
+| [`api-with-workers/`](api-with-workers) | A queue-heavy API with two managed queues, a custom background process, a dedicated scheduler, and a Reverb websocket tier. |
 | [`full-stack/`](full-stack) | Every resource the provider exposes, tiered so a default run stays cheap. Built for exercising the provider, not for copying. |
 
 All of them create real, billable infrastructure on apply. `terraform plan` is
