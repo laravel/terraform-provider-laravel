@@ -105,21 +105,45 @@ func (l *limiter) reserve(now time.Time) time.Time {
 	return at
 }
 
-// pause holds every request back until t.
+// pause holds every request back until t. The requests waiting for it then
+// resume one interval apart, without the burst a quiet spell would allow:
+// they were throttled, so the budget is not quiet.
 func (l *limiter) pause(t time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if t.After(l.pausedUntil) {
 		l.pausedUntil = t
+		if spaced := t.Add(time.Duration(l.burst-1) * l.interval); l.tat.Before(spaced) {
+			l.tat = spaced
+		}
 	}
 }
 
-// wait blocks until a request may be sent, or ctx is done.
+// paused reports whether a pause holds requests back at now.
+func (l *limiter) paused(now time.Time) bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return now.Before(l.pausedUntil)
+}
+
+// wait blocks until a request may be sent, or ctx is done. A pause that
+// starts while it sleeps holds it back too: it then takes a new slot after
+// the pause instead of going at the time it reserved.
 func (l *limiter) wait(ctx context.Context) error {
 	if l == nil {
 		return nil
 	}
-	return sleepCtx(ctx, time.Until(l.reserve(time.Now())))
+	for {
+		if err := sleepCtx(ctx, time.Until(l.reserve(time.Now()))); err != nil {
+			return err
+		}
+		if !l.paused(time.Now()) {
+			return nil
+		}
+	}
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {

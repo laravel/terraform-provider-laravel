@@ -102,6 +102,66 @@ func TestLimiterSpacing(t *testing.T) {
 	}
 }
 
+// TestLimiterResumesSpacedAfterPause: the requests a pause held back go one
+// interval apart when it ends, not as a burst.
+func TestLimiterResumesSpacedAfterPause(t *testing.T) {
+	l := newLimiter(60) // one a second, burst 6
+	now := time.Unix(1_800_000_000, 0)
+	l.pause(now.Add(10 * time.Second))
+	for i := 0; i < 3; i++ {
+		want := 10*time.Second + time.Duration(i)*time.Second
+		if at := l.reserve(now); at.Sub(now) != want {
+			t.Fatalf("request %d after the pause at +%v, want +%v", i+1, at.Sub(now), want)
+		}
+	}
+}
+
+// TestWaitHonorsPauseStartedWhileWaiting: a request already sleeping until
+// its slot when a 429 pauses the budget is held back until the pause ends.
+func TestWaitHonorsPauseStartedWhileWaiting(t *testing.T) {
+	l := &limiter{interval: 200 * time.Millisecond, burst: 1}
+	l.reserve(time.Now()) // the next slot is 200ms away
+
+	released := make(chan time.Time, 1)
+	go func() {
+		if err := l.wait(context.Background()); err != nil {
+			t.Errorf("wait: %v", err)
+		}
+		released <- time.Now()
+	}()
+	time.Sleep(50 * time.Millisecond)
+	until := time.Now().Add(500 * time.Millisecond)
+	l.pause(until)
+
+	if at := <-released; at.Before(until) {
+		t.Errorf("a waiting request went %v before the pause ended", until.Sub(at))
+	}
+}
+
+// TestPauseReachesRequestsWaitingOnTheCreateLimit: a create request already
+// past the overall limiter, waiting on the creation limit, still waits out a
+// pause that starts meanwhile.
+func TestPauseReachesRequestsWaitingOnTheCreateLimit(t *testing.T) {
+	c := NewClient("tok-pause-create", WithRateLimits(6000, 0))
+	c.limitCreate = &limiter{interval: 200 * time.Millisecond, burst: 1}
+	c.limitCreate.reserve(time.Now()) // the next create slot is 200ms away
+
+	released := make(chan time.Time, 1)
+	go func() {
+		if err := c.waitToSend(context.Background(), true, false); err != nil {
+			t.Errorf("waitToSend: %v", err)
+		}
+		released <- time.Now()
+	}()
+	time.Sleep(50 * time.Millisecond)
+	until := time.Now().Add(500 * time.Millisecond)
+	c.limitAll.pause(until)
+
+	if at := <-released; at.Before(until) {
+		t.Errorf("a create request went %v before the pause ended", until.Sub(at))
+	}
+}
+
 // TestLimiterSharedPerOrganization: clients with the same token and URL share
 // one budget; another token gets its own.
 func TestLimiterSharedPerOrganization(t *testing.T) {

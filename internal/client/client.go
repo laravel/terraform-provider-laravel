@@ -84,6 +84,29 @@ func WithHTTPClient(h *http.Client) ClientOption {
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
 	create, command := rateClass(method, path)
 	for retries := 0; ; retries++ {
+		if err := c.waitToSend(ctx, create, command); err != nil {
+			return err
+		}
+
+		status, header, err := c.send(ctx, method, path, body, out)
+		if err == nil || !shouldRetry(method, status, retries) {
+			return err
+		}
+		delay := retryDelay(status, header, retries+1, time.Now())
+		if status == http.StatusTooManyRequests && c.limitAll != nil {
+			c.limitAll.pause(time.Now().Add(delay))
+		}
+		if err := sleepCtx(ctx, delay); err != nil {
+			return err
+		}
+	}
+}
+
+// waitToSend waits on every limiter a request counts against. If a 429
+// pauses the organization's budget while the request waits on the creation
+// or command limit, it waits on the overall budget again before sending.
+func (c *Client) waitToSend(ctx context.Context, create, command bool) error {
+	for {
 		if err := c.limitAll.wait(ctx); err != nil {
 			return err
 		}
@@ -97,17 +120,8 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 				return err
 			}
 		}
-
-		status, header, err := c.send(ctx, method, path, body, out)
-		if err == nil || !shouldRetry(method, status, retries) {
-			return err
-		}
-		delay := retryDelay(status, header, retries+1, time.Now())
-		if status == http.StatusTooManyRequests && c.limitAll != nil {
-			c.limitAll.pause(time.Now().Add(delay))
-		}
-		if err := sleepCtx(ctx, delay); err != nil {
-			return err
+		if !c.limitAll.paused(time.Now()) {
+			return nil
 		}
 	}
 }
