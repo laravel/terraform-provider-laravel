@@ -2,9 +2,11 @@ package provider
 
 import (
 	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
@@ -148,6 +150,57 @@ resource "laravel_cloud_environment" "production" {
 					}
 					return nil
 				},
+			},
+		},
+	})
+}
+
+// TestEnvironmentDefaultServingModeChangePlan: changing serving_mode replaces
+// an environment, which Laravel Cloud cannot do for an application's default
+// environment. The plan must fail before anything changes, instead of the
+// apply removing the environment from state and then failing. Any other
+// environment is still replaced.
+func TestEnvironmentDefaultServingModeChangePlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+
+	config := func(production, staging string) string {
+		return providerCfg(baseURL) + fmt.Sprintf(`
+resource "laravel_cloud_application" "app" {
+  name       = "default-env-app"
+  repository = "example/app"
+  region     = "us-east-2"
+}
+
+resource "laravel_cloud_environment" "production" {
+  application_id = laravel_cloud_application.app.id
+  name           = "production"
+  branch         = "main"
+  serving_mode   = %q
+}
+
+resource "laravel_cloud_environment" "staging" {
+  application_id = laravel_cloud_application.app.id
+  name           = "staging"
+  branch         = "main"
+  serving_mode   = %q
+}
+`, production, staging)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config("process", "process")},
+			{
+				Config:      config("static", "process"),
+				ExpectError: regexp.MustCompile(`serving_mode cannot be changed on the default environment`),
+			},
+			{
+				Config: config("process", "static"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction("laravel_cloud_environment.staging", plancheck.ResourceActionDestroyBeforeCreate),
+					plancheck.ExpectResourceAction("laravel_cloud_environment.production", plancheck.ResourceActionNoop),
+				}},
 			},
 		},
 	})

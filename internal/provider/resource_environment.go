@@ -1347,6 +1347,7 @@ func (r *EnvironmentResource) ModifyPlan(ctx context.Context, req resource.Modif
 			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("deploy_hook_url"), stateHookURL)...)
 		}
 		modifyRunningPlan(ctx, req, resp)
+		r.refuseDefaultEnvironmentReplacement(ctx, req, resp)
 	}
 
 	var dbID, schemaID types.String
@@ -1367,6 +1368,31 @@ func (r *EnvironmentResource) ModifyPlan(ctx context.Context, req resource.Modif
 			"most likely because database_schema_id is listed in lifecycle.ignore_changes. "+
 			"Remove it from ignore_changes (or list database_id there instead).",
 	)
+}
+
+// refuseDefaultEnvironmentReplacement fails the plan when a serving_mode
+// change would replace an application's default environment. Laravel Cloud
+// cannot delete that environment, so the replacement's delete would only drop
+// it from state, and the create would then find it again, still served the old
+// way, and fail: the apply would end with the environment no longer in state.
+// The API is asked only when serving_mode changes.
+func (r *EnvironmentResource) refuseDefaultEnvironmentReplacement(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	var planServing, stateServing types.String
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("serving_mode"), &planServing)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("serving_mode"), &stateServing)...)
+	if resp.Diagnostics.HasError() || !isSet(planServing) || !isSet(stateServing) || planServing.Equal(stateServing) || r.client == nil {
+		return
+	}
+	var state EnvironmentResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() || !r.isDefaultEnvironment(ctx, state) {
+		return
+	}
+	resp.Diagnostics.AddAttributeError(path.Root("serving_mode"), "serving_mode cannot be changed on the default environment",
+		fmt.Sprintf("Changing serving_mode replaces the environment, but %q is its application's default environment, "+
+			"which Laravel Cloud cannot delete, so the replacement would fail after removing it from Terraform state. "+
+			"Keep serving_mode = %q, or make another environment the application's default first.",
+			state.Name.ValueString(), stateServing.ValueString()))
 }
 
 // databaseID returns the attached database from database_id, falling back to
