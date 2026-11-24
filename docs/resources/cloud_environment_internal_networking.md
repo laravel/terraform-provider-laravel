@@ -10,7 +10,7 @@ description: |-
 
 Turns on internal networking for an environment, so other environments on the same dedicated cluster can reach it over the private network at its internal hostname. Private Cloud only: the organization needs the internal networking entitlement and the environment must run on a dedicated cluster. Destroying this resource turns internal networking off.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

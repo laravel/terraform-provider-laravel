@@ -10,7 +10,7 @@ description: |-
 
 Lists the WebSocket server types, with the regions and max connection tiers each supports. Use a tier's value as max_connections on laravel_cloud_websocket_server.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

@@ -10,7 +10,7 @@ description: |-
 
 Lists available Laravel Cloud regions.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

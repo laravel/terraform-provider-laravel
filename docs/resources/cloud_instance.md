@@ -10,7 +10,7 @@ description: |-
 
 Manages a Laravel Cloud instance (compute workload).
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

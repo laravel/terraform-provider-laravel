@@ -10,7 +10,7 @@ description: |-
 
 Manages environment variables for a Laravel Cloud environment. Keys in this map are written on every apply, and a key removed from the map is deleted from the environment. Variables set outside Terraform are left alone: they are neither read into state nor removed. Detecting changes made outside Terraform needs a token with the "View environment variables" permission; without it, Terraform keeps the values from its state and warns on each refresh.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

@@ -10,7 +10,7 @@ description: |-
 
 Lists the organization's Resend sending domains, with the DNS records each needs. The organization must have the Resend integration.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

@@ -10,7 +10,7 @@ description: |-
 
 Connects Resend email sending to an environment, with a new sending key or one reused from another environment. The organization must have Resend connected, and from_address must be on a domain verified in Resend. Destroying this detaches Resend from the environment and deletes its sending key unless another environment still uses it.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

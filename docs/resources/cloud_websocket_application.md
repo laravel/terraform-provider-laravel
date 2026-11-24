@@ -10,7 +10,7 @@ description: |-
 
 Manages a Laravel Cloud WebSocket application.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

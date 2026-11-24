@@ -10,7 +10,7 @@ description: |-
 
 Manages a database (schema) within a Laravel Cloud database cluster.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

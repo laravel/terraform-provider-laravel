@@ -10,7 +10,7 @@ description: |-
 
 Lists Laravel Cloud egress IP addresses for firewall allowlisting.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

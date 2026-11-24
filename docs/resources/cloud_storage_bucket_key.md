@@ -10,7 +10,7 @@ description: |-
 
 Manages an access key for a Laravel Cloud storage bucket.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

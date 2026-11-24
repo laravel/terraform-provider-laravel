@@ -10,7 +10,7 @@ description: |-
 
 Initiates a deployment on a Laravel Cloud environment. While the environment's resources (such as a cache or database) are still provisioning, Laravel Cloud queues the deployment instead of starting it; Terraform waits for it to start, for up to the 30 minutes Laravel Cloud keeps it queued, and records the deployment it started.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

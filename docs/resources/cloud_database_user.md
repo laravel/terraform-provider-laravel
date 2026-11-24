@@ -10,7 +10,7 @@ description: |-
 
 Manages a user in a Laravel Cloud database cluster, with read and write or read-only access to some of its databases. Laravel MySQL and AWS RDS clusters support database users; Serverless Postgres does not.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

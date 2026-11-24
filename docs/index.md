@@ -9,7 +9,7 @@ description: |-
 
 Manage Laravel Cloud resources.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

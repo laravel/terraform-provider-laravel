@@ -10,7 +10,7 @@ description: |-
 
 Lists dedicated clusters available to your organization, optionally filtered by region, type and status.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

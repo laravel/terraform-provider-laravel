@@ -10,7 +10,7 @@ description: |-
 
 Lists available database types, their supported regions, and available sizes.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

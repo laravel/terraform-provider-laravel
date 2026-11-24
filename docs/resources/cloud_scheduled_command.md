@@ -10,7 +10,7 @@ description: |-
 
 Manages a command that runs on a schedule on a Laravel Cloud instance.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

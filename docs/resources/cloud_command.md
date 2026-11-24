@@ -10,7 +10,7 @@ description: |-
 
 Runs a command on a Laravel Cloud environment.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

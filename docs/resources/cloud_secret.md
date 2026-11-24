@@ -10,7 +10,7 @@ description: |-
 
 Manages an organization secret. The value is encrypted to the organization's public key before it leaves Terraform, and the API never returns it. Attach a secret to an environment with laravel_cloud_environment_secret.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

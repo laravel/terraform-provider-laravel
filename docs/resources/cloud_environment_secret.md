@@ -10,7 +10,7 @@ description: |-
 
 Attaches an organization secret (laravel_cloud_secret) to an environment. Destroying this detaches the secret; the secret itself is kept.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 

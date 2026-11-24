@@ -10,7 +10,7 @@ description: |-
 
 Lists available cache types and their sizes.
 
-~> This provider is in beta and may change between releases.
+~> **Beta:** This provider is in beta and may change between releases.
 
 ## Example Usage
 
