@@ -873,13 +873,19 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	// Still unknown when no follow-up update was needed or it failed.
 	setUnknownStringPtrFromAPI(&plan.DeployHookURL, env.Attributes.DeployHookURL)
 
-	// The environment exists, so failing to start or stop it is a warning,
-	// and state records whether it really is running for the next plan.
+	// The environment exists, so failing to start or stop it is a warning: an
+	// error would taint it and the next apply would replace it. The usual case
+	// is running = false on an environment that has never been deployed, which
+	// Laravel Cloud cannot stop yet. As with the settings above, the configured
+	// value stays in state, which Terraform requires: the next refresh records
+	// whether the environment really is running, so the next plan offers the
+	// change again, and Update retries it or fails with the API's reason.
 	var runningDiags diag.Diagnostics
 	if !applyRunning(ctx, r.client, env.ID, &plan, environmentRunning(plan.Status.ValueString()), &runningDiags) {
-		resp.Diagnostics.AddWarning("Could not start or stop the environment after creating it",
-			runningDiags.Errors()[0].Detail()+" Run 'terraform apply' again to retry.")
-		plan.Running = types.BoolValue(environmentRunning(plan.Status.ValueString()))
+		resp.Diagnostics.AddAttributeWarning(path.Root("running"), "Could not start or stop the environment after creating it",
+			runningDiags.Errors()[0].Detail()+" The configured value is kept in state, so the next plan shows the "+
+				"change again and 'terraform apply' retries it. An environment that has never been deployed cannot "+
+				"be stopped: deploy it first.")
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
