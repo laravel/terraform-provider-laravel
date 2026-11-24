@@ -281,11 +281,7 @@ func (r *CacheResource) Create(ctx context.Context, req resource.CreateRequest, 
 	// environment, which is usually the next thing in the same apply. An
 	// ElastiCache cache provisions an AWS replication group, which takes
 	// over ten minutes.
-	attempts := cacheBusyAttempts
-	if elasticache {
-		attempts = elastiCacheCreateAttempts
-	}
-	cache, err = waitForCacheAvailable(ctx, r.client, cache.ID, attempts)
+	cache, err = waitForCacheAvailable(ctx, r.client, cache.ID, cacheBusyAttemptsFor(plan.Type.ValueString()))
 	if err != nil {
 		resp.Diagnostics.AddError("Error waiting for cache to become available", err.Error())
 		return
@@ -399,9 +395,11 @@ func (r *CacheResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 	// already in progress for this cache, please wait a few seconds"). Without
 	// a retry this fails the destroy and leaves a billable cache behind --
 	// observed against a live API, where the create/destroy cycle of an
-	// acceptance test is fast enough to hit it every time.
+	// acceptance test is fast enough to hit it every time. An ElastiCache
+	// cache stays busy for as long as it provisions, so it gets the same
+	// budget as Create.
 	id := state.ID.ValueString()
-	err := client.RetryOnConflict(ctx, 30, 10*time.Second, func() error {
+	err := client.RetryOnConflict(ctx, cacheBusyAttemptsFor(state.Type.ValueString()), cacheBusyInterval, func() error {
 		return r.client.DeleteCache(ctx, id)
 	}, func(err error) bool {
 		return strings.Contains(err.Error(), "operation is already in progress")
@@ -547,6 +545,16 @@ const cacheBusyAttempts = 30
 const elastiCacheCreateAttempts = 180
 
 var cacheBusyInterval = 10 * time.Second
+
+// cacheBusyAttemptsFor is how many times to wait cacheBusyInterval for a
+// cache of cacheType that is still provisioning: 5 minutes, or 30 for an
+// ElastiCache cache, whose AWS replication group takes over ten minutes.
+func cacheBusyAttemptsFor(cacheType string) int {
+	if isElastiCacheType(cacheType) {
+		return elastiCacheCreateAttempts
+	}
+	return cacheBusyAttempts
+}
 
 var errCacheBusy = errors.New("cache is still provisioning")
 

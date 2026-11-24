@@ -141,3 +141,19 @@ resource "laravel_cloud_cache" "test" {
 }
 `, name, hibernation)
 }
+
+// TestCacheBusyAttemptsFor: an ElastiCache cache gets the long provisioning
+// budget for both Create and Delete, so a destroy soon after a create does
+// not give up while the cache is still provisioning.
+func TestCacheBusyAttemptsFor(t *testing.T) {
+	cases := map[string]int{
+		"laravel_valkey":         cacheBusyAttempts,
+		"aws_elasticache_valkey": elastiCacheCreateAttempts,
+		"aws_elasticache_redis":  elastiCacheCreateAttempts,
+	}
+	for cacheType, want := range cases {
+		if got := cacheBusyAttemptsFor(cacheType); got != want {
+			t.Errorf("cacheBusyAttemptsFor(%q) = %d, want %d", cacheType, got, want)
+		}
+	}
+}
