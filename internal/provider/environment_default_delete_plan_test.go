@@ -87,3 +87,68 @@ resource "laravel_cloud_environment" "staging" {
 		},
 	})
 }
+
+// TestEnvironmentDefaultDeleteKeepsAttachmentsPlan: removing only the default
+// environment from the configuration leaves it serving with its cache still
+// attached. The delete used to detach the cache before finding that the
+// environment could not be deleted, leaving a live environment without it.
+func TestEnvironmentDefaultDeleteKeepsAttachmentsPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+
+	base := providerCfg(baseURL) + `
+resource "laravel_cloud_application" "app" {
+  name       = "default-env-app"
+  repository = "example/app"
+  region     = "us-east-2"
+}
+
+resource "laravel_cloud_cache" "cache" {
+  name                 = "sessions"
+  type                 = "laravel_valkey"
+  region               = "us-east-2"
+  size                 = "250mb"
+  auto_upgrade_enabled = false
+  is_public            = false
+}
+`
+	env := `
+resource "laravel_cloud_environment" "production" {
+  application_id = laravel_cloud_application.app.id
+  name           = "production"
+  branch         = "main"
+  cache_id       = laravel_cloud_cache.cache.id
+}
+`
+	var defaultID, cacheID string
+	attachedCache := func() string {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.attachments[defaultID]["cache"]
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: base + env,
+				Check: func(s *terraform.State) error {
+					defaultID = s.RootModule().Resources["laravel_cloud_environment.production"].Primary.ID
+					cacheID = s.RootModule().Resources["laravel_cloud_cache.cache"].Primary.ID
+					if got := attachedCache(); got != cacheID {
+						return fmt.Errorf("cache attached to the default environment is %q, want %q", got, cacheID)
+					}
+					return nil
+				},
+			},
+			{
+				Config: base,
+				Check: func(*terraform.State) error {
+					if got := attachedCache(); got != cacheID {
+						return fmt.Errorf("removing the default environment from the configuration detached its cache: attached is %q, want %q", got, cacheID)
+					}
+					return nil
+				},
+			},
+		},
+	})
+}

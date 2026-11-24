@@ -1093,6 +1093,25 @@ func (r *EnvironmentResource) Delete(ctx context.Context, req resource.DeleteReq
 
 	envID := state.ID.ValueString()
 
+	// The API refuses to delete an application's default environment, which
+	// this resource manages when it took over the one created with the
+	// application. Deleting the application deletes it, so it is only dropped
+	// from state here, before anything below changes it: it keeps serving, with
+	// its database, cache and WebSocket application still attached. A
+	// database or cache destroyed in the same apply needs no detach first,
+	// since the API detaches it from its environments when deleting it. Any
+	// failure to tell falls through to the delete, whose error then says why.
+	if r.isDefaultEnvironment(ctx, state) {
+		resp.Diagnostics.AddWarning(
+			"Default environment not deleted",
+			fmt.Sprintf("Environment %q is its application's default environment, which Laravel Cloud cannot delete "+
+				"on its own. It was removed from Terraform state unchanged, still running with its attachments, and "+
+				"is deleted along with the application. To delete it sooner, make another environment the "+
+				"application's default first.", state.Name.ValueString()),
+		)
+		return
+	}
+
 	// Detach database, cache and WebSocket application from the environment
 	// before deleting so downstream resources (database schema, cluster,
 	// WebSocket server) can be cleaned up.
@@ -1115,21 +1134,6 @@ func (r *EnvironmentResource) Delete(ctx context.Context, req resource.DeleteReq
 				"Detaching the database and cache from the environment failed, so deleting it may also fail: "+err.Error(),
 			)
 		}
-	}
-
-	// The API refuses to delete an application's default environment, which
-	// this resource manages when it took over the one created with the
-	// application. Deleting the application deletes it, so it is only dropped
-	// from state here. Any failure to tell falls through to the delete, whose
-	// error then says why.
-	if r.isDefaultEnvironment(ctx, state) {
-		resp.Diagnostics.AddWarning(
-			"Default environment not deleted",
-			fmt.Sprintf("Environment %q is its application's default environment, which Laravel Cloud cannot delete "+
-				"on its own. It was removed from Terraform state and is deleted along with the application. To delete "+
-				"it sooner, make another environment the application's default first.", state.Name.ValueString()),
-		)
-		return
 	}
 
 	if err := r.client.DeleteEnvironment(ctx, envID); err != nil {
