@@ -436,6 +436,13 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			// left the bucket undeletable behind them.
 			collectionPattern: "/buckets/{bid}/keys", itemPattern: "/bucket-keys/{id}",
 			list: true, patch: true, del: true,
+			beforeDelete: func(f *fakeCloud, _ string) string {
+				if f.refuseBucketKeyDeletes > 0 {
+					f.refuseBucketKeyDeletes--
+					return "This key is used by an environment and cannot be deleted."
+				}
+				return ""
+			},
 			seed: func(body map[string]any, _ string) map[string]any {
 				a := cloneMap(body)
 				a["access_key_id"] = "AKIATEST0001"

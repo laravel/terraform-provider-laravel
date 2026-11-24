@@ -63,6 +63,7 @@ output "assets_url" {
 - `created_at` (String)
 - `endpoint` (String) Bucket S3 endpoint URL.
 - `id` (String) The ID of this resource.
+- `key_id` (String) ID of the initial access key, which the provider renames or replaces when key_name or key_permission changes. Changing key_permission gives it a new ID.
 - `status` (String) Bucket status.
 - `url` (String) Bucket public URL.
 

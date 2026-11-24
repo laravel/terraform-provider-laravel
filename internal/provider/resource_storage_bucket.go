@@ -35,6 +35,7 @@ type StorageBucketResourceModel struct {
 	LocationHint   types.String       `tfsdk:"location_hint"`
 	KeyName        types.String       `tfsdk:"key_name"`
 	KeyPermission  types.String       `tfsdk:"key_permission"`
+	KeyID          types.String       `tfsdk:"key_id"`
 	AllowedOrigins types.List         `tfsdk:"allowed_origins"`
 	CorsSettings   *CorsSettingsModel `tfsdk:"cors_settings"`
 	Endpoint       types.String       `tfsdk:"endpoint"`
@@ -115,6 +116,14 @@ func (r *StorageBucketResource) Schema(_ context.Context, _ resource.SchemaReque
 				Default: stringdefault.StaticString("read_write"),
 				Validators: []validator.String{
 					stringvalidator.OneOf("read_write", "read_only"),
+				},
+			},
+			"key_id": schema.StringAttribute{
+				Computed: true,
+				Description: "ID of the initial access key, which the provider renames or replaces when key_name or " +
+					"key_permission changes. Changing key_permission gives it a new ID.",
+				PlanModifiers: []planmodifier.String{
+					initialKeyIDPlanModifier{},
 				},
 			},
 			"allowed_origins": schema.ListAttribute{
@@ -225,6 +234,13 @@ func (r *StorageBucketResource) Create(ctx context.Context, req resource.CreateR
 	}
 
 	mapStorageBucketToState(ctx, bucket, &plan, &resp.Diagnostics)
+	// The response does not include the initial key, but a new bucket has
+	// exactly one. If it cannot be listed, key_id stays null and the next
+	// refresh finds it by name.
+	plan.KeyID = types.StringNull()
+	if keys, err := r.client.ListStorageBucketKeys(ctx, bucket.ID); err == nil && len(keys) == 1 {
+		plan.KeyID = types.StringValue(keys[0].ID)
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -246,6 +262,14 @@ func (r *StorageBucketResource) Read(ctx context.Context, req resource.ReadReque
 	}
 
 	mapStorageBucketToState(ctx, bucket, &state, &resp.Diagnostics)
+	// State written before key_id existed, or after an import, has no key ID
+	// yet. It is found by name only when exactly one key has that name;
+	// otherwise it stays null, and a later change to the key explains why.
+	if state.KeyID.IsNull() && !state.KeyName.IsNull() {
+		if id, err := r.initialKeyByName(ctx, bucket.ID, state.KeyName.ValueString()); err == nil {
+			state.KeyID = types.StringValue(id)
+		}
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -315,8 +339,8 @@ func (r *StorageBucketResource) Update(ctx context.Context, req resource.UpdateR
 		return
 	}
 
-	if err := r.updateInitialKey(ctx, state, plan); err != nil {
-		resp.Diagnostics.AddError("Error updating the storage bucket's initial key", err.Error())
+	keyID := r.updateInitialKey(ctx, state, plan, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
@@ -326,6 +350,7 @@ func (r *StorageBucketResource) Update(ctx context.Context, req resource.UpdateR
 	plannedLocationHint := plan.LocationHint
 	mapStorageBucketToState(ctx, bucket, &plan, &resp.Diagnostics)
 	plan.LocationHint = plannedLocationHint
+	plan.KeyID = keyID
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -359,52 +384,122 @@ func (r *StorageBucketResource) Delete(ctx context.Context, req resource.DeleteR
 }
 
 // updateInitialKey applies a change to key_name or key_permission to the key
-// the bucket was created with, which the API identifies only by name.
+// the bucket was created with, and returns that key's ID afterwards.
+//
+// The key is found by the ID in key_id. Laravel Cloud allows several keys with
+// one name, so going by name could change, or delete, a different key. State
+// without an ID falls back to the name, but only when exactly one key has it.
 //
 // A rename is done in place. A key's permission cannot change, so a new
 // permission means a new key: it is created before the old one is deleted, so
-// a failure never leaves the bucket without its key.
+// a failure never leaves the bucket without its key. If the old key then
+// cannot be deleted, as when the API refuses while an environment uses it,
+// the new key is recorded anyway and the old one is reported: failing instead
+// would leave state on the old key, and every retry would create another.
 //
 // A null prior value means the attribute was never recorded, as after an
 // import, so the configured value is adopted without touching any key.
-func (r *StorageBucketResource) updateInitialKey(ctx context.Context, state, plan StorageBucketResourceModel) error {
+func (r *StorageBucketResource) updateInitialKey(ctx context.Context, state, plan StorageBucketResourceModel, diags *diag.Diagnostics) types.String {
 	if state.KeyName.IsNull() || state.KeyPermission.IsNull() {
-		return nil
+		return state.KeyID
 	}
 	renamed := !plan.KeyName.Equal(state.KeyName)
 	repermed := !plan.KeyPermission.Equal(state.KeyPermission)
 	if !renamed && !repermed {
-		return nil
+		return state.KeyID
 	}
 
 	bucketID := state.ID.ValueString()
-	keys, err := r.client.ListStorageBucketKeys(ctx, bucketID)
-	if err != nil {
-		return err
-	}
-	var oldKeyID string
-	for _, k := range keys {
-		if k.Attributes.Name == state.KeyName.ValueString() {
-			oldKeyID = k.ID
-			break
+	oldKeyID := state.KeyID.ValueString()
+	if state.KeyID.IsNull() {
+		id, err := r.initialKeyByName(ctx, bucketID, state.KeyName.ValueString())
+		if err != nil {
+			diags.AddError("Error finding the storage bucket's initial key", err.Error())
+			return state.KeyID
 		}
-	}
-	if oldKeyID == "" {
-		return fmt.Errorf("the bucket has no key named %q to change; it may have been renamed or deleted outside Terraform", state.KeyName.ValueString())
+		oldKeyID = id
 	}
 
 	if !repermed {
-		_, err := r.client.UpdateStorageBucketKey(ctx, oldKeyID, client.UpdateStorageBucketKeyRequest{Name: plan.KeyName.ValueString()})
-		return err
+		if _, err := r.client.UpdateStorageBucketKey(ctx, oldKeyID, client.UpdateStorageBucketKeyRequest{Name: plan.KeyName.ValueString()}); err != nil {
+			diags.AddError("Error renaming the storage bucket's initial key", err.Error())
+			return state.KeyID
+		}
+		return types.StringValue(oldKeyID)
 	}
 
-	if _, err := r.client.CreateStorageBucketKey(ctx, bucketID, client.CreateStorageBucketKeyRequest{
+	created, err := r.client.CreateStorageBucketKey(ctx, bucketID, client.CreateStorageBucketKeyRequest{
 		Name:       plan.KeyName.ValueString(),
 		Permission: plan.KeyPermission.ValueString(),
-	}); err != nil {
-		return err
+	})
+	if err != nil {
+		diags.AddError("Error replacing the storage bucket's initial key", err.Error())
+		return state.KeyID
 	}
-	return r.client.DeleteStorageBucketKey(ctx, oldKeyID)
+	if err := r.client.DeleteStorageBucketKey(ctx, oldKeyID); err != nil && !client.IsNotFound(err) {
+		diags.AddAttributeWarning(path.Root("key_permission"), "The previous initial key was not deleted",
+			fmt.Sprintf("The bucket's initial key was replaced by a new %s key %q (%s), but deleting the previous "+
+				"key (%s) failed: %s. The previous key still exists and still works. Delete it in Laravel Cloud once "+
+				"nothing uses it.", plan.KeyPermission.ValueString(), plan.KeyName.ValueString(), created.ID, oldKeyID, err))
+	}
+	return types.StringValue(created.ID)
+}
+
+// initialKeyByName finds the bucket's key named name, for state recorded
+// before key_id existed. It refuses to guess when several keys have the name.
+func (r *StorageBucketResource) initialKeyByName(ctx context.Context, bucketID, name string) (string, error) {
+	keys, err := r.client.ListStorageBucketKeys(ctx, bucketID)
+	if err != nil {
+		return "", err
+	}
+	var ids []string
+	for _, k := range keys {
+		if k.Attributes.Name == name {
+			ids = append(ids, k.ID)
+		}
+	}
+	switch len(ids) {
+	case 1:
+		return ids[0], nil
+	case 0:
+		return "", fmt.Errorf("the bucket has no key named %q; it may have been renamed or deleted outside Terraform", name)
+	default:
+		return "", fmt.Errorf("the bucket has %d keys named %q (%v), so the provider cannot tell which one is the "+
+			"initial key. Rename the others in Laravel Cloud, then apply again", len(ids), name, ids)
+	}
+}
+
+// initialKeyIDPlanModifier keeps key_id across plans, null included, so an ID
+// that cannot be resolved does not show as a change on every plan. It is left
+// unknown when the apply sets it: when key_permission changes, which replaces
+// the initial key, and when a key without a recorded ID is renamed, which finds
+// it by name.
+type initialKeyIDPlanModifier struct{}
+
+func (initialKeyIDPlanModifier) Description(context.Context) string {
+	return "Keeps the initial key's ID unless the initial key is replaced."
+}
+
+func (m initialKeyIDPlanModifier) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (initialKeyIDPlanModifier) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if req.State.Raw.IsNull() || !req.PlanValue.IsUnknown() {
+		return
+	}
+	var planPermission, statePermission, planName, stateName types.String
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("key_permission"), &planPermission)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("key_permission"), &statePermission)...)
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("key_name"), &planName)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("key_name"), &stateName)...)
+	if resp.Diagnostics.HasError() || statePermission.IsNull() || !planPermission.Equal(statePermission) {
+		return
+	}
+	if req.StateValue.IsNull() && !stateName.IsNull() && !planName.Equal(stateName) {
+		return
+	}
+	resp.PlanValue = req.StateValue
 }
 
 func (r *StorageBucketResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {

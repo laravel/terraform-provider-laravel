@@ -95,6 +95,10 @@ type fakeCloud struct {
 	// "busy", so the provider does not wait it out. See mock_resources_test.go.
 	refuseQueueActions int
 
+	// refuseBucketKeyDeletes makes that many of the next bucket key deletes
+	// fail, as the API refuses to delete a key an environment uses.
+	refuseBucketKeyDeletes int
+
 	// queueDeployments is how many of the next deployment requests the API
 	// queues, as it does while the environment's resources are provisioning;
 	// queued holds those queued deployments. See mock_deployments_test.go.
