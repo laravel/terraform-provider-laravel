@@ -185,6 +185,8 @@ resource "laravel_cloud_instance" "q" {
 			{Config: strings.Replace(queue("mq.flex.256mb", "fifo = true"), `"jobs"`, `"`+strings.Repeat("j", 35)+`"`, 1), ExpectError: regexp.MustCompile(`name is too long for a FIFO queue`)},
 			{Config: strings.Replace(queue("flex-512mb", "fifo = true"), `"managed_queue"`, `"service"`, 1), ExpectError: regexp.MustCompile(`fifo is only for managed queues`)},
 			{Config: strings.Replace(queue("flex-512mb", "paused = true"), `"managed_queue"`, `"service"`, 1), ExpectError: regexp.MustCompile(`paused is only for managed queues`)},
+			// An unset type is a service instance, which cannot be the default.
+			{Config: strings.Replace(queue("flex-512mb", "is_default = true\n  min_replicas = 1"), `type           = "managed_queue"`, ``, 1), ExpectError: regexp.MustCompile(`is_default is only for managed queues`)},
 		},
 	})
 }
@@ -281,3 +283,4 @@ resource "laravel_cloud_instance" "second" {
 		},
 	})
 }
+

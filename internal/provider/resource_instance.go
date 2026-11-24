@@ -823,13 +823,14 @@ func (r *InstanceResource) ValidateConfig(ctx context.Context, req resource.Vali
 				"Set is_default = true on that queue instead, and remove it here.",
 		)
 	}
-	if isSet(config.IsDefault) && isSet(config.Type) && config.Type.ValueString() != "managed_queue" {
+	// An unset type is a service instance, which can be neither.
+	if isSet(config.IsDefault) && !config.Type.IsUnknown() && configuredInstanceType(config.Type) != "managed_queue" {
 		resp.Diagnostics.AddAttributeError(path.Root("is_default"), "is_default is only for managed queues",
-			fmt.Sprintf("Only a managed_queue instance can be the default queue; this one is %q.", config.Type.ValueString()))
+			fmt.Sprintf("Only a managed_queue instance can be the default queue; this one is %q.", configuredInstanceType(config.Type)))
 	}
-	if isSet(config.Paused) && !config.Type.IsUnknown() && config.Type.ValueString() != "managed_queue" {
+	if isSet(config.Paused) && !config.Type.IsUnknown() && configuredInstanceType(config.Type) != "managed_queue" {
 		resp.Diagnostics.AddAttributeError(path.Root("paused"), "paused is only for managed queues",
-			fmt.Sprintf("Only a managed_queue instance can be paused; this one is %q.", config.Type.ValueString()))
+			fmt.Sprintf("Only a managed_queue instance can be paused; this one is %q.", configuredInstanceType(config.Type)))
 	}
 	validateProbesConfig(config, &resp.Diagnostics)
 	validateManagedQueueConfig(config, &resp.Diagnostics)
@@ -888,11 +889,17 @@ func (r *InstanceResource) ValidateConfig(ctx context.Context, req resource.Vali
 // API ignores them on other types and reports null, so they could never
 // converge there, and it answers a timeout outside 1-60 minutes with "The
 // hibernation timeout must be null or an integer between 1 and 60."
-func validateAppInstanceConfig(config InstanceResourceModel, diags *diag.Diagnostics) {
-	instanceType := config.Type.ValueString()
-	if config.Type.IsNull() {
-		instanceType = "service"
+// configuredInstanceType is the type a configuration gives an instance: an
+// unset type defaults to service.
+func configuredInstanceType(t types.String) string {
+	if t.IsNull() {
+		return "service"
 	}
+	return t.ValueString()
+}
+
+func validateAppInstanceConfig(config InstanceResourceModel, diags *diag.Diagnostics) {
+	instanceType := configuredInstanceType(config.Type)
 	if !config.Type.IsUnknown() && instanceType != "app" {
 		for name, v := range map[string]attr.Value{
 			"uses_octane":         config.UsesOctane,
