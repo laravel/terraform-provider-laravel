@@ -21,6 +21,9 @@ import (
 // terraform_data deletes the other application in parallel with the
 // application's create, which is how the race happened between test runs.
 func TestAccEnvironmentResource_lostRepository(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("TF_ACC must be set for acceptance tests")
+	}
 	testAccPreCheck(t)
 	// A repository no other application in the test organization uses, so
 	// deleting the test's own application on it deletes Laravel Cloud's
