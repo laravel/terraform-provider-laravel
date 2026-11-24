@@ -90,6 +90,11 @@ type fakeCloud struct {
 	// mock_resources_test.go.
 	busy map[string]int
 
+	// refuseQueueActions makes that many of the next managed queue actions
+	// (pause, resume, make the default) fail with an error that is not
+	// "busy", so the provider does not wait it out. See mock_resources_test.go.
+	refuseQueueActions int
+
 	// queueDeployments is how many of the next deployment requests the API
 	// queues, as it does while the environment's resources are provisioning;
 	// queued holds those queued deployments. See mock_deployments_test.go.

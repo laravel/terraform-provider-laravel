@@ -403,15 +403,18 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 	}
 	// A new queue is still creating, and the API makes it the default or
 	// pauses it only once it is available, so these wait for that. If one
-	// still fails, state records what the queue really is, so the next plan
-	// shows the change again and Update retries it.
+	// still fails, the configured value stays in state, which Terraform
+	// requires: the next refresh records what the queue really is, so the next
+	// plan shows the change again and Update retries it.
 	if isSet(configuredDefault) && configuredDefault.ValueBool() && !plan.IsDefault.ValueBool() {
 		if updated, err := queueActionWhenAvailable(ctx, r.client.SetDefaultInstance, inst.ID); err != nil {
 			resp.Diagnostics.AddWarning(
 				"Could not make the queue the default after creating it",
 				"The instance was created, but making it the environment's default queue failed: "+err.Error()+
-					". Run 'terraform apply' again to retry.",
+					". The configured value is kept in state, so the next plan shows the change again and "+
+					"'terraform apply' retries it.",
 			)
+			plan.IsDefault = configuredDefault
 		} else {
 			plan.IsDefault = types.BoolPointerValue(updated.Attributes.IsDefault)
 		}
@@ -420,8 +423,10 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		if updated, err := queueActionWhenAvailable(ctx, r.client.PauseInstance, inst.ID); err != nil {
 			resp.Diagnostics.AddWarning(
 				"Could not pause the queue after creating it",
-				"The instance was created, but pausing it failed: "+err.Error()+". Run 'terraform apply' again to retry.",
+				"The instance was created, but pausing it failed: "+err.Error()+". The configured value is kept "+
+					"in state, so the next plan shows the change again and 'terraform apply' retries it.",
 			)
+			plan.Paused = configuredPaused
 		} else {
 			plan.Paused = types.BoolPointerValue(updated.Attributes.Paused)
 		}

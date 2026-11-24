@@ -284,3 +284,64 @@ resource "laravel_cloud_instance" "second" {
 	})
 }
 
+// TestInstanceQueueActionRefusedOnCreatePlan: when making a new queue the
+// default or pausing it fails after it was created, the apply must still
+// succeed with a warning. Recording what the queue really is, against the
+// configured value, used to fail it with "Provider produced inconsistent
+// result after apply". The next apply retries the action.
+func TestInstanceQueueActionRefusedOnCreatePlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	const q = "laravel_cloud_instance.second"
+	config := providerCfg(baseURL) + appEnvStack + `
+# The environment's first queue, which Cloud makes the default.
+resource "laravel_cloud_instance" "first" {
+  environment_id = laravel_cloud_environment.env.id
+  name           = "first"
+  type           = "managed_queue"
+  size           = "mq.flex.256mb"
+  scaling_type   = "custom"
+  max_replicas   = 2
+}
+
+resource "laravel_cloud_instance" "second" {
+  environment_id = laravel_cloud_environment.env.id
+  name           = "second"
+  type           = "managed_queue"
+  size           = "mq.flex.256mb"
+  scaling_type   = "custom"
+  max_replicas   = 2
+  is_default     = true
+  paused         = true
+  depends_on     = [laravel_cloud_instance.first]
+}
+`
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				PreConfig: func() {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					f.refuseQueueActions = 2
+				},
+				Config: config,
+				// Neither action took effect, so the next plan offers both again.
+				ExpectNonEmptyPlan: true,
+			},
+			{
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(q, plancheck.ResourceActionUpdate),
+				}},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(q, tfjsonpath.New("is_default"), knownvalue.Bool(true)),
+					statecheck.ExpectKnownValue(q, tfjsonpath.New("paused"), knownvalue.Bool(true)),
+				},
+			},
+			{
+				Config:           config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+		},
+	})
+}

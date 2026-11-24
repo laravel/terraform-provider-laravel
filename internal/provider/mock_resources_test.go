@@ -593,6 +593,11 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 				writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("This queue is not available yet. Wait a few seconds and try again."))
 				return
 			}
+			if f.refuseQueueActions > 0 {
+				f.refuseQueueActions--
+				writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("The queue could not be %s.", action))
+				return
+			}
 			if msg := apply(f, id, attrs); msg != "" {
 				writeError(w, http.StatusUnprocessableEntity, errors.New(msg))
 				return
