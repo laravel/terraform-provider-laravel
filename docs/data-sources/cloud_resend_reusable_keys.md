@@ -15,6 +15,21 @@ Lists the Resend sending keys of other environments that an environment can reus
 ## Example Usage
 
 ```terraform
+resource "laravel_cloud_application" "example" {
+  name                         = "my-app"
+  repository                   = "my-org/my-app"
+  region                       = "us-east-2"
+  source_control_provider_type = "github"
+}
+
+resource "laravel_cloud_environment" "staging" {
+  application_id = laravel_cloud_application.example.id
+  name           = "staging"
+  branch         = "develop"
+}
+
+# The sending keys of the organization's other environments that staging can
+# reuse.
 data "laravel_cloud_resend_reusable_keys" "staging" {
   environment_id = laravel_cloud_environment.staging.id
 }

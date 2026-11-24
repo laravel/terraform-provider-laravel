@@ -26,16 +26,29 @@ resource "laravel_cloud_environment" "example" {
   application_id = laravel_cloud_application.example.id
   name           = "production"
   branch         = "main"
-
-  php_version  = "8.4:1"
-  node_version = "22"
-
-  uses_push_to_deploy = true
+  php_version    = "8.4:1"
 }
 
+# Redirect www.example.com to example.com.
 resource "laravel_cloud_domain" "example" {
   environment_id = laravel_cloud_environment.example.id
-  name           = "app.example.com"
+  name           = "example.com"
+  www_redirect   = "www_to_root"
+}
+
+# The DNS records to create at your DNS provider before the domain verifies.
+output "domain_dns_records" {
+  value = laravel_cloud_domain.example.dns_records
+}
+
+# An app subdomain. Once its records in dns_records exist, for example after a
+# first apply with wait_for_verification = false, apply waits for it to verify.
+resource "laravel_cloud_domain" "app" {
+  environment_id        = laravel_cloud_environment.example.id
+  name                  = "app.example.com"
+  verification_method   = "real_time"
+  wait_for_verification = true
+  verification_timeout  = 15
 }
 ```
 

@@ -18,13 +18,20 @@ Laravel Cloud creates every server with a default WebSocket application named `p
 ## Example Usage
 
 ```terraform
+# A Laravel Reverb server. Laravel Cloud creates an application named
+# "production" on it; add more with laravel_cloud_websocket_application.
 resource "laravel_cloud_websocket_server" "example" {
-  name   = "my-reverb"
+  name   = "my-app-reverb"
   type   = "reverb"
   region = "us-east-2"
 
-  # Valid values: 100, 200, 500, 2000, 5000, 10000.
-  max_connections = 5000
+  # One of 100, 200, 500, 2000, 5000 or 10000, as the plan allows (see the
+  # laravel_cloud_websocket_server_types data source).
+  max_connections = 500
+}
+
+output "reverb_host" {
+  value = laravel_cloud_websocket_server.example.hostname
 }
 ```
 

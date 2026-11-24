@@ -26,16 +26,25 @@ resource "laravel_cloud_environment" "example" {
   application_id = laravel_cloud_application.example.id
   name           = "production"
   branch         = "main"
-
-  php_version  = "8.4:1"
-  node_version = "22"
-
-  uses_push_to_deploy = true
+  php_version    = "8.4:1"
 }
 
-# Creating this resource triggers a real deployment of the environment.
+# Creating this resource deploys the environment's branch and waits for the
+# deployment to finish. Replace it, for example with
+# terraform apply -replace=laravel_cloud_deployment.example, to deploy again.
 resource "laravel_cloud_deployment" "example" {
   environment_id = laravel_cloud_environment.example.id
+
+  depends_on = [laravel_cloud_environment_variables.example]
+}
+
+# Deploy only once the environment has its configuration.
+resource "laravel_cloud_environment_variables" "example" {
+  environment_id = laravel_cloud_environment.example.id
+  variables = {
+    APP_ENV   = "production"
+    LOG_LEVEL = "info"
+  }
 }
 ```
 

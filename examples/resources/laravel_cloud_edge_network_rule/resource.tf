@@ -1,12 +1,19 @@
+# Rules apply to a dedicated edge network.
 data "laravel_cloud_edge_networks" "mine" {
   domain = "example.com"
+  status = "available"
 }
 
-# Block the WordPress login probes.
-resource "laravel_cloud_edge_network_rule" "block_wp" {
+locals {
   edge_network_id = data.laravel_cloud_edge_networks.mine.edge_networks[0].id
+}
+
+# Block WordPress login probes.
+resource "laravel_cloud_edge_network_rule" "block_wp" {
+  edge_network_id = local.edge_network_id
   ruleset         = "firewall"
   name            = "Block WordPress probes"
+  description     = "This is not a WordPress site"
   settings = jsonencode({
     action = "block"
     criteria_groups = [
@@ -16,9 +23,10 @@ resource "laravel_cloud_edge_network_rule" "block_wp" {
   })
 }
 
-# Rate limit logins, evaluated before the firewall rule above.
+# Challenge clients that post to /login more than 10 times a minute, for 10
+# minutes. It is the first rule of its ruleset.
 resource "laravel_cloud_edge_network_rule" "login_rate_limit" {
-  edge_network_id = data.laravel_cloud_edge_networks.mine.edge_networks[0].id
+  edge_network_id = local.edge_network_id
   ruleset         = "rate_limit"
   name            = "Throttle logins"
   settings = jsonencode({
