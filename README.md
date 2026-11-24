@@ -2,8 +2,10 @@
 
 Manage [Laravel Cloud](https://cloud.laravel.com) infrastructure as code.
 
-> **Beta release.** The provider is in early access. Its resources and attributes
-> may change between releases.
+> [!WARNING]
+> **Beta:** This provider is in beta. Its resources and attributes may change
+> between releases, so pin the provider version and read the
+> [changelog](CHANGELOG.md) before you upgrade.
 
 ## Requirements
 
