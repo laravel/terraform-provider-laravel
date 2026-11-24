@@ -76,7 +76,7 @@ resource "laravel_cloud_edge_network_rule" "login_rate_limit" {
 ### Optional
 
 - `description` (String) Rule description (max 255 chars).
-- `is_active` (Boolean) Whether the rule applies. An inactive rule keeps its position but matches no requests. Defaults to `true`.
+- `is_active` (Boolean) Whether the rule applies. An inactive rule keeps its position but matches no requests. Defaults to `true`. Laravel Cloud creates every rule active, so a new rule, or one that a change replaces, must be active: set `false` on an existing rule to switch it off.
 - `position` (Attributes) Where to place the rule among the ruleset's rules: exactly one of `before`, `after` or `index`. Without it, a new rule is added last. It is applied when the rule is created and when it changes, and is not read back, so moves made outside Terraform are not detected. (see [below for nested schema](#nestedatt--position))
 
 ### Read-Only

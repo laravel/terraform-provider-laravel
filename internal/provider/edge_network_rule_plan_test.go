@@ -57,8 +57,8 @@ resource "laravel_cloud_edge_network_rule" "c" {
 
 // TestEdgeNetworkRulePlan creates rules while the ruleset is busy, places one
 // before another, keeps the settings the configuration wrote although the API
-// adds nulls and defaults, changes and moves a rule in place, imports one,
-// and destroys a rule that was already deleted outside Terraform.
+// adds nulls and defaults, changes and moves a rule in place, switches one off,
+// imports one, and destroys a rule that was already deleted outside Terraform.
 func TestEdgeNetworkRulePlan(t *testing.T) {
 	f, baseURL := newFakeCloud(t)
 	f.mu.Lock()
@@ -85,11 +85,11 @@ func TestEdgeNetworkRulePlan(t *testing.T) {
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: edgeRuleConfig(baseURL, "", "/probe", false),
+				Config: edgeRuleConfig(baseURL, "", "/probe", true),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					order("firewall", b, a),
 					resource.TestCheckResourceAttr(a, "is_active", "true"),
-					resource.TestCheckResourceAttr(c, "is_active", "false"),
+					resource.TestCheckResourceAttr(c, "is_active", "true"),
 					resource.TestCheckNoResourceAttr(a, "description"),
 					func(*terraform.State) error {
 						f.mu.Lock()
@@ -97,19 +97,15 @@ func TestEdgeNetworkRulePlan(t *testing.T) {
 						if f.edgeRules.busy != 0 {
 							return fmt.Errorf("%d busy answers were never retried", f.edgeRules.busy)
 						}
-						for _, rule := range f.edgeRules.rules {
-							if rule.ruleset == "rate_limit" && rule.isActive {
-								return fmt.Errorf("the rate limit rule is active")
-							}
-						}
 						return nil
 					},
 				),
 			},
 			{
-				// Changing a rule in place and moving it first.
+				// Changing a rule in place and moving it first, and switching
+				// another off.
 				Config: edgeRuleConfig(baseURL, `description = "changed"
-  position = { index = 1 }`, "/probe-2", true),
+  position = { index = 1 }`, "/probe-2", false),
 				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
 					plancheck.ExpectResourceAction(a, plancheck.ResourceActionUpdate),
 					plancheck.ExpectResourceAction(b, plancheck.ResourceActionNoop),
@@ -120,7 +116,17 @@ func TestEdgeNetworkRulePlan(t *testing.T) {
 					resource.TestCheckResourceAttr(a, "description", "changed"),
 					resource.TestCheckResourceAttr(a, "settings",
 						`{"action":"log","criteria_groups":[{"criterias":[{"criteria":"value","field":"uri_path","operator":"equals","value":"/probe-2"}]}]}`),
-					resource.TestCheckResourceAttr(c, "is_active", "true"),
+					resource.TestCheckResourceAttr(c, "is_active", "false"),
+					func(*terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						for _, rule := range f.edgeRules.rules {
+							if rule.ruleset == "rate_limit" && rule.isActive {
+								return fmt.Errorf("the rate limit rule is active")
+							}
+						}
+						return nil
+					},
 				),
 			},
 			{
@@ -149,7 +155,7 @@ func TestEdgeNetworkRulePlan(t *testing.T) {
 					}
 				},
 				Config: edgeRuleConfig(baseURL, `description = "changed"
-  position = { index = 1 }`, "/probe-2", true),
+  position = { index = 1 }`, "/probe-2", false),
 				PlanOnly:           true,
 				ExpectNonEmptyPlan: true,
 			},
@@ -188,6 +194,61 @@ resource "laravel_cloud_edge_network_rule" "r" {
 				Config:      rule(settings + "\n  position = {}"),
 				PlanOnly:    true,
 				ExpectError: regexp.MustCompile(`(?s)Invalid Attribute Combination`),
+			},
+		},
+	})
+}
+
+// TestEdgeNetworkRuleCreateInactivePlan: Laravel Cloud creates every rule
+// active, so a rule the apply would create, new or replacing another, cannot
+// be inactive. The provider used to create it and then deactivate it, so the
+// rule applied to traffic in between, and for good if the second request
+// failed. The plan must fail before anything is created.
+func TestEdgeNetworkRuleCreateInactivePlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	rule := func(ruleset string, active bool) string {
+		return providerCfg(baseURL) + fmt.Sprintf(`
+resource "laravel_cloud_edge_network_rule" "r" {
+  edge_network_id = %[1]q
+  ruleset         = %[2]q
+  name            = "log probes"
+  is_active       = %[3]t
+  settings = jsonencode({
+    action = "log"
+    criteria_groups = [{ criterias = [{ criteria = "value", field = "uri_path", operator = "equals", value = "/probe" }] }]
+  })
+}
+`, fakeEdgeNetworkID, ruleset, active)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      rule("firewall", false),
+				ExpectError: regexp.MustCompile(`A new edge network rule cannot start inactive`),
+			},
+			{
+				PreConfig: func() {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					if n := len(f.edgeRules.rules); n != 0 {
+						t.Errorf("the refused plan still created %d rules", n)
+					}
+				},
+				Config: rule("firewall", true),
+			},
+			{
+				// A new ruleset replaces the rule, which creates a new one.
+				Config:      rule("rate_limit", false),
+				ExpectError: regexp.MustCompile(`A new edge network rule cannot start inactive`),
+			},
+			{
+				// Switching an existing rule off is fine.
+				Config: rule("firewall", false),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction("laravel_cloud_edge_network_rule.r", plancheck.ResourceActionUpdate),
+				}},
 			},
 		},
 	})

@@ -24,6 +24,7 @@ import (
 var (
 	_ resource.Resource                = &EdgeNetworkRuleResource{}
 	_ resource.ResourceWithImportState = &EdgeNetworkRuleResource{}
+	_ resource.ResourceWithModifyPlan  = &EdgeNetworkRuleResource{}
 )
 
 // A ruleset takes one change at a time. The API waits five seconds for the
@@ -117,7 +118,8 @@ func (r *EdgeNetworkRuleResource) Schema(_ context.Context, _ resource.SchemaReq
 				Computed: true,
 				Default:  booldefault.StaticBool(true),
 				Description: "Whether the rule applies. An inactive rule keeps its position but matches no requests. " +
-					"Defaults to `true`.",
+					"Defaults to `true`. Laravel Cloud creates every rule active, so a new rule, or one that a change " +
+					"replaces, must be active: set `false` on an existing rule to switch it off.",
 			},
 			"settings": schema.StringAttribute{
 				Required: true,
@@ -176,6 +178,13 @@ func (r *EdgeNetworkRuleResource) Create(ctx context.Context, req resource.Creat
 		return
 	}
 
+	// ModifyPlan refuses this when it is known at plan time; this catches a
+	// value that was unknown then. Nothing has been created yet.
+	if !plan.IsActive.ValueBool() {
+		resp.Diagnostics.AddAttributeError(path.Root("is_active"), inactiveRuleCreateSummary, inactiveRuleCreateDetail)
+		return
+	}
+
 	edgeNetworkID, ruleset := plan.EdgeNetworkID.ValueString(), plan.Ruleset.ValueString()
 	createReq := client.CreateEdgeNetworkRuleRequest{
 		Name:        plan.Name.ValueString(),
@@ -194,31 +203,37 @@ func (r *EdgeNetworkRuleResource) Create(ctx context.Context, req resource.Creat
 		return
 	}
 	plan.ID = types.StringValue(rule.ID)
-	// Store the rule before anything else can fail, so it is never orphaned.
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	// A new rule is always active.
-	if !plan.IsActive.ValueBool() {
-		inactive := false
-		err := r.retryWhileBusy(ctx, func() error {
-			var err error
-			rule, err = r.client.UpdateEdgeNetworkRule(ctx, edgeNetworkID, ruleset, rule.ID, client.UpdateEdgeNetworkRuleRequest{
-				Description: plan.Description.ValueStringPointer(),
-				IsActive:    &inactive,
-			})
-			return err
-		})
-		if err != nil {
-			resp.Diagnostics.AddError("Error deactivating edge network rule", err.Error())
-			return
-		}
-	}
-
 	setEdgeNetworkRuleFromAPI(&plan, rule)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// inactiveRuleCreate explains why a rule the apply would create cannot be
+// inactive.
+const (
+	inactiveRuleCreateSummary = "A new edge network rule cannot start inactive"
+	inactiveRuleCreateDetail  = "Laravel Cloud creates every rule active and cannot create one inactive, so this rule " +
+		"would apply to traffic as soon as it was created. Create it with is_active = true (or leave is_active unset) " +
+		"when it should apply, and set is_active = false on an existing rule to switch it off. A change that replaces " +
+		"the rule, such as a new edge_network_id or ruleset, creates a new rule too."
+)
+
+// ModifyPlan refuses is_active = false on a rule the apply would create, new
+// or replacing another. Laravel Cloud creates every rule active, so the rule
+// would apply to traffic until a second request deactivated it, and for good
+// if that request failed.
+func (r *EdgeNetworkRuleResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+	if !req.State.Raw.IsNull() && len(resp.RequiresReplace) == 0 {
+		return
+	}
+	var active types.Bool
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("is_active"), &active)...)
+	if resp.Diagnostics.HasError() || !isSet(active) || active.ValueBool() {
+		return
+	}
+	resp.Diagnostics.AddAttributeError(path.Root("is_active"), inactiveRuleCreateSummary, inactiveRuleCreateDetail)
 }
 
 func (r *EdgeNetworkRuleResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
