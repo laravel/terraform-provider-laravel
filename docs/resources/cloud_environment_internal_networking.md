@@ -10,6 +10,8 @@ description: |-
 
 Turns on internal networking for an environment, so other environments on the same dedicated cluster can reach it over the private network at its internal hostname. Private Cloud only: the organization needs the internal networking entitlement and the environment must run on a dedicated cluster. Destroying this resource turns internal networking off.
 
+~> **Beta:** This provider is in beta. Its resources and attributes may change between releases, so pin the provider version and read the changelog before you upgrade.
+
 ## Example Usage
 
 ```terraform

@@ -10,6 +10,8 @@ description: |-
 
 Manages a custom rule in a ruleset (firewall, rate limit or cache) of a dedicated edge network. Rules in a ruleset are evaluated in order. An edge network takes at most 50 custom rules across its rulesets. A ruleset takes one change at a time, so a change made while another is in progress is retried for up to three minutes.
 
+~> **Beta:** This provider is in beta. Its resources and attributes may change between releases, so pin the provider version and read the changelog before you upgrade.
+
 ## Example Usage
 
 ```terraform

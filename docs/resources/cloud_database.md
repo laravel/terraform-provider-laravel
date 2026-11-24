@@ -10,6 +10,8 @@ description: |-
 
 Manages a database (schema) within a Laravel Cloud database cluster.
 
+~> **Beta:** This provider is in beta. Its resources and attributes may change between releases, so pin the provider version and read the changelog before you upgrade.
+
 ## Example Usage
 
 ```terraform

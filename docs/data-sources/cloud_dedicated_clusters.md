@@ -10,6 +10,8 @@ description: |-
 
 Lists dedicated clusters available to your organization, optionally filtered by region, type and status.
 
+~> **Beta:** This provider is in beta. Its resources and attributes may change between releases, so pin the provider version and read the changelog before you upgrade.
+
 ## Example Usage
 
 ```terraform

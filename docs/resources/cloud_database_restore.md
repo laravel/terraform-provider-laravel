@@ -10,6 +10,8 @@ description: |-
 
 Restores a Laravel Cloud database cluster from a snapshot or point-in-time, into a new cluster. The API gives a restored Serverless Postgres cluster the same ID as its source, so every request for it reaches the source: destroying such a restore only removes it from state, and the restored cluster has to be deleted in the Laravel Cloud dashboard.
 
+~> **Beta:** This provider is in beta. Its resources and attributes may change between releases, so pin the provider version and read the changelog before you upgrade.
+
 ## Example Usage
 
 ```terraform

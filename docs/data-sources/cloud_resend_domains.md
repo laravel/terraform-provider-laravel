@@ -10,6 +10,8 @@ description: |-
 
 Lists the organization's Resend sending domains, with the DNS records each needs. The organization must have the Resend integration.
 
+~> **Beta:** This provider is in beta. Its resources and attributes may change between releases, so pin the provider version and read the changelog before you upgrade.
+
 ## Example Usage
 
 ```terraform

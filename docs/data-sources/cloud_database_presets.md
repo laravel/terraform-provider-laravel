@@ -10,6 +10,8 @@ description: |-
 
 Lists the presets (such as Dev, Prod and Scale) the organization can use for a database cluster of one type in one region. Sizes are resolved for the region, and presets the region or the organization's plan cannot offer are left out.
 
+~> **Beta:** This provider is in beta. Its resources and attributes may change between releases, so pin the provider version and read the changelog before you upgrade.
+
 ## Example Usage
 
 ```terraform

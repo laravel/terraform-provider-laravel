@@ -10,6 +10,8 @@ description: |-
 
 Lists Laravel Cloud egress IP addresses for firewall allowlisting.
 
+~> **Beta:** This provider is in beta. Its resources and attributes may change between releases, so pin the provider version and read the changelog before you upgrade.
+
 ## Example Usage
 
 ```terraform

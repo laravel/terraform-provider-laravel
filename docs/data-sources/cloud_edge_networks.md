@@ -10,6 +10,8 @@ description: |-
 
 Lists the edge networks available to the organization. An edge network is a CDN zone; it carries no IP addresses. For egress IP ranges, use the laravel_cloud_ip_addresses data source instead. The list includes the shared edge network; filter by name, domain or status to pick one. Edge networks have no region or type to filter by.
 
+~> **Beta:** This provider is in beta. Its resources and attributes may change between releases, so pin the provider version and read the changelog before you upgrade.
+
 ## Example Usage
 
 ```terraform

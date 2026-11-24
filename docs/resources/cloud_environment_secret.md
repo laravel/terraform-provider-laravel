@@ -10,6 +10,8 @@ description: |-
 
 Attaches an organization secret (laravel_cloud_secret) to an environment. Destroying this detaches the secret; the secret itself is kept.
 
+~> **Beta:** This provider is in beta. Its resources and attributes may change between releases, so pin the provider version and read the changelog before you upgrade.
+
 ## Example Usage
 
 ```terraform
