@@ -10,7 +10,7 @@ description: |-
 
 Lists the Resend sending keys of other environments that an environment can reuse. Pass a key's id as reuse_key_id on laravel_cloud_environment_resend. The organization must have the Resend integration.
 
-~> **Beta:** This provider is in beta. Its resources and attributes may change between releases, so pin the provider version and read the changelog before you upgrade.
+~> This provider is in beta and may change between releases.
 
 ## Example Usage
 

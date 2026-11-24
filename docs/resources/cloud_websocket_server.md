@@ -13,7 +13,7 @@ Manages a Laravel Cloud WebSocket server (cluster).
 
 Laravel Cloud creates every server with a default WebSocket application named `production`, which this resource does not manage. It shares the server's `max_connections` with any `laravel_cloud_websocket_application` on the server, and its name is taken, so an application named `production` cannot be created on the same server.
 
-~> **Beta:** This provider is in beta. Its resources and attributes may change between releases, so pin the provider version and read the changelog before you upgrade.
+~> This provider is in beta and may change between releases.
 
 ## Example Usage
 
