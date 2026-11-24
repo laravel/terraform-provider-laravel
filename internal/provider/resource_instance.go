@@ -988,6 +988,10 @@ func validateManagedQueueConfig(config InstanceResourceModel, diags *diag.Diagno
 			fmt.Sprintf("Only previous-generation managed queues have a polling interval; the API ignores it for this "+
 				"instance (type %q, size %q). Remove polling_interval.", config.Type.ValueString(), config.Size.ValueString()))
 	}
+	// TODO: reject visibility_timeout and shutdown_timeout on current-generation
+	// (mq.*) queues too. Laravel Cloud ignores both on create and update and
+	// keeps them at 180 and 90, so setting either fails the apply with
+	// "inconsistent result".
 	if legacyQueue && isSet(config.MinReplicas) {
 		diags.AddAttributeError(path.Root("min_replicas"), "min_replicas does not apply to this queue",
 			fmt.Sprintf("Previous-generation managed queues such as size %q always scale to zero when idle, and the API "+
