@@ -147,6 +147,7 @@ var createRoutes = []string{
 	"GET /environments/*/logs",
 	"POST /databases",
 	"POST /databases/clusters",
+	"POST /databases/clusters/*/users",
 	"POST /databases/clusters/*/snapshots",
 	"POST /databases/clusters/*/restore",
 	"POST /buckets",

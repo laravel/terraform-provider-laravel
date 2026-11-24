@@ -65,6 +65,8 @@ func TestRateClass(t *testing.T) {
 		{"POST", "/databases/clusters", true, false},
 		{"POST", "/databases/clusters/db-1/databases", false, false},
 		{"POST", "/databases/clusters/db-1/snapshots", true, false},
+		{"POST", "/databases/clusters/db-1/users?include=databases", true, false},
+		{"PATCH", "/databases/clusters/db-1/users/dbu-1", false, false},
 		{"POST", "/buckets/b-1/keys", false, false},
 	}
 	for _, tc := range cases {
