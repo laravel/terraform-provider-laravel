@@ -9,6 +9,13 @@ conventional-commit titles of merged pull requests; do not edit them by hand.
 Earlier entries were written by hand in the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [1.5.1](https://github.com/laravel/terraform-provider-laravel/compare/v1.5.0...v1.5.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **instance:** keep an existing instance's type when type is unset ([#38](https://github.com/laravel/terraform-provider-laravel/issues/38)) ([5dc4bce](https://github.com/laravel/terraform-provider-laravel/commit/5dc4bceb16ccf529ed4c64ecbbdfcf1cb8fe9e7f))
+
 ## [1.5.0](https://github.com/laravel/terraform-provider-laravel/compare/v1.4.0...v1.5.0) (2026-11-25)
 
 
