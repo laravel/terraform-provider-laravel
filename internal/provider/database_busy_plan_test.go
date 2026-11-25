@@ -123,3 +123,40 @@ resource "laravel_cloud_database_restore" "restore" {
 		},
 	})
 }
+
+// TestDatabaseRestoreSharedIDRefreshPlan: a Serverless Postgres restore shares
+// its source's ID, so reading it by that ID returns the source. A refresh used
+// to record the source's name and hostname as the restore's, so anything
+// using the restore's connection details reached the source. The restore's
+// own values from its create response must survive a refresh.
+func TestDatabaseRestoreSharedIDRefreshPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	const r = "laravel_cloud_database_restore.restore"
+	config := providerCfg(baseURL) + `
+resource "laravel_cloud_database_cluster" "cluster" {
+  force_destroy = true
+  name          = "serverless"
+  type          = "neon_serverless_postgres_17"
+  region        = "us-east-2"
+  config        = jsonencode({ cu_min = 0.25, cu_max = 0.25 })
+}
+
+resource "laravel_cloud_database_restore" "restore" {
+  database_cluster_id = laravel_cloud_database_cluster.cluster.id
+  name                = "restored-db"
+  restore_time        = "2026-01-01T00:00:00Z"
+  force_destroy       = true
+}
+`
+	restoreValues := resource.ComposeAggregateTestCheckFunc(
+		resource.TestCheckResourceAttr(r, "restored_cluster_name", "restored-db"),
+		resource.TestCheckResourceAttr(r, "connection_details.hostname", "restored.db.test.local"),
+	)
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config, Check: restoreValues},
+			{RefreshState: true, Check: restoreValues},
+		},
+	})
+}

@@ -769,9 +769,18 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 		}
 
 		// A Serverless Postgres restore keeps the source's ID, so the API
-		// answers every later request for it with the source.
+		// answers every later request for it with the source. The create
+		// response itself describes the restored cluster: its own name and
+		// connection details, under the source's ID.
 		if t, _ := f.objects[clusterType][sourceID]["type"].(string); strings.HasPrefix(t, "neon_serverless_postgres") {
-			writeJSON(w, http.StatusCreated, jsonAPIObject(sourceID, clusterType, f.objects[clusterType][sourceID]))
+			restored := cloneMap(f.objects[clusterType][sourceID])
+			restored["name"] = body["name"]
+			restored["status"] = "creating"
+			restored["connection"] = map[string]any{
+				"hostname": "restored.db.test.local", "port": 5432, "protocol": "tcp",
+				"driver": "pgsql", "username": "restored", "password": "restored-secret",
+			}
+			writeJSON(w, http.StatusCreated, jsonAPIObject(sourceID, clusterType, restored))
 			return
 		}
 

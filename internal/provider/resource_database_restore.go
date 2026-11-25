@@ -196,6 +196,15 @@ func (r *DatabaseRestoreResource) Read(ctx context.Context, req resource.ReadReq
 		return
 	}
 
+	// A restore that shares its source's ID cannot be read: the request
+	// would return the source, and record its name and connection details,
+	// so anything using this restore's hostname would reach the source. What
+	// the restore's create response recorded stays as it is.
+	if sharesSourceID(state) {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		return
+	}
+
 	// The restored cluster is a regular database cluster; read it directly.
 	cluster, err := r.client.GetDatabaseCluster(ctx, state.ID.ValueString())
 	if err != nil {
