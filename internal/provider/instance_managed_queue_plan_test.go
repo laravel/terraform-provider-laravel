@@ -406,3 +406,54 @@ resource "laravel_cloud_instance" "q" {
 		},
 	})
 }
+
+// TestInstanceQueueTimeoutsUnsetOnResizePlan: a resize can make the API reset
+// a queue's timeouts. One the configuration leaves unset used to be planned as
+// its prior value, so the reset failed the apply, telling the user to remove
+// an attribute the configuration does not have. Only configured timeouts may
+// fail it; an unset one takes whatever the API reports.
+func TestInstanceQueueTimeoutsUnsetOnResizePlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	const q = "laravel_cloud_instance.q"
+	config := func(size, extra string) string {
+		return providerCfg(baseURL) + appEnvStack + fmt.Sprintf(`
+resource "laravel_cloud_instance" "q" {
+  environment_id = laravel_cloud_environment.env.id
+  name           = "jobs"
+  type           = "managed_queue"
+  size           = %q
+  scaling_type   = "custom"
+  max_replicas   = 2
+  %s
+}
+`, size, extra)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config("mq.flex.256mb", "visibility_timeout = 300"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(q, tfjsonpath.New("visibility_timeout"), knownvalue.Int64Exact(300)),
+				},
+			},
+			{
+				// The resize resets both timeouts, and neither is configured.
+				PreConfig: func() {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					f.queueTimeoutsNotEntitled = true
+				},
+				Config: config("mq.flex.512mb", ""),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(q, tfjsonpath.New("visibility_timeout"), knownvalue.Int64Exact(180)),
+				},
+			},
+			{
+				Config:           config("mq.flex.512mb", ""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+		},
+	})
+}

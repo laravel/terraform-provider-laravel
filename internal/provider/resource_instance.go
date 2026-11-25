@@ -395,7 +395,11 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		}
 	}
 
-	configured := plan
+	var configured InstanceResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &configured)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	configuredProbes := plan.Probes
 	configuredDefault := plan.IsDefault
 	configuredPaused := plan.Paused
@@ -629,9 +633,14 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 	// Prior state is kept, so the next refresh records what the API stored.
-	var stored InstanceResourceModel
+	// Only configured timeouts count: an unset one is the API's to choose.
+	var config, stored InstanceResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	mapInstanceToState(inst, &stored)
-	if notApplied := queueTimeoutsNotApplied(plan, stored); len(notApplied) > 0 {
+	if notApplied := queueTimeoutsNotApplied(config, stored); len(notApplied) > 0 {
 		for _, m := range notApplied {
 			resp.Diagnostics.AddAttributeError(path.Root(m.attr), m.attr+" was not applied", m.detail())
 		}
@@ -1019,6 +1028,27 @@ func (r *InstanceResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+
+	// A size change can make the API reset a managed queue's timeouts, as a
+	// switch of tier or generation does, so those the configuration leaves
+	// unset are left for the API to report instead of planned as their prior
+	// values, which it would then contradict.
+	if !req.State.Raw.IsNull() {
+		var state InstanceResourceModel
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if !plan.Size.Equal(state.Size) && (config.VisibilityTimeout.IsNull() || config.ShutdownTimeout.IsNull()) {
+			if config.VisibilityTimeout.IsNull() {
+				plan.VisibilityTimeout = types.Int64Unknown()
+			}
+			if config.ShutdownTimeout.IsNull() {
+				plan.ShutdownTimeout = types.Int64Unknown()
+			}
+			resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+		}
 	}
 
 	scalingType := plan.ScalingType.ValueString()
