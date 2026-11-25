@@ -89,12 +89,14 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		}
 
 		status, header, err := c.send(ctx, method, path, body, out)
-		if err == nil || !shouldRetry(method, status, retries) {
-			return err
-		}
 		delay := retryDelay(status, header, retries+1, time.Now())
+		// Any 429, a write's or a last retry's too, holds back the other
+		// requests, which would otherwise keep sending into the limit.
 		if status == http.StatusTooManyRequests && c.limitAll != nil {
 			c.limitAll.pause(time.Now().Add(delay))
+		}
+		if err == nil || !shouldRetry(method, status, retries) {
+			return err
 		}
 		if err := sleepCtx(ctx, delay); err != nil {
 			return err

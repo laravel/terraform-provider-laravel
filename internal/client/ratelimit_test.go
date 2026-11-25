@@ -297,6 +297,25 @@ func TestThrottledReadPausesOtherRequests(t *testing.T) {
 	<-done
 }
 
+// TestThrottledWritePausesOtherRequests: a write that got a 429 is not
+// retried, but the limit it hit still holds back the next request through the
+// same budget.
+func TestThrottledWritePausesOtherRequests(t *testing.T) {
+	srv, _ := fakeStatusServer(t, http.Header{"Retry-After": {"1"}}, 429)
+	c := NewClient("tok-pause-write", WithBaseURL(srv.URL), WithRateLimits(6000, 0))
+
+	if err := c.do(context.Background(), "POST", "/applications/app-1", map[string]string{}, nil); err == nil {
+		t.Fatal("the throttled POST succeeded")
+	}
+	start := time.Now()
+	if err := c.do(context.Background(), "GET", "/a", nil, nil); err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if waited := time.Since(start); waited < 500*time.Millisecond {
+		t.Errorf("a request after the throttled write waited only %v", waited)
+	}
+}
+
 func TestPacingHonorsContext(t *testing.T) {
 	srv, calls := fakeStatusServer(t, nil)
 	c := NewClient("tok-ctx", WithBaseURL(srv.URL), WithRateLimits(1, 0))
