@@ -34,3 +34,6 @@ docs/superpowers/
 # OS
 .DS_Store
 Thumbs.db
+
+# Amp orb portals
+.amp/portals/*
