@@ -16,7 +16,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
@@ -109,11 +108,14 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"type": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
-				Default:  stringdefault.StaticString("service"),
-				Description: "Instance type (service, managed_queue or app). Defaults to service when not set. Laravel Cloud " +
-					"creates an environment's app instance with the environment, so app takes over that instance instead " +
-					"of creating one, and destroy leaves it to the environment.",
+				Description: "Instance type (service, managed_queue or app). A new instance without it is a service, and an " +
+					"existing or imported one keeps its type, so importing an environment's app instance does not replace " +
+					"it. Set it to use the attributes only one type has. Laravel Cloud creates an environment's app " +
+					"instance with the environment, so app takes over that instance instead of creating one, and destroy " +
+					"leaves it to the environment.",
 				PlanModifiers: []planmodifier.String{
+					// Before RequiresReplace, which compares the result.
+					instanceTypeDefault{},
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
@@ -982,6 +984,31 @@ func (r *InstanceResource) ValidateConfig(ctx context.Context, req resource.Vali
 // API ignores them on other types and reports null, so they could never
 // converge there, and it answers a timeout outside 1-60 minutes with "The
 // hibernation timeout must be null or an integer between 1 and 60."
+// instanceTypeDefault fills in an unset type: "service" for a new instance,
+// and the current type for an existing one. A static default compared
+// "service" with the type of an imported instance, such as an environment's
+// app instance, and planned to replace it.
+type instanceTypeDefault struct{}
+
+func (instanceTypeDefault) Description(context.Context) string {
+	return `Unset, a new instance is a "service" and an existing one keeps its type.`
+}
+
+func (m instanceTypeDefault) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (instanceTypeDefault) PlanModifyString(_ context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if !req.ConfigValue.IsNull() {
+		return
+	}
+	if req.StateValue.IsNull() {
+		resp.PlanValue = types.StringValue("service")
+		return
+	}
+	resp.PlanValue = req.StateValue
+}
+
 // configuredInstanceType is the type a configuration gives an instance: an
 // unset type defaults to service.
 func configuredInstanceType(t types.String) string {
@@ -1000,9 +1027,13 @@ func validateAppInstanceConfig(config InstanceResourceModel, diags *diag.Diagnos
 			"hibernation_timeout": config.HibernationTimeout,
 		} {
 			if !v.IsNull() {
+				this := fmt.Sprintf("this one is %q", instanceType)
+				if config.Type.IsNull() {
+					this = "with type unset, this configuration is for a service"
+				}
 				diags.AddAttributeError(path.Root(name), name+" is only for app instances",
-					fmt.Sprintf("Only an environment's app instance has %s; this one is %q. Set type = \"app\" "+
-						"to manage the environment's app instance.", name, instanceType))
+					fmt.Sprintf("Only an environment's app instance has %s; %s. Set type = \"app\" "+
+						"to manage the environment's app instance.", name, this))
 			}
 		}
 	}
