@@ -108,6 +108,10 @@ type fakeCloud struct {
 	// token that cannot view the application.
 	refuseApplicationReads bool
 
+	// failQueuedDeploymentReads makes that many of the next queued deployment
+	// reads answer 500. See mock_deployments_test.go.
+	failQueuedDeploymentReads int
+
 	// queueDeployments is how many of the next deployment requests the API
 	// queues, as it does while the environment's resources are provisioning;
 	// queued holds those queued deployments. See mock_deployments_test.go.

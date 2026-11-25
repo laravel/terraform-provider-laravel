@@ -67,6 +67,11 @@ func (f *fakeCloud) getQueuedDeployment(w http.ResponseWriter, r *http.Request) 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if f.failQueuedDeploymentReads > 0 {
+		f.failQueuedDeploymentReads--
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("Server Error"))
+		return
+	}
 	id := r.PathValue("id")
 	q, ok := f.queued[id]
 	if !ok {

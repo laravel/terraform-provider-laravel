@@ -79,3 +79,58 @@ resource "laravel_cloud_deployment" "deploy" {
 		},
 	})
 }
+
+// TestDeploymentQueuedPollFailurePlan: when waiting for a queued deployment
+// fails after the API accepted it, Create used to return with nothing in
+// state, so the next apply requested a second deployment while the first was
+// still queued or running. The queued id must be kept, and the next refresh
+// must follow it to the deployment it started.
+func TestDeploymentQueuedPollFailurePlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	addr := "laravel_cloud_deployment.deploy"
+	config := providerCfg(baseURL) + appEnvStack + `
+resource "laravel_cloud_deployment" "deploy" {
+  environment_id = laravel_cloud_environment.env.id
+}
+`
+	oneRequest := func(*terraform.State) error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if n := len(f.queued); n != 1 {
+			return fmt.Errorf("the API got %d deployment requests, want 1", n)
+		}
+		return nil
+	}
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				PreConfig: func() {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					f.queueDeployments = 1
+					f.failQueuedDeploymentReads = 1
+				},
+				Config: config,
+				Check:  oneRequest,
+			},
+			{
+				// The environment's resources are ready, so the queued
+				// deployment starts on its next read.
+				PreConfig: func() {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					for _, q := range f.queued {
+						q.pendingReads = 0
+					}
+				},
+				Config:           config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("id"), knownvalue.StringRegexp(regexp.MustCompile(`^deploy-\d+$`))),
+				},
+				Check: oneRequest,
+			},
+		},
+	})
+}

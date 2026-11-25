@@ -144,6 +144,25 @@ func (r *DeploymentResource) Create(ctx context.Context, req resource.CreateRequ
 	deployment, queued, err := r.client.CreateDeployment(ctx, plan.EnvironmentID.ValueString())
 	if err == nil && queued != nil {
 		deployment, err = waitForQueuedDeployment(ctx, r.client, queued.ID)
+		// The API accepted the deployment, so unless it definitely did not
+		// start, it is queued or running. Failing without its id would let the
+		// next apply request another, so the queued id is recorded instead,
+		// and Read follows it to the deployment it starts.
+		if err != nil && !errors.Is(err, errDeploymentDidNotStart) {
+			resp.Diagnostics.AddWarning("Could not confirm that the queued deployment started",
+				fmt.Sprintf("Laravel Cloud accepted the deployment and queued it as %s, but waiting for it to start "+
+					"failed: %s. Its id is kept in state, and the next refresh follows it to the deployment it starts, "+
+					"so no second deployment is requested.", queued.ID, err))
+			plan.ID = types.StringValue(queued.ID)
+			plan.Status = types.StringValue("pending")
+			for _, v := range []*types.String{&plan.BranchName, &plan.CommitHash, &plan.CommitMessage, &plan.CommitAuthor,
+				&plan.FailureReason, &plan.PHPMajorVersion, &plan.BuildCommand, &plan.NodeVersion, &plan.StartedAt, &plan.FinishedAt} {
+				*v = types.StringNull()
+			}
+			plan.UsesOctane = types.BoolNull()
+			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+			return
+		}
 	}
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating deployment", err.Error())
@@ -228,6 +247,10 @@ const queuedDeploymentPollAttempts = 400
 
 var errDeploymentQueued = errors.New("deployment is still queued")
 
+// errDeploymentDidNotStart reports a queued deployment that Laravel Cloud
+// finished without starting it: it expired, failed or was replaced.
+var errDeploymentDidNotStart = errors.New("did not start")
+
 // waitForQueuedDeployment waits until Laravel Cloud starts a queued deployment,
 // which it does once the environment's resources finish provisioning, and
 // returns the deployment it started.
@@ -254,7 +277,7 @@ func waitForQueuedDeployment(ctx context.Context, c *client.Client, id string) (
 		if queued.Attributes.FailureReason != nil && *queued.Attributes.FailureReason != "" {
 			reason = *queued.Attributes.FailureReason
 		}
-		return nil, fmt.Errorf("queued deployment %s did not start: %s", id, reason)
+		return nil, fmt.Errorf("queued deployment %s %w: %s", id, errDeploymentDidNotStart, reason)
 	}
 	return c.GetDeployment(ctx, deploymentID)
 }
