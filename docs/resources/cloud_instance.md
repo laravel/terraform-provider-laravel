@@ -125,7 +125,7 @@ resource "laravel_cloud_instance" "orders_queue" {
 - `type` (String) Instance type (service, managed_queue or app). Defaults to service when not set. Laravel Cloud creates an environment's app instance with the environment, so app takes over that instance instead of creating one, and destroy leaves it to the environment.
 - `uses_inertia_ssr` (Boolean) Whether the app runs an Inertia SSR server. Only for app instances, which Laravel Cloud creates with the environment: set type = "app" to manage it. Changing it also changes the environment's build command.
 - `uses_octane` (Boolean) Whether the app is served by Laravel Octane. Only for app instances, which Laravel Cloud creates with the environment: set type = "app" to manage it. The same setting as the environment's uses_octane: set it in one place.
-- `uses_scheduler` (Boolean)
+- `uses_scheduler` (Boolean) Whether the instance runs the Laravel scheduler. Leave unset to keep the current setting: a new instance starts without it, and an adopted app instance keeps what it has.
 - `visibility_timeout` (Number) Queue visibility timeout in seconds (managed_queue). Laravel Cloud applies a custom value only for organizations with the advanced managed queues entitlement, and otherwise manages it itself: setting it then fails the apply. Leave it unset to let the platform choose.
 
 ### Read-Only

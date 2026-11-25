@@ -237,3 +237,53 @@ func TestInstanceAdoptAppMissingPlan(t *testing.T) {
 		},
 	})
 }
+
+// TestInstanceAdoptAppKeepsSchedulerPlan: uses_scheduler defaulted to false,
+// so adopting an app instance that runs the scheduler, without setting it,
+// turned the scheduler off. Unset, it now keeps what the instance has.
+func TestInstanceAdoptAppKeepsSchedulerPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	const addr = "laravel_cloud_instance.app"
+	scheduler := func() any {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, a := range f.objects["instance"] {
+			if a["type"] == "app" {
+				return a["uses_scheduler"]
+			}
+		}
+		return nil
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: providerCfg(baseURL) + appEnvStack},
+			{
+				PreConfig: func() {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					for _, a := range f.objects["instance"] {
+						if a["type"] == "app" {
+							a["uses_scheduler"] = true
+						}
+					}
+				},
+				Config: appInstanceConfig(baseURL, ""),
+				Check: func(*terraform.State) error {
+					if got := scheduler(); got != true {
+						return fmt.Errorf("adopting turned the scheduler off: uses_scheduler = %v", got)
+					}
+					return nil
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("uses_scheduler"), knownvalue.Bool(true)),
+				},
+			},
+			{
+				Config:           appInstanceConfig(baseURL, ""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+		},
+	})
+}

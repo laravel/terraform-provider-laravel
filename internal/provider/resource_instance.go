@@ -149,7 +149,11 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"uses_scheduler": schema.BoolAttribute{
 				Optional: true,
 				Computed: true,
-				Default:  booldefault.StaticBool(false),
+				Description: "Whether the instance runs the Laravel scheduler. Leave unset to keep the current setting: " +
+					"a new instance starts without it, and an adopted app instance keeps what it has.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"scaling_cpu_threshold_percentage": schema.Int64Attribute{
 				Optional:    true,
@@ -323,7 +327,7 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		v := int(plan.MaxReplicas.ValueInt64())
 		createReq.MaxReplicas = &v
 	}
-	if !plan.UsesScheduler.IsNull() {
+	if !plan.UsesScheduler.IsNull() && !plan.UsesScheduler.IsUnknown() {
 		v := plan.UsesScheduler.ValueBool()
 		createReq.UsesScheduler = &v
 	}
@@ -716,7 +720,8 @@ func instanceUpdateRequest(plan, state InstanceResourceModel) client.UpdateInsta
 		v := plan.ScalingMemoryThresholdPercentage
 		updateReq.ScalingMemoryThresholdPercentage = &client.NullableInt{Value: int(v.ValueInt64()), Null: v.IsNull()}
 	}
-	if !plan.UsesScheduler.Equal(state.UsesScheduler) {
+	// Unset on an adopted app instance, it is unknown: keep what the API has.
+	if !plan.UsesScheduler.IsNull() && !plan.UsesScheduler.IsUnknown() && !plan.UsesScheduler.Equal(state.UsesScheduler) {
 		v := plan.UsesScheduler.ValueBool()
 		updateReq.UsesScheduler = &v
 	}
