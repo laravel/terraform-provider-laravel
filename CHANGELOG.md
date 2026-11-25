@@ -9,6 +9,13 @@ conventional-commit titles of merged pull requests; do not edit them by hand.
 Earlier entries were written by hand in the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [1.5.0](https://github.com/laravel/terraform-provider-laravel/compare/v1.4.0...v1.5.0) (2026-11-25)
+
+
+### Features
+
+* new resources and data sources, rate-limit pacing, and fixes found against the live API ([#35](https://github.com/laravel/terraform-provider-laravel/issues/35)) ([3d1989a](https://github.com/laravel/terraform-provider-laravel/commit/3d1989a70f267ba1e5e729157b773a1cb396dfa2))
+
 ## [1.4.0](https://github.com/laravel/terraform-provider-laravel/compare/v1.3.0...v1.4.0) (2026-11-19)
 
 
