@@ -31,6 +31,10 @@ dist/
 .remember/
 docs/superpowers/
 
+# Local git worktree directories used for parallel agent work
+.worktrees/
+worktrees/
+
 # OS
 .DS_Store
 Thumbs.db
