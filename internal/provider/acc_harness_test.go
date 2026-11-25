@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"testing"
@@ -63,6 +64,29 @@ func sweepEach[T any](items []T, name func(T) string, del func(T) error) error {
 		return fmt.Errorf("sweep failed for %d resource(s):\n%s", len(errs), strings.Join(errs, "\n"))
 	}
 	return nil
+}
+
+// withoutSharedIDs drops every cluster whose ID appears more than once in the
+// whole listing, before anything is filtered by name. The API gives a
+// Serverless Postgres restore the same ID as the cluster it was restored
+// from, and a request for that ID reaches the source: sweeping a test restore
+// by its ID would delete the source's databases and the source itself, which
+// may be a real cluster. Neither is swept; a test restore left behind has to
+// be deleted in the dashboard.
+func withoutSharedIDs(clusters []client.DatabaseClusterData) []client.DatabaseClusterData {
+	count := map[string]int{}
+	for _, c := range clusters {
+		count[c.ID]++
+	}
+	var out []client.DatabaseClusterData
+	for _, c := range clusters {
+		if count[c.ID] > 1 {
+			log.Printf("[WARN] not sweeping database cluster %q: another cluster shares its ID %s", c.Attributes.Name, c.ID)
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 func init() {
@@ -156,7 +180,7 @@ func init() {
 				return err
 			}
 			var errs []string
-			for _, d := range clusters {
+			for _, d := range withoutSharedIDs(clusters) {
 				if strings.HasPrefix(d.Attributes.DBType, "neon_serverless_postgres") {
 					continue
 				}
@@ -198,7 +222,7 @@ func init() {
 			if err != nil {
 				return err
 			}
-			return sweepEach(clusters,
+			return sweepEach(withoutSharedIDs(clusters),
 				func(d client.DatabaseClusterData) string { return d.Attributes.Name },
 				func(d client.DatabaseClusterData) error {
 					dbs, err := c.ListDatabases(ctx, d.ID)
