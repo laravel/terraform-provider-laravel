@@ -18,6 +18,9 @@ type fakeQueuedDeployment struct {
 	pendingReads int
 	// deploymentID is the deployment it started, once promoted.
 	deploymentID string
+	// expired is set when the API gave up on it, as it does after 30 minutes
+	// in the queue; it then never starts.
+	expired bool
 }
 
 // seedDeployment is what the API reports for a new deployment.
@@ -78,7 +81,7 @@ func (f *fakeCloud) getQueuedDeployment(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, fmt.Errorf("queued deployment not found"))
 		return
 	}
-	if q.deploymentID == "" {
+	if q.deploymentID == "" && !q.expired {
 		if q.pendingReads > 0 {
 			q.pendingReads--
 		} else {
@@ -104,6 +107,9 @@ func (f *fakeCloud) getQueuedDeployment(w http.ResponseWriter, r *http.Request) 
 func (f *fakeCloud) queuedDeploymentData(id string) map[string]any {
 	q := f.queued[id]
 	status := "pending"
+	if q.expired {
+		status = "expired"
+	}
 	rels := relationshipTo("environment", "environments", q.envID)
 	if q.deploymentID != "" {
 		status = "promoted"

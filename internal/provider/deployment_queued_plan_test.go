@@ -134,3 +134,49 @@ resource "laravel_cloud_deployment" "deploy" {
 		},
 	})
 }
+
+// TestDeploymentQueuedExpiredPlan: a queued deployment kept in state that
+// Laravel Cloud then expires never starts. Read used to record its status and
+// keep it, so no new deployment was ever planned. It must leave state, so the
+// next plan requests a new deployment.
+func TestDeploymentQueuedExpiredPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	config := providerCfg(baseURL) + appEnvStack + `
+resource "laravel_cloud_deployment" "deploy" {
+  environment_id = laravel_cloud_environment.env.id
+}
+`
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// Waiting fails, so the queued id is kept.
+				PreConfig: func() {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					f.queueDeployments = 1
+					f.failQueuedDeploymentReads = 1
+				},
+				Config: config,
+			},
+			{
+				// The queue then expires: the next plan requests a new
+				// deployment, which the API now starts.
+				PreConfig: func() {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					for _, q := range f.queued {
+						q.expired = true
+					}
+				},
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction("laravel_cloud_deployment.deploy", plancheck.ResourceActionCreate),
+				}},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("laravel_cloud_deployment.deploy", tfjsonpath.New("id"), knownvalue.StringRegexp(regexp.MustCompile(`^deploy-\d+$`))),
+				},
+			},
+		},
+	})
+}

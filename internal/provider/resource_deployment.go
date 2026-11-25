@@ -194,9 +194,18 @@ func (r *DeploymentResource) Read(ctx context.Context, req resource.ReadRequest,
 			return
 		}
 		id = queued.Relationships.Deployment.RelatedID()
+		if id == "" && queued.Attributes.Status != "pending" {
+			// Laravel Cloud finished with it without starting a deployment: it
+			// expired, failed or was replaced. Nothing will ever start, so it
+			// leaves state, and the next plan requests a new deployment.
+			resp.Diagnostics.AddWarning("Queued deployment did not start",
+				fmt.Sprintf("Laravel Cloud finished with queued deployment %s without starting it (it is %s). "+
+					"It was removed from state, so the next apply requests a new deployment.", state.ID.ValueString(), queued.Attributes.Status))
+			resp.State.RemoveResource(ctx)
+			return
+		}
 		if id == "" {
-			// Still waiting, or replaced by a newer request: there is no
-			// deployment to read, and requesting another is not this read's call.
+			// Still waiting: there is no deployment to read yet.
 			state.Status = types.StringValue(queued.Attributes.Status)
 			resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 			return
