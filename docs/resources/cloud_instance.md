@@ -120,13 +120,13 @@ resource "laravel_cloud_instance" "orders_queue" {
 - `probes` (Attributes) Custom health checks for an app instance's web process. Only app instances accept them, and only on plans with health checks; set type = "app" to manage the environment's app instance. The checks configured here replace all existing ones, and a check left out uses the platform default. When unset, Terraform leaves the instance's health checks alone, including any the platform set up itself; removing the attribute once set resets every check to the platform default. (see [below for nested schema](#nestedatt--probes))
 - `scaling_cpu_threshold_percentage` (Number) CPU usage, in percent (50-95), above which the instance scales out. Leave unset for the platform default. Not allowed with scaling_type "none".
 - `scaling_memory_threshold_percentage` (Number) Memory usage, in percent (50-95), above which the instance scales out. Leave unset for the platform default. Not allowed with scaling_type "none".
-- `shutdown_timeout` (Number) Queue shutdown timeout in seconds (managed_queue).
+- `shutdown_timeout` (Number) Queue shutdown timeout in seconds (managed_queue). Laravel Cloud applies a custom value only for organizations with the advanced managed queues entitlement, and otherwise manages it itself: setting it then fails the apply. Leave it unset to let the platform choose.
 - `sleep_with_app` (Boolean) Whether the instance's replicas scale to zero along with the app, waking when it does. Only for service instances.
 - `type` (String) Instance type (service, managed_queue or app). Defaults to service when not set. Laravel Cloud creates an environment's app instance with the environment, so app takes over that instance instead of creating one, and destroy leaves it to the environment.
 - `uses_inertia_ssr` (Boolean) Whether the app runs an Inertia SSR server. Only for app instances, which Laravel Cloud creates with the environment: set type = "app" to manage it. Changing it also changes the environment's build command.
 - `uses_octane` (Boolean) Whether the app is served by Laravel Octane. Only for app instances, which Laravel Cloud creates with the environment: set type = "app" to manage it. The same setting as the environment's uses_octane: set it in one place.
 - `uses_scheduler` (Boolean)
-- `visibility_timeout` (Number) Queue visibility timeout in seconds (managed_queue).
+- `visibility_timeout` (Number) Queue visibility timeout in seconds (managed_queue). Laravel Cloud applies a custom value only for organizations with the advanced managed queues entitlement, and otherwise manages it itself: setting it then fails the apply. Leave it unset to let the platform choose.
 
 ### Read-Only
 

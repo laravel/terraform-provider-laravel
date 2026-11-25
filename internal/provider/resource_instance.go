@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -167,9 +168,11 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"visibility_timeout": schema.Int64Attribute{
-				Optional:    true,
-				Computed:    true,
-				Description: "Queue visibility timeout in seconds (managed_queue).",
+				Optional: true,
+				Computed: true,
+				Description: "Queue visibility timeout in seconds (managed_queue). Laravel Cloud applies a custom value " +
+					"only for organizations with the advanced managed queues entitlement, and otherwise manages it " +
+					"itself: setting it then fails the apply. Leave it unset to let the platform choose.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -185,9 +188,11 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"shutdown_timeout": schema.Int64Attribute{
-				Optional:    true,
-				Computed:    true,
-				Description: "Queue shutdown timeout in seconds (managed_queue).",
+				Optional: true,
+				Computed: true,
+				Description: "Queue shutdown timeout in seconds (managed_queue). Laravel Cloud applies a custom value " +
+					"only for organizations with the advanced managed queues entitlement, and otherwise manages it " +
+					"itself: setting it then fails the apply. Leave it unset to let the platform choose.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -390,10 +395,20 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		}
 	}
 
+	configured := plan
 	configuredProbes := plan.Probes
 	configuredDefault := plan.IsDefault
 	configuredPaused := plan.Paused
 	mapInstanceToState(inst, &plan)
+	// The instance exists, so a queue timeout the API ignored is a warning,
+	// and the configured value stays in state, which Terraform requires. The
+	// next refresh records what the API kept, so the next plan offers the
+	// change again and Update fails, saying why.
+	for _, m := range queueTimeoutsNotApplied(configured, plan) {
+		resp.Diagnostics.AddAttributeWarning(path.Root(m.attr), m.attr+" was not applied",
+			m.detail()+" The configured value is kept in state for now, so the next plan shows the difference again.")
+		m.restore(&plan, configured)
+	}
 	// The API ignores probes it cannot apply rather than rejecting them. The
 	// instance exists, so keep the configured value and let the next plan
 	// retry, where Update reports why they were not applied.
@@ -499,6 +514,56 @@ func queueActionWhenAvailable(ctx context.Context, action func(context.Context, 
 	return inst, err
 }
 
+// queueTimeoutNotApplied is a queue timeout the configuration sets that the
+// API stored differently.
+type queueTimeoutNotApplied struct {
+	attr       string
+	configured int64
+	stored     types.Int64
+}
+
+// queueTimeoutsNotApplied reports the configured visibility_timeout and
+// shutdown_timeout that the API did not store. Laravel Cloud accepts custom
+// values only from organizations with the advanced managed queues
+// entitlement; for any other it drops them without an error and keeps its
+// own. The public API does not expose the entitlement, so the provider can
+// only tell after the fact, by comparing what was stored with what was set.
+func queueTimeoutsNotApplied(configured, stored InstanceResourceModel) []queueTimeoutNotApplied {
+	var out []queueTimeoutNotApplied
+	for _, a := range []struct {
+		attr               string
+		configured, stored types.Int64
+	}{
+		{"visibility_timeout", configured.VisibilityTimeout, stored.VisibilityTimeout},
+		{"shutdown_timeout", configured.ShutdownTimeout, stored.ShutdownTimeout},
+	} {
+		if isSet(a.configured) && !a.configured.Equal(a.stored) {
+			out = append(out, queueTimeoutNotApplied{attr: a.attr, configured: a.configured.ValueInt64(), stored: a.stored})
+		}
+	}
+	return out
+}
+
+func (m queueTimeoutNotApplied) detail() string {
+	stored := "no value"
+	if isSet(m.stored) {
+		stored = strconv.FormatInt(m.stored.ValueInt64(), 10)
+	}
+	return fmt.Sprintf("Laravel Cloud kept %s at %s instead of %d. It accepts a custom %s only from organizations "+
+		"with the advanced managed queues entitlement, and otherwise ignores it and manages the value itself. "+
+		"Remove %s from the configuration to let the platform choose.", m.attr, stored, m.configured, m.attr, m.attr)
+}
+
+// restore puts the configured value back on state.
+func (m queueTimeoutNotApplied) restore(state *InstanceResourceModel, configured InstanceResourceModel) {
+	switch m.attr {
+	case "visibility_timeout":
+		state.VisibilityTimeout = configured.VisibilityTimeout
+	case "shutdown_timeout":
+		state.ShutdownTimeout = configured.ShutdownTimeout
+	}
+}
+
 // probesNotAppliedDetail explains a probes value the API accepted but ignored.
 const probesNotAppliedDetail = "The API did not apply probes. Health checks are available only on app instances, " +
 	"and only on plans that include them."
@@ -561,6 +626,15 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 	}
 	if planProbes != nil && inst.Attributes.Probes == nil {
 		resp.Diagnostics.AddAttributeError(path.Root("probes"), "Health checks were not applied", probesNotAppliedDetail)
+		return
+	}
+	// Prior state is kept, so the next refresh records what the API stored.
+	var stored InstanceResourceModel
+	mapInstanceToState(inst, &stored)
+	if notApplied := queueTimeoutsNotApplied(plan, stored); len(notApplied) > 0 {
+		for _, m := range notApplied {
+			resp.Diagnostics.AddAttributeError(path.Root(m.attr), m.attr+" was not applied", m.detail())
+		}
 		return
 	}
 
@@ -1000,10 +1074,10 @@ func validateManagedQueueConfig(config InstanceResourceModel, diags *diag.Diagno
 			fmt.Sprintf("Only previous-generation managed queues have a polling interval; the API ignores it for this "+
 				"instance (type %q, size %q). Remove polling_interval.", config.Type.ValueString(), config.Size.ValueString()))
 	}
-	// TODO: reject visibility_timeout and shutdown_timeout on current-generation
-	// (mq.*) queues too. Laravel Cloud ignores both on create and update and
-	// keeps them at 180 and 90, so setting either fails the apply with
-	// "inconsistent result".
+	// visibility_timeout and shutdown_timeout are not checked here: Laravel
+	// Cloud honors them only for organizations with the advanced managed
+	// queues entitlement, which a plan cannot see. Create and Update report it
+	// when the API ignores them (queueTimeoutsNotApplied).
 	if legacyQueue && isSet(config.MinReplicas) {
 		diags.AddAttributeError(path.Root("min_replicas"), "min_replicas does not apply to this queue",
 			fmt.Sprintf("Previous-generation managed queues such as size %q always scale to zero when idle, and the API "+

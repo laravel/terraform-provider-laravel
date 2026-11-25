@@ -99,6 +99,11 @@ type fakeCloud struct {
 	// fail, as the API refuses to delete a key an environment uses.
 	refuseBucketKeyDeletes int
 
+	// queueTimeoutsNotEntitled makes the API drop a managed queue's
+	// visibility_timeout and shutdown_timeout and keep its own, as it does for
+	// an organization without the advanced managed queues entitlement.
+	queueTimeoutsNotEntitled bool
+
 	// queueDeployments is how many of the next deployment requests the API
 	// queues, as it does while the environment's resources are provisioning;
 	// queued holds those queued deployments. See mock_deployments_test.go.

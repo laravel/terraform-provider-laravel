@@ -270,6 +270,7 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 			list:           true,
 			validateCreate: validateInstanceCreate,
 			afterCreate:    afterManagedQueueCreate,
+			afterPatch:     dropQueueTimeoutsIfNotEntitled,
 			// Like Cloud, an environment's app instance goes only with the
 			// environment.
 			beforeDelete: func(f *fakeCloud, id string) string {
@@ -963,6 +964,7 @@ func afterManagedQueueCreate(f *fakeCloud, id string) {
 	if attrs["type"] != "managed_queue" {
 		return
 	}
+	dropQueueTimeoutsIfNotEntitled(f, id)
 	f.busy[id] = managedQueueCreatingRefusals
 	envID := f.parents["instance"][id]
 	for other, otherAttrs := range f.objects["instance"] {
@@ -971,6 +973,17 @@ func afterManagedQueueCreate(f *fakeCloud, id string) {
 		}
 	}
 	attrs["is_default"] = true
+}
+
+// dropQueueTimeoutsIfNotEntitled keeps the platform's visibility and shutdown
+// timeouts on a managed queue, as the API does for an organization without the
+// advanced managed queues entitlement; see queueTimeoutsNotEntitled.
+func dropQueueTimeoutsIfNotEntitled(f *fakeCloud, id string) {
+	attrs := f.objects["instance"][id]
+	if !f.queueTimeoutsNotEntitled || attrs["type"] != "managed_queue" {
+		return
+	}
+	attrs["visibility_timeout"], attrs["shutdown_timeout"] = 180, 90
 }
 
 func validateManagedQueueCreate(body map[string]any) string {

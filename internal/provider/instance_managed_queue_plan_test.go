@@ -345,3 +345,64 @@ resource "laravel_cloud_instance" "second" {
 		},
 	})
 }
+
+// TestInstanceQueueTimeoutsNotEntitledPlan: Laravel Cloud drops a managed
+// queue's visibility_timeout and shutdown_timeout without an error unless the
+// organization has the advanced managed queues entitlement, and keeps its own.
+// Recording that against the configured value used to fail the apply with
+// "Provider produced inconsistent result after apply". Create must warn, the
+// next apply must fail saying why, and removing the setting must settle it.
+// With the entitlement, a custom value applies as usual.
+func TestInstanceQueueTimeoutsNotEntitledPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	const q = "laravel_cloud_instance.q"
+	config := func(extra string) string {
+		return providerCfg(baseURL) + appEnvStack + fmt.Sprintf(`
+resource "laravel_cloud_instance" "q" {
+  environment_id = laravel_cloud_environment.env.id
+  name           = "jobs"
+  type           = "managed_queue"
+  size           = "mq.flex.256mb"
+  scaling_type   = "custom"
+  max_replicas   = 2
+  %s
+}
+`, extra)
+	}
+	entitled := func(yes bool) func() {
+		return func() {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.queueTimeoutsNotEntitled = !yes
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				PreConfig: entitled(false),
+				Config:    config("visibility_timeout = 300"),
+				// The API kept 180, so the next plan offers 300 again.
+				ExpectNonEmptyPlan: true,
+			},
+			{
+				Config:      config("visibility_timeout = 300"),
+				ExpectError: regexp.MustCompile(`(?s)visibility_timeout was not applied.*advanced\s+managed\s+queues\s+entitlement`),
+			},
+			{
+				Config: config(""),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(q, tfjsonpath.New("visibility_timeout"), knownvalue.Int64Exact(180)),
+				},
+			},
+			{
+				PreConfig: entitled(true),
+				Config:    config("visibility_timeout = 300"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(q, tfjsonpath.New("visibility_timeout"), knownvalue.Int64Exact(300)),
+				},
+			},
+		},
+	})
+}

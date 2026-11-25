@@ -72,6 +72,10 @@ type crudSpec struct {
 	// auto-creating a database inside itself.
 	afterCreate func(f *fakeCloud, id string)
 
+	// afterPatch runs once a PATCH has been applied, with the object's ID. It
+	// models what the API does to an update before storing it.
+	afterPatch func(f *fakeCloud, id string)
+
 	// validateCreate, if set, can refuse a POST by returning the message the
 	// API answers with a 422.
 	validateCreate func(body map[string]any) string
@@ -247,6 +251,9 @@ func (f *fakeCloud) genPatch(s crudSpec) http.HandlerFunc {
 			for k, v := range patch {
 				attrs[k] = v
 			}
+		}
+		if s.afterPatch != nil {
+			s.afterPatch(f, id)
 		}
 		writeJSON(w, http.StatusOK, jsonAPIObject(id, s.typeName, attrs))
 	}
