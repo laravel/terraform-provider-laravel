@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Prepares an Amp orb to build, test, lint, and regenerate docs for this provider.
+# Runs on a fresh orb and again on a stale snapshot, so every step is idempotent.
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+# Keep these in step with .github/workflows/ci.yml.
+GO_VERSION=1.26.11          # go.mod requires go 1.26.0
+TERRAFORM_VERSION=1.17.2    # plan tests need a terraform binary
+GOLANGCI_LINT_VERSION=2.11.3
+
+step() {
+	local name=$1
+	shift
+	local start=$SECONDS
+	echo "==> $name"
+	"$@"
+	echo "    $name took $((SECONDS - start))s"
+}
+
+arch() {
+	case "$(uname -m)" in
+		x86_64) echo amd64 ;;
+		aarch64 | arm64) echo arm64 ;;
+		*) echo "unsupported architecture: $(uname -m)" >&2; return 1 ;;
+	esac
+}
+
+install_go() {
+	if [[ "$(/usr/local/go/bin/go env GOVERSION 2>/dev/null || true)" == "go$GO_VERSION" ]]; then
+		echo "    go $GO_VERSION already installed"
+	else
+		local tmp
+		tmp=$(mktemp -d)
+		curl -fsSL "https://go.dev/dl/go$GO_VERSION.linux-$(arch).tar.gz" -o "$tmp/go.tgz"
+		sudo rm -rf /usr/local/go
+		sudo tar -C /usr/local -xzf "$tmp/go.tgz"
+		rm -rf "$tmp"
+	fi
+	sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go
+	sudo ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+}
+
+install_terraform() {
+	if [[ "$(terraform version -json 2>/dev/null | jq -r .terraform_version 2>/dev/null || true)" == "$TERRAFORM_VERSION" ]]; then
+		echo "    terraform $TERRAFORM_VERSION already installed"
+		return
+	fi
+	local tmp
+	tmp=$(mktemp -d)
+	curl -fsSL "https://releases.hashicorp.com/terraform/$TERRAFORM_VERSION/terraform_${TERRAFORM_VERSION}_linux_$(arch).zip" -o "$tmp/tf.zip"
+	(cd "$tmp" && python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extract("terraform")' tf.zip)
+	sudo install -m 0755 "$tmp/terraform" /usr/local/bin/terraform
+	rm -rf "$tmp"
+}
+
+install_golangci_lint() {
+	if golangci-lint version 2>/dev/null | grep -q "version $GOLANGCI_LINT_VERSION "; then
+		echo "    golangci-lint $GOLANGCI_LINT_VERSION already installed"
+		return
+	fi
+	local tmp name
+	tmp=$(mktemp -d)
+	name="golangci-lint-$GOLANGCI_LINT_VERSION-linux-$(arch)"
+	curl -fsSL "https://github.com/golangci/golangci-lint/releases/download/v$GOLANGCI_LINT_VERSION/$name.tar.gz" | tar -xz -C "$tmp"
+	sudo install -m 0755 "$tmp/$name/golangci-lint" /usr/local/bin/golangci-lint
+	rm -rf "$tmp"
+}
+
+# Dependencies are vendored, so these only fill the build cache for the first
+# build, test, and docs run. The tfplugindocs module that `make generate` runs
+# is not vendored, so download it here.
+warm_caches() {
+	go build ./...
+	go test -count=1 -run '^$' ./... >/dev/null
+	go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@v0.23.0 --help >/dev/null 2>&1 || true
+}
+
+step "Install Go $GO_VERSION" install_go
+step "Install Terraform $TERRAFORM_VERSION" install_terraform
+step "Install golangci-lint $GOLANGCI_LINT_VERSION" install_golangci_lint
+step "Warm Go build cache" warm_caches
