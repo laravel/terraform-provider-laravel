@@ -184,3 +184,55 @@ func TestStorageBucketInitialKeyByName(t *testing.T) {
 		t.Errorf("two keys named main, but %s was picked", id)
 	}
 }
+
+// TestStorageBucketImportKeyPermissionPlan: after an import, state has no
+// key_name or key_permission yet. A configuration asking for read_only used
+// to be recorded as read_only while the key could still write. The first
+// apply must find the key, see its real permission, and replace it.
+func TestStorageBucketImportKeyPermissionPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	bucket, err := client.NewClient("test-token", client.WithBaseURL(baseURL)).CreateStorageBucket(context.Background(), client.CreateStorageBucketRequest{
+		Name: "key-change-bucket", Visibility: "private", Jurisdiction: "default", KeyName: "main", KeyPermission: "read_write",
+	})
+	if err != nil {
+		t.Fatalf("creating the bucket: %v", err)
+	}
+	const b = "laravel_cloud_storage_bucket.test"
+	config := storageBucketKeyChangeConfig(baseURL, "main", "read_only")
+	onlyReadOnlyKey := func(*terraform.State) error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		var permissions []any
+		for _, attrs := range f.objects["storage_bucket_key"] {
+			permissions = append(permissions, attrs["permission"])
+		}
+		if len(permissions) != 1 || permissions[0] != "read_only" {
+			return fmt.Errorf("the bucket's keys have permissions %v, want one read_only key", permissions)
+		}
+		return nil
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:             config,
+				ResourceName:       b,
+				ImportState:        true,
+				ImportStateId:      bucket.ID,
+				ImportStatePersist: true,
+			},
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					onlyReadOnlyKey,
+					resource.TestCheckResourceAttr(b, "key_permission", "read_only"),
+				),
+			},
+			{
+				Config:           config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+		},
+	})
+}

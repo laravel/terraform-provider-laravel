@@ -262,12 +262,29 @@ func (r *StorageBucketResource) Read(ctx context.Context, req resource.ReadReque
 	}
 
 	mapStorageBucketToState(ctx, bucket, &state, &resp.Diagnostics)
-	// State written before key_id existed, or after an import, has no key ID
-	// yet. It is found by name only when exactly one key has that name;
-	// otherwise it stays null, and a later change to the key explains why.
+	// State written before key_id existed has no key ID yet. It is found by
+	// name only when exactly one key has that name; otherwise it stays null,
+	// and a later change to the key explains why.
 	if state.KeyID.IsNull() && !state.KeyName.IsNull() {
 		if id, err := r.initialKeyByName(ctx, bucket.ID, state.KeyName.ValueString()); err == nil {
 			state.KeyID = types.StringValue(id)
+		}
+	}
+	// The initial key's name and permission come from the key itself, so a
+	// change made outside Terraform shows in the next plan. A key deleted
+	// outside Terraform leaves key_id null; the next change to the key then
+	// looks it up by name and says what is missing.
+	if !state.KeyID.IsNull() {
+		key, err := r.client.GetStorageBucketKey(ctx, state.KeyID.ValueString())
+		switch {
+		case err == nil:
+			state.KeyName = types.StringValue(key.Attributes.Name)
+			state.KeyPermission = types.StringValue(key.Attributes.Permission)
+		case client.IsNotFound(err):
+			state.KeyID = types.StringNull()
+		default:
+			resp.Diagnostics.AddError("Error reading the storage bucket's initial key", err.Error())
+			return
 		}
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
@@ -398,10 +415,10 @@ func (r *StorageBucketResource) Delete(ctx context.Context, req resource.DeleteR
 // would leave state on the old key, and every retry would create another.
 //
 // A null prior value means the attribute was never recorded, as after an
-// import, so the configured value is adopted without touching any key.
+// import; adoptInitialKey handles that.
 func (r *StorageBucketResource) updateInitialKey(ctx context.Context, state, plan StorageBucketResourceModel, diags *diag.Diagnostics) types.String {
 	if state.KeyName.IsNull() || state.KeyPermission.IsNull() {
-		return state.KeyID
+		return r.adoptInitialKey(ctx, state, plan, diags)
 	}
 	renamed := !plan.KeyName.Equal(state.KeyName)
 	repermed := !plan.KeyPermission.Equal(state.KeyPermission)
@@ -428,13 +445,54 @@ func (r *StorageBucketResource) updateInitialKey(ctx context.Context, state, pla
 		return types.StringValue(oldKeyID)
 	}
 
+	return r.replaceInitialKey(ctx, bucketID, oldKeyID, plan, diags)
+}
+
+// adoptInitialKey takes over the initial key of a bucket whose state has no
+// key_name or key_permission yet, as after an import. The key is found by its
+// configured name, and a permission that differs from the configured one is
+// applied by replacing the key, as for any permission change: recording the
+// configured permission alone could claim read_only for a key that can still
+// write.
+func (r *StorageBucketResource) adoptInitialKey(ctx context.Context, state, plan StorageBucketResourceModel, diags *diag.Diagnostics) types.String {
+	bucketID := state.ID.ValueString()
+	keyID := state.KeyID.ValueString()
+	if state.KeyID.IsNull() {
+		id, err := r.initialKeyByName(ctx, bucketID, plan.KeyName.ValueString())
+		if err != nil {
+			diags.AddAttributeError(path.Root("key_name"), "Error finding the storage bucket's initial key",
+				err.Error()+". After an import, key_name must be the name of the bucket's initial key.")
+			return state.KeyID
+		}
+		keyID = id
+	}
+	key, err := r.client.GetStorageBucketKey(ctx, keyID)
+	if err != nil {
+		diags.AddError("Error reading the storage bucket's initial key", err.Error())
+		return state.KeyID
+	}
+	if key.Attributes.Permission == plan.KeyPermission.ValueString() {
+		if key.Attributes.Name != plan.KeyName.ValueString() {
+			if _, err := r.client.UpdateStorageBucketKey(ctx, keyID, client.UpdateStorageBucketKeyRequest{Name: plan.KeyName.ValueString()}); err != nil {
+				diags.AddError("Error renaming the storage bucket's initial key", err.Error())
+				return state.KeyID
+			}
+		}
+		return types.StringValue(keyID)
+	}
+	return r.replaceInitialKey(ctx, bucketID, keyID, plan, diags)
+}
+
+// replaceInitialKey gives the bucket a new initial key with the planned name
+// and permission, then deletes the old one, and returns the new key's ID.
+func (r *StorageBucketResource) replaceInitialKey(ctx context.Context, bucketID, oldKeyID string, plan StorageBucketResourceModel, diags *diag.Diagnostics) types.String {
 	created, err := r.client.CreateStorageBucketKey(ctx, bucketID, client.CreateStorageBucketKeyRequest{
 		Name:       plan.KeyName.ValueString(),
 		Permission: plan.KeyPermission.ValueString(),
 	})
 	if err != nil {
 		diags.AddError("Error replacing the storage bucket's initial key", err.Error())
-		return state.KeyID
+		return types.StringValue(oldKeyID)
 	}
 	if err := r.client.DeleteStorageBucketKey(ctx, oldKeyID); err != nil && !client.IsNotFound(err) {
 		diags.AddAttributeWarning(path.Root("key_permission"), "The previous initial key was not deleted",
