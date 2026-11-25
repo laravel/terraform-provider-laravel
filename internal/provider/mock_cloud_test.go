@@ -104,6 +104,10 @@ type fakeCloud struct {
 	// an organization without the advanced managed queues entitlement.
 	queueTimeoutsNotEntitled bool
 
+	// refuseApplicationReads makes GET /applications/{id} answer 403, as for a
+	// token that cannot view the application.
+	refuseApplicationReads bool
+
 	// queueDeployments is how many of the next deployment requests the API
 	// queues, as it does while the environment's resources are provisioning;
 	// queued holds those queued deployments. See mock_deployments_test.go.
@@ -337,6 +341,10 @@ func (f *fakeCloud) getApplication(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if f.refuseApplicationReads {
+		writeError(w, http.StatusForbidden, fmt.Errorf("This action is unauthorized."))
+		return
+	}
 	app, ok := f.apps[r.PathValue("id")]
 	if !ok {
 		writeError(w, http.StatusNotFound, fmt.Errorf("application not found"))

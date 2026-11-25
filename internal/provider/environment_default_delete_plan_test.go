@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
 
 // TestEnvironmentDefaultDeletePlan pins destroying an environment that took
@@ -201,6 +203,126 @@ resource "laravel_cloud_environment" "staging" {
 					plancheck.ExpectResourceAction("laravel_cloud_environment.staging", plancheck.ResourceActionDestroyBeforeCreate),
 					plancheck.ExpectResourceAction("laravel_cloud_environment.production", plancheck.ResourceActionNoop),
 				}},
+			},
+		},
+	})
+}
+
+// TestEnvironmentDefaultLookupFailurePlan: when the provider cannot tell
+// whether an environment is its application's default, as when reading the
+// application is refused, destroying it must stop before changing anything.
+// It used to take a failed lookup as "not the default", detach the live
+// default environment's cache, and then fail to delete it.
+func TestEnvironmentDefaultLookupFailurePlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	// The application is made outside Terraform, so refusing to read it only
+	// affects the environment's delete, not a refresh of the application.
+	app, err := client.NewClient("test-token", client.WithBaseURL(baseURL)).CreateApplication(context.Background(),
+		client.CreateApplicationRequest{Name: "lookup-app", Repository: "example/app", Region: "us-east-2"})
+	if err != nil {
+		t.Fatalf("creating the application: %v", err)
+	}
+
+	cache := providerCfg(baseURL) + `
+resource "laravel_cloud_cache" "cache" {
+  name                 = "sessions"
+  type                 = "laravel_valkey"
+  region               = "us-east-2"
+  size                 = "250mb"
+  auto_upgrade_enabled = false
+  is_public            = false
+}
+`
+	env := fmt.Sprintf(`
+resource "laravel_cloud_environment" "production" {
+  application_id = %q
+  name           = "production"
+  branch         = "main"
+  cache_id       = laravel_cloud_cache.cache.id
+}
+`, app.ID)
+	var envID, cacheID string
+	attachedCache := func() string {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.attachments[envID]["cache"]
+	}
+	refuseReads := func(refuse bool) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.refuseApplicationReads = refuse
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cache + env,
+				Check: func(s *terraform.State) error {
+					envID = s.RootModule().Resources["laravel_cloud_environment.production"].Primary.ID
+					cacheID = s.RootModule().Resources["laravel_cloud_cache.cache"].Primary.ID
+					return nil
+				},
+			},
+			{
+				PreConfig:   func() { refuseReads(true) },
+				Config:      cache,
+				ExpectError: regexp.MustCompile(`Error checking whether the environment is its application's default`),
+			},
+			{
+				PreConfig: func() {
+					if got := attachedCache(); got != cacheID {
+						t.Errorf("the failed destroy detached the default environment's cache: attached is %q, want %q", got, cacheID)
+					}
+					refuseReads(false)
+				},
+				Config: cache,
+				Check: func(*terraform.State) error {
+					if got := attachedCache(); got != cacheID {
+						return fmt.Errorf("dropping the default environment detached its cache: attached is %q, want %q", got, cacheID)
+					}
+					return nil
+				},
+			},
+		},
+	})
+}
+
+// TestEnvironmentServingModeWithApplicationReplacementPlan: changing
+// serving_mode on both an application and its default environment replaces
+// the application, and Laravel Cloud creates its new default environment in
+// the new mode, so the environment's replacement must not be refused.
+func TestEnvironmentServingModeWithApplicationReplacementPlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	config := func(mode string) string {
+		return providerCfg(baseURL) + fmt.Sprintf(`
+resource "laravel_cloud_application" "app" {
+  name         = "serving-app"
+  repository   = "example/app"
+  region       = "us-east-2"
+  serving_mode = %[1]q
+}
+
+resource "laravel_cloud_environment" "production" {
+  application_id = laravel_cloud_application.app.id
+  name           = "production"
+  branch         = "main"
+  serving_mode   = %[1]q
+}
+`, mode)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config("process")},
+			{
+				Config: config("static"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction("laravel_cloud_application.app", plancheck.ResourceActionDestroyBeforeCreate),
+					plancheck.ExpectResourceAction("laravel_cloud_environment.production", plancheck.ResourceActionDestroyBeforeCreate),
+				}},
+				Check: resource.TestCheckResourceAttr("laravel_cloud_environment.production", "serving_mode", "static"),
 			},
 		},
 	})

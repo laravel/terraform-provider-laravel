@@ -1100,8 +1100,17 @@ func (r *EnvironmentResource) Delete(ctx context.Context, req resource.DeleteReq
 	// its database, cache and WebSocket application still attached. A
 	// database or cache destroyed in the same apply needs no detach first,
 	// since the API detaches it from its environments when deleting it. Any
-	// failure to tell falls through to the delete, whose error then says why.
-	if r.isDefaultEnvironment(ctx, state) {
+	// failure to tell stops here, before anything changes: guessing "not the
+	// default" would detach a live default environment's resources.
+	isDefault, _, err := r.isDefaultEnvironment(ctx, state)
+	if err != nil {
+		resp.Diagnostics.AddError("Error checking whether the environment is its application's default",
+			"Laravel Cloud cannot delete an application's default environment, and deleting any other environment "+
+				"first detaches its database, cache and WebSocket application, so the provider must know which this "+
+				"is before changing anything. The check failed, and nothing was changed: "+err.Error())
+		return
+	}
+	if isDefault {
 		resp.Diagnostics.AddWarning(
 			"Default environment not deleted",
 			fmt.Sprintf("Environment %q is its application's default environment, which Laravel Cloud cannot delete "+
@@ -1142,25 +1151,34 @@ func (r *EnvironmentResource) Delete(ctx context.Context, req resource.DeleteReq
 }
 
 // isDefaultEnvironment reports whether the environment is its application's
-// default environment. An imported environment has no application_id in
-// state, so the application is then looked up from the environment.
-func (r *EnvironmentResource) isDefaultEnvironment(ctx context.Context, state EnvironmentResourceModel) bool {
+// default environment, and that application's ID. An imported environment has
+// no application_id in state, so the application is then looked up from the
+// environment. A 404 for either means it no longer exists, so the environment
+// is not a default one; any other failure is returned, since a wrong answer
+// would detach a live default environment's resources.
+func (r *EnvironmentResource) isDefaultEnvironment(ctx context.Context, state EnvironmentResourceModel) (bool, string, error) {
 	appID := state.ApplicationID.ValueString()
 	if appID == "" {
 		env, err := r.client.GetEnvironment(ctx, state.ID.ValueString())
+		if client.IsNotFound(err) {
+			return false, "", nil
+		}
 		if err != nil {
-			return false
+			return false, "", err
 		}
 		appID = env.Relationships.Application.RelatedID()
 	}
 	if appID == "" {
-		return false
+		return false, "", nil
 	}
 	app, err := r.client.GetApplication(ctx, appID)
-	if err != nil {
-		return false
+	if client.IsNotFound(err) {
+		return false, appID, nil
 	}
-	return app.Relationships.DefaultEnvironment.RelatedID() == state.ID.ValueString()
+	if err != nil {
+		return false, appID, err
+	}
+	return app.Relationships.DefaultEnvironment.RelatedID() == state.ID.ValueString(), appID, nil
 }
 
 func (r *EnvironmentResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
@@ -1371,11 +1389,14 @@ func (r *EnvironmentResource) ModifyPlan(ctx context.Context, req resource.Modif
 }
 
 // refuseDefaultEnvironmentReplacement fails the plan when a serving_mode
-// change would replace an application's default environment. Laravel Cloud
-// cannot delete that environment, so the replacement's delete would only drop
-// it from state, and the create would then find it again, still served the old
-// way, and fail: the apply would end with the environment no longer in state.
-// The API is asked only when serving_mode changes.
+// change would replace an application's default environment within the same
+// application. Laravel Cloud cannot delete that environment, so the
+// replacement's delete would only drop it from state, and the create would
+// then find it again, still served the old way, and fail: the apply would end
+// with the environment no longer in state. When the application is replaced
+// too, its application_id is unknown at plan time and Cloud creates a new
+// default environment, so nothing is refused. The API is asked only when
+// serving_mode changes.
 func (r *EnvironmentResource) refuseDefaultEnvironmentReplacement(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	var planServing, stateServing types.String
 	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("serving_mode"), &planServing)...)
@@ -1383,9 +1404,21 @@ func (r *EnvironmentResource) refuseDefaultEnvironmentReplacement(ctx context.Co
 	if resp.Diagnostics.HasError() || !isSet(planServing) || !isSet(stateServing) || planServing.Equal(stateServing) || r.client == nil {
 		return
 	}
+	var planApp types.String
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("application_id"), &planApp)...)
 	var state EnvironmentResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() || !r.isDefaultEnvironment(ctx, state) {
+	if resp.Diagnostics.HasError() || planApp.IsUnknown() {
+		return
+	}
+	isDefault, appID, err := r.isDefaultEnvironment(ctx, state)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("serving_mode"), "Error checking whether the environment is its application's default",
+			"Changing serving_mode replaces the environment, which Laravel Cloud cannot do for an application's "+
+				"default environment, and the check failed: "+err.Error())
+		return
+	}
+	if !isDefault || planApp.ValueString() != appID {
 		return
 	}
 	resp.Diagnostics.AddAttributeError(path.Root("serving_mode"), "serving_mode cannot be changed on the default environment",
