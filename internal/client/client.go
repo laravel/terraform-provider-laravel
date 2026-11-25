@@ -305,6 +305,18 @@ func IsBusy(err error) bool {
 		strings.Contains(apiErr.Body, "not available yet")
 }
 
+// IsBucketHasKeys returns true if the API refused to delete a storage bucket
+// because access keys are still attached to it: `422 {"filesystem": ["The
+// bucket has access keys attached and cannot be deleted. Delete all its
+// access keys first."]}`.
+func IsBucketHasKeys(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	return strings.Contains(apiErr.Body, "access keys attached")
+}
+
 // IsBranchUnavailable returns true if the API refused to create an environment
 // because Laravel Cloud's own record of the application's branches has no row
 // for the requested branch: `422 {"branch": ["The selected branch is no longer

@@ -264,6 +264,11 @@ func (f *fakeCloud) genDelete(s crudSpec) http.HandlerFunc {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 
+		if f.forbidDeletes[s.typeName] > 0 {
+			f.forbidDeletes[s.typeName]--
+			writeError(w, http.StatusForbidden, errors.New("This action is unauthorized."))
+			return
+		}
 		if s.beforeDelete != nil {
 			if msg := s.beforeDelete(f, r.PathValue("id")); msg != "" {
 				writeError(w, http.StatusUnprocessableEntity, errors.New(msg))

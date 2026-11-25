@@ -186,6 +186,11 @@ func (f *fakeCloud) registerGenericResources(mux *http.ServeMux) {
 						return "The bucket has access keys attached and cannot be deleted. Delete all its access keys first."
 					}
 				}
+				// Checked after the keys, as the API does.
+				if f.busy[bucketID] > 0 {
+					f.busy[bucketID]--
+					return "This bucket is already being updated. Try again shortly."
+				}
 				return ""
 			},
 			seed: func(body map[string]any, _ string) map[string]any {

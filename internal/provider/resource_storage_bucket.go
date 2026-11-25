@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -379,10 +380,22 @@ func (r *StorageBucketResource) Delete(ctx context.Context, req resource.DeleteR
 	}
 
 	// The API refuses to delete a bucket that still has access keys, and
-	// every bucket gets one on create. Keys managed as separate resources are
-	// destroyed before the bucket, so what remains here is the initial key and
-	// any made outside Terraform; destroying the bucket removes them anyway.
+	// every bucket gets one on create. The bucket is tried first anyway: the
+	// API checks that it exists and that the token may delete it before it
+	// checks for keys, so a refusal for any other reason stops here, before
+	// a key is deleted. Keys managed as separate resources are destroyed
+	// before the bucket, so what remains is the initial key and any made
+	// outside Terraform; destroying the bucket removes them anyway.
 	id := state.ID.ValueString()
+	err := r.client.DeleteStorageBucket(ctx, id)
+	if err == nil || client.IsNotFound(err) {
+		return
+	}
+	if !client.IsBucketHasKeys(err) {
+		resp.Diagnostics.AddError("Error deleting storage bucket", err.Error())
+		return
+	}
+
 	keys, err := r.client.ListStorageBucketKeys(ctx, id)
 	if err != nil && !client.IsNotFound(err) {
 		resp.Diagnostics.AddError("Error listing storage bucket keys", err.Error())
@@ -390,15 +403,29 @@ func (r *StorageBucketResource) Delete(ctx context.Context, req resource.DeleteR
 	}
 	for _, k := range keys {
 		if err := r.client.DeleteStorageBucketKey(ctx, k.ID); err != nil && !client.IsNotFound(err) {
-			resp.Diagnostics.AddError("Error deleting storage bucket key "+k.Attributes.Name, err.Error())
+			resp.Diagnostics.AddError("Error deleting storage bucket key "+k.Attributes.Name,
+				err.Error()+"\n\nThe bucket was not deleted. Laravel Cloud only deletes a bucket without access keys, "+
+					"so its keys are deleted first, and any deleted before this one are gone.")
 			return
 		}
 	}
 
-	if err := r.client.DeleteStorageBucket(ctx, id); err != nil && !client.IsNotFound(err) {
+	// The keys are gone now, so a bucket busy with another change is waited
+	// out rather than left behind without them.
+	err = client.RetryOnConflict(ctx, bucketBusyAttempts, bucketBusyInterval, func() error {
+		return r.client.DeleteStorageBucket(ctx, id)
+	}, client.IsBusy)
+	if err != nil && !client.IsNotFound(err) {
 		resp.Diagnostics.AddError("Error deleting storage bucket", err.Error())
 	}
 }
+
+// bucketBusyAttempts bounds how long a bucket delete is retried while the API
+// answers that the bucket "is already being updated". The interval is a
+// variable so the plan tests need not wait.
+const bucketBusyAttempts = 60
+
+var bucketBusyInterval = 5 * time.Second
 
 // updateInitialKey applies a change to key_name or key_permission to the key
 // the bucket was created with, and returns that key's ID afterwards.

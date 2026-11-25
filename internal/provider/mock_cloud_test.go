@@ -95,6 +95,12 @@ type fakeCloud struct {
 	// "busy", so the provider does not wait it out. See mock_resources_test.go.
 	refuseQueueActions int
 
+	// forbidDeletes makes that many of the next deletes of a type, keyed by
+	// its typeName, fail with a 403, as for a token without the permission.
+	// The API authorizes a request before it validates it, so this comes
+	// before any refusal of the type's own.
+	forbidDeletes map[string]int
+
 	// refuseBucketKeyDeletes makes that many of the next bucket key deletes
 	// fail, as the API refuses to delete a key an environment uses.
 	refuseBucketKeyDeletes int
@@ -187,8 +193,9 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 		vars:     map[string]map[string]string{},
 		secrets:  newFakeSecrets(),
 
-		busy:   map[string]int{},
-		queued: map[string]*fakeQueuedDeployment{},
+		busy:          map[string]int{},
+		queued:        map[string]*fakeQueuedDeployment{},
+		forbidDeletes: map[string]int{},
 	}
 
 	// The fake answers busy for a request or two, not twenty minutes, so the
@@ -211,6 +218,9 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 	verifyInterval := domainVerifyInterval
 	domainVerifyInterval = time.Millisecond
 	t.Cleanup(func() { domainVerifyInterval = verifyInterval })
+	bucketInterval := bucketBusyInterval
+	bucketBusyInterval = time.Millisecond
+	t.Cleanup(func() { bucketBusyInterval = bucketInterval })
 	queueInterval := queueAvailableInterval
 	queueAvailableInterval = time.Millisecond
 	t.Cleanup(func() { queueAvailableInterval = queueInterval })
