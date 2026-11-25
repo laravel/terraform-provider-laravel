@@ -10,6 +10,8 @@ description: |-
 
 Runs a command on a Laravel Cloud environment.
 
+~> **Beta:** This provider is in beta and may change between releases.
+
 ## Example Usage
 
 ```terraform
@@ -24,17 +26,18 @@ resource "laravel_cloud_environment" "example" {
   application_id = laravel_cloud_application.example.id
   name           = "production"
   branch         = "main"
-
-  php_version  = "8.4:1"
-  node_version = "22"
-
-  uses_push_to_deploy = true
+  php_version    = "8.4:1"
 }
 
-# Creating this resource runs a real command against the environment.
-resource "laravel_cloud_command" "example" {
+# Creating this resource runs the command once on the environment, which must
+# have been deployed. Changing the command runs the new one.
+resource "laravel_cloud_command" "seed_roles" {
   environment_id = laravel_cloud_environment.example.id
-  command        = "php artisan migrate --force"
+  command        = "php artisan db:seed --class=RoleSeeder --force"
+}
+
+output "seed_roles_output" {
+  value = laravel_cloud_command.seed_roles.output
 }
 ```
 

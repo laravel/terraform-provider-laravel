@@ -55,7 +55,7 @@ func (d *InstanceSizesDataSource) Schema(_ context.Context, _ datasource.SchemaR
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
 							Computed:    true,
-							Description: "Size identifier (e.g. flex.c-1vcpu-256mb, mq-pro-1gb).",
+							Description: "Size identifier (such as flex.c-1vcpu-256mb, mq-pro-1gb).",
 						},
 						"label": schema.StringAttribute{
 							Computed:    true,
@@ -76,7 +76,7 @@ func (d *InstanceSizesDataSource) Schema(_ context.Context, _ datasource.SchemaR
 						"cpu_count": schema.Float64Attribute{
 							Computed: true,
 							Description: "Number of CPU cores. Managed-queue sizes may express " +
-								"a fractional vCPU (e.g. 0.5).",
+								"a fractional vCPU (such as 0.5).",
 						},
 						"instance_class": schema.StringAttribute{
 							Computed: true,
@@ -100,7 +100,7 @@ func (d *InstanceSizesDataSource) Configure(_ context.Context, req datasource.Co
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Data Source Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected data source configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	d.client = c

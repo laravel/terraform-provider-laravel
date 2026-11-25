@@ -35,6 +35,17 @@ func (c *Client) UpdateDomain(ctx context.Context, id string, req UpdateDomainRe
 	return &doc.Data, nil
 }
 
+// VerifyDomain checks the domain's DNS records now and returns the domain.
+// The API checks at most once a minute per domain; a request within that
+// minute returns the domain as it is.
+func (c *Client) VerifyDomain(ctx context.Context, id string) (*DomainData, error) {
+	var doc Document[DomainData]
+	if err := c.do(ctx, "POST", fmt.Sprintf("/domains/%s/verify", id), nil, &doc); err != nil {
+		return nil, err
+	}
+	return &doc.Data, nil
+}
+
 func (c *Client) DeleteDomain(ctx context.Context, id string) error {
 	return c.do(ctx, "DELETE", fmt.Sprintf("/domains/%s", id), nil, nil)
 }

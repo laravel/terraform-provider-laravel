@@ -10,25 +10,42 @@ description: |-
 
 Manages a Laravel Cloud WebSocket application.
 
+~> **Beta:** This provider is in beta and may change between releases.
+
 ## Example Usage
 
 ```terraform
 resource "laravel_cloud_websocket_server" "example" {
-  name   = "my-reverb"
-  type   = "reverb"
-  region = "us-east-2"
-
-  # Valid values: 100, 200, 500, 2000, 5000, 10000.
-  max_connections = 5000
+  name            = "my-app-reverb"
+  type            = "reverb"
+  region          = "us-east-2"
+  max_connections = 500
 }
 
-resource "laravel_cloud_websocket_application" "example" {
+resource "laravel_cloud_websocket_application" "chat" {
   server_id       = laravel_cloud_websocket_server.example.id
   name            = "chat"
   allowed_origins = ["https://example.com"]
 
   ping_interval    = 30
   activity_timeout = 60
+}
+
+resource "laravel_cloud_application" "example" {
+  name                         = "my-app"
+  repository                   = "my-org/my-app"
+  region                       = "us-east-2"
+  source_control_provider_type = "github"
+}
+
+# Attach the application to the environment, which sets its REVERB_*
+# variables.
+resource "laravel_cloud_environment" "example" {
+  application_id           = laravel_cloud_application.example.id
+  name                     = "production"
+  branch                   = "main"
+  php_version              = "8.4:1"
+  websocket_application_id = laravel_cloud_websocket_application.chat.id
 }
 ```
 
@@ -37,14 +54,14 @@ resource "laravel_cloud_websocket_application" "example" {
 
 ### Required
 
-- `name` (String) Application name.
+- `name` (String) Application name. Every server already has an application named `production`, which Laravel Cloud creates with it, so that name cannot be used.
 - `server_id` (String) Parent WebSocket server ID.
 
 ### Optional
 
-- `activity_timeout` (Number) Activity timeout in seconds.
-- `allowed_origins` (List of String) Allowed origins for WebSocket connections. The API always returns a list here, empty when no origins are restricted, so this is Computed as well as Optional. Because it is computed, REMOVING this attribute from the configuration leaves the existing origins in place rather than clearing them -- assign an empty list to clear them.
-- `ping_interval` (Number) Ping interval in seconds.
+- `activity_timeout` (Number) Activity timeout in seconds, from 1 to 60.
+- `allowed_origins` (List of String) Allowed origins for WebSocket connections. The API always returns a list here, empty when no origins are restricted, so this is computed as well as optional. Because it is computed, removing this attribute from the configuration leaves the existing origins in place. Assign an empty list to clear them.
+- `ping_interval` (Number) Ping interval in seconds, from 1 to 60.
 
 ### Read-Only
 

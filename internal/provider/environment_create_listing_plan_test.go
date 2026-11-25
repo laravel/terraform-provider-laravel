@@ -71,6 +71,7 @@ func newListingFailureServer(t *testing.T) string {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	disablePacing(t)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv.URL

@@ -1,15 +1,14 @@
 # SaaS with production and staging
 
 A multi-tenant SaaS ("Acme Invoicing") running two environments off one
-application — the layout most teams end up with once staging stops being an
-afterthought.
+application.
 
 | Piece | Production | Staging |
 |---|---|---|
 | Branch | `main` | `develop` |
-| Web instance | `flex.c-2vcpu-1gb`, Octane, autoscaled on CPU/memory | `flex.c-1vcpu-256mb`, fixed at 1 replica |
+| Web instance | `flex.c-2vcpu-1gb`, Octane, autoscaled on CPU/memory | `flex-512mb`, fixed at 1 replica, hibernates after 5 minutes |
 | Database | `invoicing_production` | `invoicing_staging` |
-| Cache | Valkey 250mb | none — database drivers |
+| Cache | Valkey 250mb | none, uses the database drivers |
 | Domain | `invoicing.example.com` + `www` redirect | assigned vanity domain |
 | Mail | real | `MAIL_MAILER=log` |
 
@@ -33,10 +32,11 @@ The domain will not verify until you create the records reported in the
 
 ## Two things worth knowing
 
-**`laravel_cloud_environment_variables` replaces the whole set.** Anything a
-teammate added in the dashboard and did not add here is deleted on the next
-apply. That is the point — the file is the source of truth — but it surprises
-people once.
+**`laravel_cloud_environment_variables` wins for the keys it lists.** On every
+apply it writes those keys, overwriting a value a teammate changed in the
+dashboard. Removing a key from the map deletes that variable. Variables added
+in the dashboard and never listed here are left alone, and Terraform does not
+show them.
 
 **The cluster will not destroy while it holds databases.** `terraform destroy`
 fails and names them. Set `force_destroy = true` on the cluster to allow it,

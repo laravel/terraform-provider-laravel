@@ -16,8 +16,11 @@ output "reverb_app_id" {
   value = laravel_cloud_websocket_application.ledger.app_id
 }
 
-# The queue instance reports its raw status JSON, which is the quickest way to
+# Each managed queue reports its raw status JSON, which is the quickest way to
 # see whether jobs are backing up.
 output "queue_status" {
-  value = laravel_cloud_instance.queue.queue_status
+  value = {
+    default = laravel_cloud_instance.queue_default.queue_status
+    high    = laravel_cloud_instance.queue_high.queue_status
+  }
 }

@@ -4,46 +4,46 @@ about: Something isn't working as expected
 labels: bug
 ---
 
-### Terraform Version
+### Terraform version
 
 <!--- Run `terraform -v` to show the version. -->
 
 ```
 ```
 
-### Provider Version
+### Provider version
 
 <!--- Run `terraform providers` or check your .terraform.lock.hcl -->
 
 ```
 ```
 
-### Affected Resource(s)
+### Affected resource(s)
 
 <!--- List the resources/data sources affected. -->
 
 - `laravel_cloud_XXXX`
 
-### Terraform Configuration
+### Terraform configuration
 
 <!--- Paste your Terraform configuration below. Redact any sensitive values. -->
 
 ```hcl
 ```
 
-### Expected Behavior
+### Expected behavior
 
 <!--- What should have happened? -->
 
-### Actual Behavior
+### Actual behavior
 
 <!--- What actually happened? -->
 
-### Steps to Reproduce
+### Steps to reproduce
 
 1. `terraform apply`
 
-### Debug Output
+### Debug output
 
 <!---
 Provide a link to a GitHub Gist containing the complete debug output:
@@ -52,6 +52,6 @@ https://www.terraform.io/docs/internals/debugging.html
 Please do NOT paste debug output inline; create a Gist.
 -->
 
-### Additional Context
+### Additional context
 
 <!--- Any other context about the problem. -->

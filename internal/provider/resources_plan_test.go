@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -93,7 +94,7 @@ resource "laravel_cloud_websocket_server" "server" {
   name            = "reverb"
   type            = "reverb"
   region          = "us-east-1"
-  max_connections = 1000
+  max_connections = 2000
 }
 `
 
@@ -138,8 +139,12 @@ resource "laravel_cloud_cache" "cache" {
 			plancheck.ExpectUnknownValue(addr, tfjsonpath.New("connection_details")),
 		},
 		[]statecheck.StateCheck{
+			// Create waits until the cache leaves "creating".
 			statecheck.ExpectKnownValue(addr, tfjsonpath.New("status"), knownvalue.StringExact("available")),
 			statecheck.ExpectKnownValue(addr, tfjsonpath.New("connection_details").AtMapKey("hostname"), knownvalue.StringExact("cache.test.local")),
+			// Upstash has no eviction policy or scale to zero.
+			statecheck.ExpectKnownValue(addr, tfjsonpath.New("eviction_policy"), knownvalue.Null()),
+			statecheck.ExpectKnownValue(addr, tfjsonpath.New("uses_hibernation"), knownvalue.Bool(false)),
 		},
 	)
 }
@@ -294,8 +299,142 @@ resource "laravel_cloud_background_process" "bgp" {
 		[]statecheck.StateCheck{
 			statecheck.ExpectKnownValue(addr, tfjsonpath.New("type"), knownvalue.StringExact("worker")),
 			statecheck.ExpectKnownValue(addr, tfjsonpath.New("processes"), knownvalue.Int64Exact(2)),
+			statecheck.ExpectKnownValue(addr, tfjsonpath.New("command"), knownvalue.StringExact("php artisan queue:work --quiet")),
 		},
 	)
+}
+
+// The API generates a worker's command from its config and rewrites
+// the stored config, and type changes in place.
+func TestBackgroundProcessWorkerLifecyclePlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	addr := "laravel_cloud_background_process.bgp"
+	cfg := func(processes int, body string) string {
+		return providerCfg(baseURL) + appEnvStack + instanceStack + fmt.Sprintf(`
+resource "laravel_cloud_background_process" "bgp" {
+  instance_id = laravel_cloud_instance.instance.id
+  processes   = %d
+%s
+}
+`, processes, body)
+	}
+	tries3 := cfg(1, `  type = "worker"
+  config = jsonencode({ queue = "default", tries = 3 })`)
+	tries5 := cfg(1, `  type = "worker"
+  config = jsonencode({ queue = "default", tries = 5 })`)
+	command := tfjsonpath.New("command")
+	setStoredConfig := func(config map[string]any) func() {
+		return func() {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			for _, attrs := range f.objects["background_process"] {
+				attrs["config"] = config
+			}
+		}
+	}
+	update := func() plancheck.PlanCheck {
+		return plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      cfg(1, "  type = \"worker\"\n  command = \"php artisan queue:work\""),
+				ExpectError: regexp.MustCompile(`command cannot be set for a worker`),
+			},
+			{
+				Config:      cfg(1, "  type = \"worker\"\n  config = jsonencode({ max_jobs = 10 })"),
+				ExpectError: regexp.MustCompile(`Unsupported config key`),
+			},
+			{
+				Config:      cfg(1, "  type = \"custom\"\n  command = \"php artisan inspire\"\n  config = jsonencode({ tries = 1 })"),
+				ExpectError: regexp.MustCompile(`config cannot be set for a custom process`),
+			},
+			{
+				Config: tries3,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					create(addr),
+					plancheck.ExpectUnknownValue(addr, command),
+				}},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, command, knownvalue.StringExact("php artisan queue:work --queue=default --tries=3 --quiet")),
+				},
+			},
+			{
+				// Keys the API reports as null were never set.
+				PreConfig:        setStoredConfig(map[string]any{"queue": "default", "tries": 3, "rest": nil, "force": nil}),
+				Config:           tries3,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+			{
+				// A change made outside Terraform is drift.
+				PreConfig:        setStoredConfig(map[string]any{"queue": "default", "tries": 7}),
+				Config:           tries3,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{update()}},
+			},
+			{
+				// Only processes changes, so the command is kept.
+				Config: cfg(2, `  type = "worker"
+  config = jsonencode({ queue = "default", tries = 3 })`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					update(),
+					plancheck.ExpectKnownValue(addr, command, knownvalue.StringExact("php artisan queue:work --queue=default --tries=3 --quiet")),
+				}},
+			},
+			{
+				Config: tries5,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					update(),
+					plancheck.ExpectUnknownValue(addr, command),
+				}},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, command, knownvalue.StringExact("php artisan queue:work --queue=default --tries=5 --quiet")),
+				},
+			},
+			{
+				ResourceName:      addr,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			{
+				// Removing config clears it rather than leaving the old one.
+				Config:           cfg(1, `  type = "worker"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{update()}},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, command, knownvalue.StringExact("php artisan queue:work --quiet")),
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("config"), knownvalue.Null()),
+				},
+			},
+			{
+				Config:           cfg(1, `  type = "worker"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+			{
+				Config: cfg(1, `  type = "custom"
+  command = "php artisan schedule:work"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{update()}},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, command, knownvalue.StringExact("php artisan schedule:work")),
+				},
+			},
+			{
+				Config: cfg(1, `  type = "custom"
+  command = "php artisan schedule:work"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+			{
+				Config: tries3,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					update(),
+					plancheck.ExpectUnknownValue(addr, command),
+				}},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, command, knownvalue.StringExact("php artisan queue:work --queue=default --tries=3 --quiet")),
+				},
+			},
+		},
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +559,7 @@ resource "laravel_cloud_database_restore" "restore" {
   database_cluster_id = laravel_cloud_database_cluster.cluster.id
   name                = "restored-db"
   restore_time        = "2026-01-01T00:00:00Z"
+  force_destroy       = true
 }
 `
 	runPlanStability(t, config,
@@ -496,7 +636,7 @@ resource "laravel_cloud_websocket_application" "wsapp" {
   name             = "chat"
   allowed_origins  = ["https://example.com"]
   ping_interval    = 60
-  activity_timeout = 120
+  activity_timeout = 60
 }
 `
 	runPlanStability(t, config,
@@ -519,7 +659,7 @@ resource "laravel_cloud_websocket_application" "wsapp" {
   name             = "chat"
   allowed_origins  = ["https://example.com"]
   ping_interval    = 60
-  activity_timeout = 120
+  activity_timeout = 60
 }
 `
 	resource.Test(t, resource.TestCase{

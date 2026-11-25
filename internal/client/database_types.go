@@ -1,6 +1,9 @@
 package client
 
-import "context"
+import (
+	"context"
+	"net/url"
+)
 
 func (c *Client) ListDatabaseTypes(ctx context.Context) ([]DatabaseTypeInfo, error) {
 	var resp DatabaseTypesResponse
@@ -39,4 +42,18 @@ func extractSizesFromConfigSchema(schema []map[string]any) []string {
 		return sizes
 	}
 	return nil
+}
+
+// ListDatabasePresets returns the presets the organization can use to create
+// a database cluster of the given type in the given region. Both are
+// required.
+func (c *Client) ListDatabasePresets(ctx context.Context, databaseType, region string) ([]DatabasePreset, error) {
+	q := url.Values{"type": {databaseType}, "region": {region}}
+	var resp struct {
+		Data []DatabasePreset `json:"data"`
+	}
+	if err := c.do(ctx, "GET", "/databases/presets?"+q.Encode(), nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
 }

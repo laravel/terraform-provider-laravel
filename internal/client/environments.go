@@ -16,10 +16,12 @@ func (c *Client) ListEnvironments(ctx context.Context, applicationID string) ([]
 // block entirely unless it is asked for, and neither the owning application
 // id nor the branch is otherwise recoverable on import. `branch` is not an
 // attribute at all -- it is a relationship whose identifier carries an id, so
-// the human-readable name has to come from the included branch object.
+// the human-readable name has to come from the included branch object. The
+// attached database, cache and WebSocket application are likewise reported
+// only as included relationships.
 func (c *Client) GetEnvironment(ctx context.Context, id string) (*EnvironmentData, error) {
 	var doc Document[EnvironmentData]
-	if err := c.do(ctx, "GET", fmt.Sprintf("/environments/%s?include=application,branch", id), nil, &doc); err != nil {
+	if err := c.do(ctx, "GET", fmt.Sprintf("/environments/%s?include=application,branch,database,cache,websocketApplication", id), nil, &doc); err != nil {
 		return nil, err
 	}
 
@@ -62,6 +64,27 @@ func (c *Client) CreateEnvironment(ctx context.Context, applicationID string, re
 func (c *Client) UpdateEnvironment(ctx context.Context, id string, req UpdateEnvironmentRequest) (*EnvironmentData, error) {
 	var doc Document[EnvironmentData]
 	if err := c.do(ctx, "PATCH", fmt.Sprintf("/environments/%s", id), req, &doc); err != nil {
+		return nil, err
+	}
+	return &doc.Data, nil
+}
+
+// StartEnvironment starts a stopped environment by deploying it. The
+// environment reports itself running only once that deployment succeeds.
+// Like CreateDeployment, the deployment may come back queued.
+func (c *Client) StartEnvironment(ctx context.Context, id string) (deployment *DeploymentData, queued *QueuedDeploymentData, err error) {
+	var doc Document[json.RawMessage]
+	if err := c.do(ctx, "POST", fmt.Sprintf("/environments/%s/start", id), nil, &doc); err != nil {
+		return nil, nil, err
+	}
+	return decodeDeployment(doc.Data)
+}
+
+// StopEnvironment stops an environment, cancelling a deployment in progress.
+// The API refuses it for an environment that has never been deployed.
+func (c *Client) StopEnvironment(ctx context.Context, id string) (*EnvironmentData, error) {
+	var doc Document[EnvironmentData]
+	if err := c.do(ctx, "POST", fmt.Sprintf("/environments/%s/stop", id), nil, &doc); err != nil {
 		return nil, err
 	}
 	return &doc.Data, nil

@@ -10,26 +10,47 @@ description: |-
 
 Manages a Laravel Cloud database cluster.
 
+~> **Beta:** This provider is in beta and may change between releases.
+
 ## Example Usage
 
 ```terraform
 resource "laravel_cloud_database_cluster" "example" {
-  name    = "my-db"
+  name    = "my-app-db"
   type    = "laravel_mysql"
   version = "8.4"
   region  = "us-east-2"
 
-  # `config` is an opaque JSON document whose shape depends on the database
-  # type. Every key the API returns must be present, with exactly the value it
-  # stores, or the next plan shows a permanent diff. Discover the schema and
-  # the valid `size` enum with `GET /databases/types`.
+  # The settings of the database type, as JSON. size is one of the sizes the
+  # laravel_cloud_database_types data source lists for the type.
   config = jsonencode({
-    size                     = "mysql-flex-512mb"
-    storage                  = 10
+    size                     = "mysql-flex-1gb"
+    storage                  = 10 # GiB
+    storage_autoscale_max_gb = 50 # grow storage on its own, up to 50 GiB
     is_public                = false
-    uses_scheduled_snapshots = false
+    uses_scheduled_snapshots = true
     retention_days           = 7
-    suspend_seconds          = 0
+    maintenance_window       = "sun:06:00-sun:06:30" # UTC
+  })
+
+  # The cluster starts with a default database; let destroy remove it.
+  force_destroy = true
+}
+
+# A Neon Serverless Postgres cluster, which scales to zero when idle.
+resource "laravel_cloud_database_cluster" "neon" {
+  name    = "my-app-pg"
+  type    = "neon_serverless_postgres"
+  version = "18"
+  region  = "us-east-2"
+
+  # Compute units scale between cu_min and cu_max; the database suspends after
+  # suspend_seconds without connections.
+  config = jsonencode({
+    cu_min          = 0.25
+    cu_max          = 1
+    suspend_seconds = 300
+    retention_days  = 1
   })
 }
 ```
@@ -39,14 +60,14 @@ resource "laravel_cloud_database_cluster" "example" {
 
 ### Required
 
-- `config` (String) JSON-encoded configuration specific to the database type (required by the API).
+- `config` (String) JSON-encoded configuration specific to the database type (required by the API). For Laravel MySQL, storage_autoscale_max_gb turns on automatic storage upsizing up to that many GiB; the API leaves it off unless it is set. While it is on, storage is a minimum: storage the platform has grown past it is not a change, and is never sent back. To turn upsizing off, set storage_autoscale_max_gb = null; removing the key leaves the cluster's setting as it is.
 - `name` (String) Cluster name (3-40 characters, lowercase alphanumeric).
 - `region` (String) Cloud region.
-- `type` (String) Database type (e.g. laravel_mysql, aws_rds_mysql, aws_rds_postgres, neon_serverless_postgres). These take a separate "version"; the retired identifiers that bake the version into the type, such as laravel_mysql_84, are still accepted but should not be used for new clusters. List the available types with the laravel_cloud_database_types data source.
+- `type` (String) Database type (such as laravel_mysql, aws_rds_mysql, aws_rds_postgres, neon_serverless_postgres). These take a separate "version"; the retired identifiers that bake the version into the type, such as laravel_mysql_84, are still accepted but should not be used for new clusters. List the available types with the laravel_cloud_database_types data source.
 
 ### Optional
 
-- `cluster_id` (String) Dedicated cluster ID. Changing this forces a new cluster: the API's update endpoint accepts config and nothing else.
+- `cluster_id` (String) Dedicated cluster ID, from the laravel_cloud_dedicated_clusters data source (type rds-databases for the AWS RDS types, mysql-databases for Laravel MySQL; Neon Serverless Postgres does not accept one). The cluster must be active and in this cluster's region. When omitted, an AWS RDS type is placed on one of the organization's dedicated RDS clusters in the region, in no defined order, so set it when the organization has more than one there; Laravel MySQL goes to the shared, least-loaded infrastructure. Create-only: no API endpoint reports a database cluster's dedicated cluster, so Terraform cannot read it back or fill it in on import. An imported cluster leaves it null, and adding it to the configuration afterwards records it without replacing the cluster. Changing a recorded value forces a new cluster: the API's update endpoint accepts config and nothing else.
 - `create_default_database` (Boolean) Whether the platform creates a default database inside the new cluster. The API defaults to true, and rejects false for Neon Serverless Postgres. Create-only: the API never reports it back, so an imported cluster leaves it null.
 - `force_destroy` (Boolean) Allow destroying this cluster even though it still contains databases. The API refuses to delete a cluster while any database is attached, and a cluster carries at least the one the platform creates with it (unless create_default_database is false), so destroying is usually impossible without this. Setting it true DELETES EVERY DATABASE IN THE CLUSTER, including ones Terraform did not create and does not manage. Defaults to false, in which case destroy fails and names the databases that are in the way.
 - `version` (String) Database engine version (see the versions attribute of the laravel_cloud_database_types data source). Required by the API for the current type identifiers such as "laravel_mysql"; omit it only when using a retired identifier that bakes the version into the type, such as "laravel_mysql_84". Create-only: the API never reports it back, so an imported cluster leaves it null.

@@ -58,6 +58,37 @@ func (f *fakeCloud) registerEnvironmentExtraRoutes(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, environmentDoc(env))
 	})
 
+	// The sending keys an environment can reuse are those of the other
+	// environments with Resend attached, each listed once with how many
+	// environments use it.
+	mux.HandleFunc("GET /environments/{id}/resend/keys", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		id := r.PathValue("id")
+		if _, ok := f.envs[id]; !ok {
+			writeError(w, http.StatusNotFound, fmt.Errorf("environment not found"))
+			return
+		}
+		counts := map[string]int{}
+		var names []string
+		for envID, env := range f.envs {
+			if envID == id || env.Attributes.Resend == nil {
+				continue
+			}
+			name := env.Attributes.Resend.KeyName
+			if counts[name] == 0 {
+				names = append(names, name)
+			}
+			counts[name]++
+		}
+		sort.Strings(names)
+		keys := []any{}
+		for _, name := range names {
+			keys = append(keys, map[string]any{"id": "rkey-" + name, "name": name, "environment_count": counts[name]})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": keys})
+	})
+
 	mux.HandleFunc("POST /environments/{id}/resend", func(w http.ResponseWriter, r *http.Request) {
 		var req client.AttachResendRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -214,6 +245,9 @@ func restoreNulls(req *client.UpdateEnvironmentRequest, body map[string]any) {
 	}
 	if isNull("hibernation_wake_up_interval") {
 		req.HibernationWakeUpInterval = &client.NullableInt{Null: true}
+	}
+	if isNull("post_deploy_command") {
+		req.PostDeployCommand = &client.NullableString{Null: true}
 	}
 }
 

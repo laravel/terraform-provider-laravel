@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -82,7 +81,7 @@ func (r *DatabaseResource) Configure(_ context.Context, req resource.ConfigureRe
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected resource configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	r.client = c
@@ -111,16 +110,16 @@ func (r *DatabaseResource) Create(ctx context.Context, req resource.CreateReques
 
 	// If no match was found, create a new one with retries.
 	if db == nil {
+		// The cluster refuses new databases while it is busy, which includes
+		// while it is still being created in the same apply.
 		createReq := client.CreateDatabaseRequest{Name: wantName}
-		err := client.RetryOnConflict(ctx, 30, 10*time.Second, func() error {
+		err := client.RetryOnConflict(ctx, databaseBusyAttempts, databaseBusyInterval, func() error {
 			// The create response carries the *cluster* id, not the new schema
 			// id, so its return value is intentionally discarded — the canonical
 			// id is resolved from the cluster listing below.
 			_, createErr := r.client.CreateDatabase(ctx, clusterID, createReq)
 			return createErr
-		}, func(err error) bool {
-			return strings.Contains(err.Error(), "update operation is already in progress")
-		})
+		}, client.IsBusy)
 		if err != nil {
 			resp.Diagnostics.AddError("Error creating database", err.Error())
 			return
@@ -194,18 +193,17 @@ func (r *DatabaseResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	// The cluster may have an operation in progress. Retry for up to 5 minutes.
+	// The cluster refuses the delete while it is busy, for example right after
+	// another database in it was deleted.
 	clusterID := state.ClusterID.ValueString()
 	id := state.ID.ValueString()
-	err := client.RetryOnConflict(ctx, 30, 10*time.Second, func() error {
+	err := client.RetryOnConflict(ctx, databaseBusyAttempts, databaseBusyInterval, func() error {
 		err := r.client.DeleteDatabase(ctx, clusterID, id)
 		if client.IsNotFound(err) {
 			return nil // Already gone — nothing to do.
 		}
 		return err
-	}, func(err error) bool {
-		return strings.Contains(err.Error(), "update operation is already in progress")
-	})
+	}, client.IsBusy)
 	if err != nil {
 		resp.Diagnostics.AddError("Error deleting database", err.Error())
 	}

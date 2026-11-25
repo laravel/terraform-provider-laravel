@@ -10,6 +10,8 @@ description: |-
 
 Manages a domain attached to a Laravel Cloud environment.
 
+~> **Beta:** This provider is in beta and may change between releases.
+
 ## Example Usage
 
 ```terraform
@@ -24,16 +26,29 @@ resource "laravel_cloud_environment" "example" {
   application_id = laravel_cloud_application.example.id
   name           = "production"
   branch         = "main"
-
-  php_version  = "8.4:1"
-  node_version = "22"
-
-  uses_push_to_deploy = true
+  php_version    = "8.4:1"
 }
 
+# Redirect www.example.com to example.com.
 resource "laravel_cloud_domain" "example" {
   environment_id = laravel_cloud_environment.example.id
-  name           = "app.example.com"
+  name           = "example.com"
+  www_redirect   = "www_to_root"
+}
+
+# The DNS records to create at your DNS provider before the domain verifies.
+output "domain_dns_records" {
+  value = laravel_cloud_domain.example.dns_records
+}
+
+# An app subdomain. Once its records in dns_records exist, for example after a
+# first apply with wait_for_verification = false, apply waits for it to verify.
+resource "laravel_cloud_domain" "app" {
+  environment_id        = laravel_cloud_environment.example.id
+  name                  = "app.example.com"
+  verification_method   = "real_time"
+  wait_for_verification = true
+  verification_timeout  = 15
 }
 ```
 
@@ -49,7 +64,9 @@ resource "laravel_cloud_domain" "example" {
 
 - `allow_downtime` (Boolean) Whether to allow downtime while attaching the domain. Create-time only; changing this forces a new domain.
 - `cloudflare_strategy` (String) Cloudflare integration strategy (none, dns, dns_proxy). Create-time only; changing this forces a new domain.
-- `verification_method` (String) Verification method (pre_verification, real_time). Editable in place via the API's update endpoint.
+- `verification_method` (String) Verification method (pre_verification, real_time). Changing it updates the domain in place.
+- `verification_timeout` (Number) Minutes to wait for the domain to verify when wait_for_verification is true. Defaults to 30.
+- `wait_for_verification` (Boolean) Whether apply waits for the domain to verify, asking Laravel Cloud to check its DNS records once a minute, for up to verification_timeout minutes. Create the records in dns_records first, for example from a previous apply. A domain that does not verify in time is kept, with a warning. Setting it on an existing domain waits on the next apply.
 - `wildcard_enabled` (Boolean) Enable wildcard subdomain. Create-time only; changing this forces a new domain.
 - `www_redirect` (String) WWW redirect (root_to_www, www_to_root). Create-time only: the API's update endpoint accepts verification_method and nothing else, so changing this forces a new domain.
 

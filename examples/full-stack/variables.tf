@@ -32,11 +32,11 @@ variable "enable_api_blocked" {
   default = false
 }
 
-# Tier 2 toggle. Off by default: a plain `apply` creates only the 13 core
-# resources, all of which are ordinary CRUD. Set true to also exercise the
-# four side-effecting resources (deployment, command, snapshot, restore),
-# which run real operations and need a deployed environment / a live PITR
-# window -- see side-effecting.tf.
+# Tier 2 toggle. Off by default, so a plain `apply` creates only the 9 core
+# resources, all of which are ordinary CRUD. Set true to also create the
+# deployment and command, which run real operations and need a deployed
+# environment. The snapshot and restore are commented out in
+# side-effecting.tf.
 variable "enable_side_effecting" {
   type    = bool
   default = false

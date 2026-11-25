@@ -10,10 +10,17 @@ description: |-
 
 Manages an organization secret. The value is encrypted to the organization's public key before it leaves Terraform, and the API never returns it. Attach a secret to an environment with laravel_cloud_environment_secret.
 
+~> **Beta:** This provider is in beta and may change between releases.
+
 ## Example Usage
 
 ```terraform
 variable "stripe_secret" {
+  type      = string
+  sensitive = true
+}
+
+variable "mailgun_secret" {
   type      = string
   sensitive = true
 }
@@ -31,11 +38,6 @@ resource "laravel_cloud_secret" "stripe" {
 resource "laravel_cloud_secret" "mailgun" {
   key   = "MAILGUN_SECRET"
   value = var.mailgun_secret
-}
-
-variable "mailgun_secret" {
-  type      = string
-  sensitive = true
 }
 ```
 

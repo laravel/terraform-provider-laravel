@@ -4,22 +4,34 @@ page_title: "laravel_cloud_websocket_server Resource - Laravel Cloud"
 subcategory: ""
 description: |-
   Manages a Laravel Cloud WebSocket server (cluster).
+  Laravel Cloud creates every server with a default WebSocket application named production, which this resource does not manage. It shares the server's max_connections with any laravel_cloud_websocket_application on the server, and its name is taken, so an application named production cannot be created on the same server.
 ---
 
 # laravel_cloud_websocket_server (Resource)
 
 Manages a Laravel Cloud WebSocket server (cluster).
 
+Laravel Cloud creates every server with a default WebSocket application named `production`, which this resource does not manage. It shares the server's `max_connections` with any `laravel_cloud_websocket_application` on the server, and its name is taken, so an application named `production` cannot be created on the same server.
+
+~> **Beta:** This provider is in beta and may change between releases.
+
 ## Example Usage
 
 ```terraform
+# A Laravel Reverb server. Laravel Cloud creates an application named
+# "production" on it; add more with laravel_cloud_websocket_application.
 resource "laravel_cloud_websocket_server" "example" {
-  name   = "my-reverb"
+  name   = "my-app-reverb"
   type   = "reverb"
   region = "us-east-2"
 
-  # Valid values: 100, 200, 500, 2000, 5000, 10000.
-  max_connections = 5000
+  # One of 100, 200, 500, 2000, 5000 or 10000, as the plan allows (see the
+  # laravel_cloud_websocket_server_types data source).
+  max_connections = 500
+}
+
+output "reverb_host" {
+  value = laravel_cloud_websocket_server.example.hostname
 }
 ```
 
@@ -28,10 +40,10 @@ resource "laravel_cloud_websocket_server" "example" {
 
 ### Required
 
-- `max_connections` (Number) Maximum concurrent connections.
+- `max_connections` (Number) Maximum concurrent connections: 100, 200, 500, 2000, 5000 or 10000. Changing it splits the connections evenly across the server's applications again.
 - `name` (String) Server name.
 - `region` (String) Cloud region.
-- `type` (String) Server type (e.g. reverb).
+- `type` (String) Server type (such as reverb).
 
 ### Read-Only
 

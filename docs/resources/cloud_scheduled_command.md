@@ -10,14 +10,48 @@ description: |-
 
 Manages a command that runs on a schedule on a Laravel Cloud instance.
 
+~> **Beta:** This provider is in beta and may change between releases.
+
 ## Example Usage
 
 ```terraform
+resource "laravel_cloud_application" "example" {
+  name                         = "my-app"
+  repository                   = "my-org/my-app"
+  region                       = "us-east-2"
+  source_control_provider_type = "github"
+}
+
+resource "laravel_cloud_environment" "example" {
+  application_id = laravel_cloud_application.example.id
+  name           = "production"
+  branch         = "main"
+  php_version    = "8.4:1"
+}
+
+# Laravel Cloud creates the environment's app instance with it; type = "app"
+# takes it over.
+resource "laravel_cloud_instance" "app" {
+  environment_id = laravel_cloud_environment.example.id
+  name           = "App"
+  type           = "app"
+  size           = "flex-512mb"
+  scaling_type   = "none"
+}
+
+# A command that runs on its own schedule, outside the Laravel scheduler.
 resource "laravel_cloud_scheduled_command" "nightly_reports" {
-  instance_id = laravel_cloud_instance.example.id
+  instance_id = laravel_cloud_instance.app.id
   name        = "Nightly reports"
   command     = "php artisan reports:send"
   schedule    = "0 3 * * *" # 03:00 UTC every day
+}
+
+resource "laravel_cloud_scheduled_command" "prune_models" {
+  instance_id = laravel_cloud_instance.app.id
+  name        = "Prune models"
+  command     = "php artisan model:prune"
+  schedule    = "@daily"
 }
 ```
 
@@ -26,9 +60,9 @@ resource "laravel_cloud_scheduled_command" "nightly_reports" {
 
 ### Required
 
-- `command` (String) The command to run (max 500 chars), e.g. "php artisan reports:send". Each command can be scheduled only once per instance.
+- `command` (String) The command to run (max 500 chars), such as "php artisan reports:send". Each command can be scheduled only once per instance.
 - `instance_id` (String) Parent instance ID.
-- `schedule` (String) A five-field cron expression, evaluated in UTC (e.g. "0 3 * * *"). The @yearly, @annually, @monthly, @weekly, @daily, @midnight and @hourly descriptors are also accepted.
+- `schedule` (String) A five-field cron expression, evaluated in UTC (such as "0 3 * * *"). The @yearly, @annually, @monthly, @weekly, @daily, @midnight and @hourly descriptors are also accepted.
 
 ### Optional
 

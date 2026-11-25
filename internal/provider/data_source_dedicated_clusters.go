@@ -18,6 +18,9 @@ type DedicatedClustersDataSource struct {
 
 type DedicatedClustersDataSourceModel struct {
 	ID       types.String                `tfsdk:"id"`
+	Region   types.String                `tfsdk:"region"`
+	Type     types.String                `tfsdk:"type"`
+	Status   types.String                `tfsdk:"status"`
 	Clusters []DedicatedClusterItemModel `tfsdk:"clusters"`
 }
 
@@ -41,11 +44,24 @@ func (d *DedicatedClustersDataSource) Metadata(_ context.Context, req datasource
 
 func (d *DedicatedClustersDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Lists dedicated clusters available to your organization.",
+		Description: "Lists dedicated clusters available to your organization, optionally filtered by region, type and status.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
 				Description: "Placeholder identifier.",
+			},
+			"region": schema.StringAttribute{
+				Optional:    true,
+				Description: "Only list clusters whose region contains this value, such as `us-east-2`. The API matches it as a substring.",
+			},
+			"type": schema.StringAttribute{
+				Optional: true,
+				Description: "Only list clusters whose type contains this value, such as `applications`, `rds-databases` or " +
+					"`elasticache-clusters`. The API matches it as a substring.",
+			},
+			"status": schema.StringAttribute{
+				Optional:    true,
+				Description: "Only list clusters whose status contains this value, such as `active`. The API matches it as a substring.",
 			},
 			"clusters": schema.ListNestedAttribute{
 				Computed:    true,
@@ -93,25 +109,33 @@ func (d *DedicatedClustersDataSource) Configure(_ context.Context, req datasourc
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Data Source Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected data source configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	d.client = c
 }
 
-func (d *DedicatedClustersDataSource) Read(ctx context.Context, _ datasource.ReadRequest, resp *datasource.ReadResponse) {
-	clusters, err := d.client.ListDedicatedClusters(ctx)
+func (d *DedicatedClustersDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	var state DedicatedClustersDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	clusters, err := d.client.ListDedicatedClusters(ctx, map[string]string{
+		"region": state.Region.ValueString(),
+		"type":   state.Type.ValueString(),
+		"status": state.Status.ValueString(),
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to read dedicated clusters", err.Error())
 		return
 	}
 
-	state := DedicatedClustersDataSourceModel{
-		ID: types.StringValue("dedicated_clusters"),
-		// An empty result must be an empty list, not a null one: a nil
-		// slice decodes to null and makes length()/for_each error.
-		Clusters: []DedicatedClusterItemModel{},
-	}
+	state.ID = types.StringValue("dedicated_clusters")
+	// An empty result must be an empty list, not a null one: a nil
+	// slice decodes to null and makes length()/for_each error.
+	state.Clusters = []DedicatedClusterItemModel{}
 
 	for _, c := range clusters {
 		state.Clusters = append(state.Clusters, DedicatedClusterItemModel{

@@ -214,12 +214,17 @@ func TestInstanceDefaultQueuePlan(t *testing.T) {
 				Config: queuesConfig(baseURL, "is_default = true", ""),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(first, tfjsonpath.New("is_default"), knownvalue.Bool(true)),
-					statecheck.ExpectKnownValue(second, tfjsonpath.New("is_default"), knownvalue.Bool(false)),
 				},
 			},
 			{
+				// The queues are created in parallel. Cloud makes whichever comes
+				// first the default, so second may have recorded true before
+				// first took the default over; the refresh reads it back.
 				Config:           queuesConfig(baseURL, "is_default = true", ""),
 				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(second, tfjsonpath.New("is_default"), knownvalue.Bool(false)),
+				},
 			},
 			{
 				Config: queuesConfig(baseURL, "", "is_default = true"),

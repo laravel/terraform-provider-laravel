@@ -44,6 +44,9 @@ type ApplicationData struct {
 	ID         string                `json:"id"`
 	Type       string                `json:"type"`
 	Attributes ApplicationAttributes `json:"attributes"`
+	// Relationships is reported only for what the request includes; see
+	// GetApplication.
+	Relationships ApplicationRelationships `json:"relationships"`
 }
 
 type ApplicationAttributes struct {
@@ -59,12 +62,18 @@ type ApplicationAttributes struct {
 	// RootDirectory is the repository subdirectory the application lives in;
 	// null for the repository root.
 	RootDirectory *string `json:"root_directory"`
+	// Framework and Language are the default environment's. Notes is left out
+	// when the token cannot view notes.
+	Framework *string `json:"framework"`
+	Language  *string `json:"language"`
+	Notes     *string `json:"notes"`
 }
 
 // ApplicationRepository is the response-side repository object on an
 // application.
 type ApplicationRepository struct {
-	FullName string `json:"full_name"`
+	FullName      string  `json:"full_name"`
+	DefaultBranch *string `json:"default_branch"`
 }
 
 type CreateApplicationRequest struct {
@@ -77,6 +86,10 @@ type CreateApplicationRequest struct {
 	// an existing one.
 	StarterKit    *string `json:"starter_kit,omitempty"`
 	RootDirectory *string `json:"root_directory,omitempty"`
+	// Serving and BuildCommand configure the default environment. Cloud uses
+	// the build command only for a static site.
+	Serving      *ServingRequest `json:"serving,omitempty"`
+	BuildCommand *string         `json:"build_command,omitempty"`
 }
 
 type UpdateApplicationRequest struct {
@@ -85,7 +98,8 @@ type UpdateApplicationRequest struct {
 	Slug                      *string `json:"slug,omitempty"`
 	DefaultEnvironmentID      *string `json:"default_environment_id,omitempty"`
 	Repository                *string `json:"repository,omitempty"`
-	SlackChannel              *string `json:"slack_channel,omitempty"`
+	// SlackChannel null turns Slack notifications off.
+	SlackChannel *NullableString `json:"slack_channel,omitempty"`
 }
 
 // ---------------------------------------------------------------------
@@ -109,17 +123,24 @@ type EnvironmentData struct {
 // EnvironmentAttributes mirrors EnvironmentResource.attributes in the public
 // OpenAPI spec. Only fields the API actually returns belong here.
 //
-// Several environment settings -- color, timeout, sleep_timeout,
-// shutdown_timeout, uses_purge_edge_cache_on_deploy, uses_vanity_domain -- are
-// accepted by PATCH but are *write-only*: they appear nowhere in the response
-// schema. Decoding them here would silently yield the zero value on every read
-// and overwrite the configured value in state, producing a plan that never
-// converges. They are deliberately absent; see mapEnvironmentToState, which
-// leaves the configured values untouched.
+// A few environment settings -- sleep_timeout, uses_purge_edge_cache_on_deploy
+// and uses_vanity_domain -- are accepted by PATCH but are *write-only*: they
+// appear nowhere in the response. Decoding them here would silently yield the
+// zero value on every read and overwrite the configured value in state,
+// producing a plan that never converges. They are deliberately absent; see
+// mapEnvironmentToState, which leaves the configured values untouched.
 type EnvironmentAttributes struct {
 	Name   string `json:"name"`
 	Slug   string `json:"slug"`
 	Status string `json:"status"`
+	// Color, Timeout and ShutdownTimeout are pointers so that a response
+	// without them keeps the prior value rather than reading as empty.
+	Color           *string `json:"color,omitempty"`
+	Timeout         *int64  `json:"timeout,omitempty"`
+	ShutdownTimeout *int64  `json:"shutdown_timeout,omitempty"`
+	// DeployHookURL is null when the deploy hook is off or the token lacks the
+	// environment_deploy_hook.edit permission.
+	DeployHookURL *string `json:"deploy_hook_url"`
 	// PHPMajorVersion is the read-only major version returned by the API
 	// (e.g. "8.4"). The writable php_version sent on update uses the
 	// "8.4:1" form, so the two are deliberately distinct fields.
@@ -132,9 +153,12 @@ type EnvironmentAttributes struct {
 	// VanityDomain is the read-only vanity domain hostname returned by the
 	// API (empty/null when none). There is no uses_vanity_domain response
 	// flag; presence of a vanity domain is derived from this field.
-	VanityDomain          *string            `json:"vanity_domain"`
-	UsesOctane            bool               `json:"uses_octane"`
-	UsesHibernation       bool               `json:"uses_hibernation"`
+	VanityDomain *string `json:"vanity_domain"`
+	UsesOctane   bool    `json:"uses_octane"`
+	// UsesHibernation is whether sleep mode is on. The backend turns it off,
+	// and still answers 200, when sleep_timeout is sent for an instance size
+	// that cannot hibernate. Nil when not reported.
+	UsesHibernation       *bool              `json:"uses_hibernation,omitempty"`
 	NetworkSettings       EnvironmentNetwork `json:"network_settings"`
 	CreatedFromAutomation bool               `json:"created_from_automation"`
 	CreatedAt             *string            `json:"created_at"`
@@ -145,12 +169,27 @@ type EnvironmentAttributes struct {
 	HibernationWakeUpInterval *int64              `json:"hibernation_wake_up_interval"`
 	// Resend is null when Resend is not attached.
 	Resend *EnvironmentResend `json:"resend"`
+	// InternalNetworking says whether other environments on the same
+	// dedicated cluster can reach this one over the private network.
+	InternalNetworking *EnvironmentInternalNetworking `json:"internal_networking,omitempty"`
+	// DisplayName is the name, or a preview environment's pull request title.
+	DisplayName *string `json:"display_name"`
+	Framework   *string `json:"framework"`
+	Language    *string `json:"language"`
+	// PostDeployCommand is reported only when the organization has post-deploy
+	// commands and the environment is not a preview.
+	PostDeployCommand ReportedString `json:"post_deploy_command,omitzero"`
+	// PullRequest is set on a preview environment.
+	PullRequest *EnvironmentPullRequest `json:"pull_request"`
 	// EnvironmentVariables is the environment's variables, keys and plaintext
 	// values both. There is no GET on /environments/{id}/variables -- that
 	// route answers 405 and accepts POST only -- so this is the only way to
 	// read them back, and the reason laravel_cloud_environment_variables can
 	// detect drift at all.
-	EnvironmentVariables []EnvironmentVariable `json:"environment_variables"`
+	//
+	// The API leaves the key out entirely when the token lacks the "View
+	// environment variables" permission, so nil means unknown, not empty.
+	EnvironmentVariables *[]EnvironmentVariable `json:"environment_variables,omitempty"`
 }
 
 // EnvironmentNetwork is the response-side network_settings object. The cache
@@ -232,6 +271,42 @@ type CreateEnvironmentRequest struct {
 	Name          string  `json:"name"`
 	ClusterID     *string `json:"cluster_id,omitempty"`
 	EdgeNetworkID *string `json:"edge_network_id,omitempty"`
+	// Serving fixes how the environment is served. Without it, a new
+	// environment of an application that has a static environment is static
+	// too. Cloud uses BuildCommand only for a static site.
+	Serving      *ServingRequest `json:"serving,omitempty"`
+	BuildCommand *string         `json:"build_command,omitempty"`
+}
+
+// EnvironmentPullRequest is the pull request a preview environment deploys.
+type EnvironmentPullRequest struct {
+	Number       int64   `json:"number"`
+	URL          *string `json:"url"`
+	Title        *string `json:"title"`
+	SourceBranch *string `json:"source_branch"`
+	TargetBranch *string `json:"target_branch"`
+	Status       string  `json:"status"`
+	Draft        bool    `json:"draft"`
+}
+
+// ReportedString is a nullable response attribute that the API leaves out
+// entirely in some cases. Reported says whether the key was there at all.
+type ReportedString struct {
+	Reported bool
+	Value    *string
+}
+
+func (r *ReportedString) UnmarshalJSON(b []byte) error {
+	r.Reported = true
+	r.Value = nil
+	if string(b) == "null" {
+		return nil
+	}
+	return json.Unmarshal(b, &r.Value)
+}
+
+func (r ReportedString) MarshalJSON() ([]byte, error) {
+	return json.Marshal(r.Value)
 }
 
 type UpdateEnvironmentRequest struct {
@@ -246,7 +321,9 @@ type UpdateEnvironmentRequest struct {
 	BuildCommand     *string `json:"build_command,omitempty"`
 	NodeVersion      *string `json:"node_version,omitempty"`
 	DeployCommand    *string `json:"deploy_command,omitempty"`
-	UsesVanityDomain *bool   `json:"uses_vanity_domain,omitempty"`
+	// PostDeployCommand null clears it.
+	PostDeployCommand *NullableString `json:"post_deploy_command,omitempty"`
+	UsesVanityDomain  *bool           `json:"uses_vanity_domain,omitempty"`
 	// These three are nullable in the spec: JSON null detaches the resource
 	// from the environment. An empty string is not null and is rejected, so
 	// they are raw JSON rather than *string -- see AttachID / DetachID.
@@ -332,12 +409,24 @@ type InstanceAttributes struct {
 	ShutdownTimeout   *int  `json:"shutdown_timeout"`
 	Paused            *bool `json:"paused"`
 	IsDefault         *bool `json:"is_default"`
+	// App-instance settings, stored on the environment: null for every other
+	// instance type. HibernationTimeout is in minutes, and null when
+	// hibernation is off.
+	UsesOctane         *bool  `json:"uses_octane"`
+	UsesInertiaSSR     *bool  `json:"uses_inertia_ssr"`
+	HibernationTimeout *int64 `json:"hibernation_timeout"`
 	// QueueStatus is a string enum per the spec (creating, updating,
 	// available, deleting, deleted, unknown) or null. It is decoded through
 	// QueueStatusValue rather than a plain *string so that a non-string
 	// payload degrades to raw JSON instead of failing the whole decode.
 	QueueStatus QueueStatusValue `json:"queue_status"`
-	CreatedAt   *string          `json:"created_at"`
+	// QueueType is "standard" or "fifo", and null for non-queue instances.
+	QueueType *string `json:"queue_type"`
+	// RetireAt is when the instance's size is scheduled to be retired, and
+	// RetiredAt when it was: a retired queue stops processing jobs.
+	RetireAt  *string `json:"retire_at"`
+	RetiredAt *string `json:"retired_at"`
+	CreatedAt *string `json:"created_at"`
 	// Probes holds the health checks configured on an app instance. Only the
 	// checks and fields that were set are reported; null when none are.
 	Probes *InstanceProbes `json:"probes"`
@@ -377,26 +466,39 @@ type CreateInstanceRequest struct {
 	SleepWithApp                     *bool `json:"sleep_with_app,omitempty"`
 	VisibilityTimeout                *int  `json:"visibility_timeout,omitempty"`
 	ShutdownTimeout                  *int  `json:"shutdown_timeout,omitempty"`
-	// polling_interval is deliberately absent: it appears in neither the
-	// create nor the update request schema. It is read-only.
+	// PollingInterval is required for previous-generation managed queues and
+	// ignored for current-generation (mq.*) ones. The OpenAPI spec omits it.
+	PollingInterval *int `json:"polling_interval,omitempty"`
+	// Fifo creates a FIFO managed queue. The API appends ".fifo" to the name,
+	// and declines it for any other instance type.
+	Fifo *bool `json:"fifo,omitempty"`
+	// BackgroundProcesses must hold exactly one worker for a managed queue,
+	// although the OpenAPI spec does not say so. Left out, the API fills in an
+	// entry with no type or process count and then rejects it.
+	BackgroundProcesses []CreateBackgroundProcessRequest `json:"background_processes,omitempty"`
 }
 
 type UpdateInstanceRequest struct {
-	Name                             *string `json:"name,omitempty"`
-	Size                             *string `json:"size,omitempty"`
-	ScalingType                      *string `json:"scaling_type,omitempty"`
-	MinReplicas                      *int    `json:"min_replicas,omitempty"`
-	MaxReplicas                      *int    `json:"max_replicas,omitempty"`
-	UsesScheduler                    *bool   `json:"uses_scheduler,omitempty"`
-	ScalingCPUThresholdPercentage    *int    `json:"scaling_cpu_threshold_percentage,omitempty"`
-	ScalingMemoryThresholdPercentage *int    `json:"scaling_memory_threshold_percentage,omitempty"`
-	SleepWithApp                     *bool   `json:"sleep_with_app,omitempty"`
-	UsesOctane                       *bool   `json:"uses_octane,omitempty"`
-	UsesInertiaSSR                   *bool   `json:"uses_inertia_ssr,omitempty"`
-	HibernationTimeout               *int    `json:"hibernation_timeout,omitempty"`
-	VisibilityTimeout                *int    `json:"visibility_timeout,omitempty"`
-	ShutdownTimeout                  *int    `json:"shutdown_timeout,omitempty"`
-	// polling_interval is read-only; see CreateInstanceRequest.
+	Name          *string `json:"name,omitempty"`
+	Size          *string `json:"size,omitempty"`
+	ScalingType   *string `json:"scaling_type,omitempty"`
+	MinReplicas   *int    `json:"min_replicas,omitempty"`
+	MaxReplicas   *int    `json:"max_replicas,omitempty"`
+	UsesScheduler *bool   `json:"uses_scheduler,omitempty"`
+	// The thresholds are nullable: null returns the instance to the platform
+	// default.
+	ScalingCPUThresholdPercentage    *NullableInt `json:"scaling_cpu_threshold_percentage,omitempty"`
+	ScalingMemoryThresholdPercentage *NullableInt `json:"scaling_memory_threshold_percentage,omitempty"`
+	SleepWithApp                     *bool        `json:"sleep_with_app,omitempty"`
+	UsesOctane                       *bool        `json:"uses_octane,omitempty"`
+	UsesInertiaSSR                   *bool        `json:"uses_inertia_ssr,omitempty"`
+	// HibernationTimeout is in minutes; null turns hibernation off.
+	HibernationTimeout *NullableInt `json:"hibernation_timeout,omitempty"`
+	VisibilityTimeout  *int         `json:"visibility_timeout,omitempty"`
+	ShutdownTimeout    *int         `json:"shutdown_timeout,omitempty"`
+	// PollingInterval applies to previous-generation managed queues only; see
+	// CreateInstanceRequest.
+	PollingInterval *int `json:"polling_interval,omitempty"`
 
 	// Probes replaces every health check at once: a check or field left out
 	// returns to the platform default, and an empty object clears them all.
@@ -435,7 +537,31 @@ type DomainAttributes struct {
 	// verify and serve. Without it there is no way to complete the domain
 	// workflow from Terraform.
 	DNSRecords DomainDNSRecords `json:"dns_records"`
-	CreatedAt  *string          `json:"created_at"`
+	// WWW is the www. subdomain Cloud attaches alongside a root domain that
+	// redirects to or from it, or nil when there is none. It has to verify
+	// too before the domain counts as verified.
+	WWW       *DomainHostStatus `json:"www"`
+	CreatedAt *string           `json:"created_at"`
+}
+
+// DomainHostStatus is the verification state of one hostname of a domain.
+type DomainHostStatus struct {
+	HostnameStatus string `json:"hostname_status"`
+	SSLStatus      string `json:"ssl_status"`
+	OriginStatus   string `json:"origin_status"`
+}
+
+// Verified reports whether the hostname, its certificate and its origin are
+// all verified.
+func (h DomainHostStatus) Verified() bool {
+	return h.HostnameStatus == "verified" && h.SSLStatus == "verified" && h.OriginStatus == "verified"
+}
+
+// Verified reports whether the domain is verified, as Cloud decides it: the
+// root hostname and, when there is one, its www. subdomain.
+func (a DomainAttributes) Verified() bool {
+	root := DomainHostStatus{HostnameStatus: a.HostnameStatus, SSLStatus: a.SSLStatus, OriginStatus: a.OriginStatus}
+	return root.Verified() && (a.WWW == nil || a.WWW.Verified())
 }
 
 // DomainDNSRecords is the dns_records object on a domain.
@@ -555,6 +681,60 @@ type CreateDatabaseRequest struct {
 }
 
 // ---------------------------------------------------------------------
+// Database user
+// ---------------------------------------------------------------------
+
+type DatabaseUserData struct {
+	ID         string                 `json:"id"`
+	Type       string                 `json:"type"`
+	Attributes DatabaseUserAttributes `json:"attributes"`
+	// Relationships is reported only for what the request includes:
+	// include=databases is what lists the databases the user may access.
+	Relationships DatabaseUserRelationships `json:"relationships"`
+}
+
+type DatabaseUserAttributes struct {
+	Username string `json:"username"`
+	// Type is read_write, read_only, or superuser for the cluster's own
+	// user, which cannot be changed or deleted.
+	Type      string  `json:"type"`
+	Status    string  `json:"status"`
+	CreatedAt *string `json:"created_at"`
+	// Password is returned by the create response only.
+	Password *string `json:"password"`
+}
+
+type DatabaseUserRelationships struct {
+	Databases struct {
+		Data []ResourceIdentifier `json:"data"`
+	} `json:"databases"`
+}
+
+// DatabaseIDs returns the ids of the databases the user may access.
+func (u DatabaseUserData) DatabaseIDs() []string {
+	ids := make([]string, 0, len(u.Relationships.Databases.Data))
+	for _, d := range u.Relationships.Databases.Data {
+		ids = append(ids, d.ID)
+	}
+	return ids
+}
+
+type CreateDatabaseUserRequest struct {
+	Username string `json:"username"`
+	Type     string `json:"type"`
+	// Databases is required, and an empty list grants access to none, so it
+	// is never omitted.
+	Databases []string `json:"databases"`
+}
+
+// UpdateDatabaseUserRequest replaces both fields: type and databases are each
+// required on every update.
+type UpdateDatabaseUserRequest struct {
+	Type      string   `json:"type"`
+	Databases []string `json:"databases"`
+}
+
+// ---------------------------------------------------------------------
 // Cache
 // ---------------------------------------------------------------------
 
@@ -572,6 +752,9 @@ type CacheAttributes struct {
 	Size               string           `json:"size"`
 	AutoUpgradeEnabled bool             `json:"auto_upgrade_enabled"`
 	IsPublic           bool             `json:"is_public"`
+	EvictionPolicy     *string          `json:"eviction_policy"`
+	UsesHibernation    bool             `json:"uses_hibernation"`
+	HibernationTimeout *int64           `json:"hibernation_timeout"`
 	Connection         *CacheConnection `json:"connection"`
 	CreatedAt          *string          `json:"created_at"`
 }
@@ -602,6 +785,12 @@ type CreateCacheRequest struct {
 	AutoUpgradeEnabled bool    `json:"auto_upgrade_enabled"`
 	IsPublic           bool    `json:"is_public"`
 	EvictionPolicy     *string `json:"eviction_policy,omitempty"`
+	// UsesHibernation is scale to zero. The API defaults it to false when it
+	// is not sent, unlike the dashboard, which turns it on for Flex sizes.
+	UsesHibernation *bool `json:"uses_hibernation,omitempty"`
+	// HibernationTimeout is the idle minutes before the cache sleeps (1-60),
+	// required when UsesHibernation is true.
+	HibernationTimeout *int64 `json:"hibernation_timeout,omitempty"`
 	// ClusterID picks the dedicated cluster for a cache type that runs on one.
 	// Create-only, and never reported back on the cache.
 	ClusterID *string `json:"cluster_id,omitempty"`
@@ -613,6 +802,8 @@ type UpdateCacheRequest struct {
 	AutoUpgradeEnabled *bool   `json:"auto_upgrade_enabled,omitempty"`
 	IsPublic           *bool   `json:"is_public,omitempty"`
 	EvictionPolicy     *string `json:"eviction_policy,omitempty"`
+	UsesHibernation    *bool   `json:"uses_hibernation,omitempty"`
+	HibernationTimeout *int64  `json:"hibernation_timeout,omitempty"`
 }
 
 // ---------------------------------------------------------------------
@@ -715,9 +906,8 @@ type BackgroundProcessAttributes struct {
 	ProcessType string  `json:"type"`
 	Processes   int     `json:"processes"`
 	Command     *string `json:"command"`
-	// Config is returned by the API as an array of objects (the request
-	// body sends it as a single object), so it is captured as raw JSON to
-	// tolerate either shape rather than forcing a map decode.
+	// Config is the object that was sent, but an empty one comes back as []
+	// (a PHP empty array), so it is captured as raw JSON to tolerate both.
 	Config            json.RawMessage `json:"config"`
 	StrategyType      string          `json:"strategy_type"`
 	StrategyThreshold *int            `json:"strategy_threshold"`
@@ -732,6 +922,7 @@ type CreateBackgroundProcessRequest struct {
 }
 
 type UpdateBackgroundProcessRequest struct {
+	Type      *string        `json:"type,omitempty"`
 	Processes *int           `json:"processes,omitempty"`
 	Command   *string        `json:"command,omitempty"`
 	Config    map[string]any `json:"config,omitempty"`
@@ -883,6 +1074,35 @@ type DeploymentAttributes struct {
 	UsesOctane      bool    `json:"uses_octane"`
 	StartedAt       *string `json:"started_at"`
 	FinishedAt      *string `json:"finished_at"`
+}
+
+// QueuedDeploymentType is the JSON:API type of a queued deployment.
+const QueuedDeploymentType = "queuedDeployments"
+
+// QueuedDeploymentData is a deployment requested while the environment's
+// resources were still provisioning. Cloud promotes it into a real deployment
+// once they are ready.
+type QueuedDeploymentData struct {
+	ID            string                        `json:"id"`
+	Type          string                        `json:"type"`
+	Attributes    QueuedDeploymentAttributes    `json:"attributes"`
+	Relationships QueuedDeploymentRelationships `json:"relationships"`
+}
+
+type QueuedDeploymentAttributes struct {
+	// Status is pending while it waits, promoted once it started a
+	// deployment, failed or expired when it could not, and cancelled when a
+	// newer request replaced it.
+	Status        string  `json:"status"`
+	FailureReason *string `json:"failure_reason"`
+}
+
+// QueuedDeploymentRelationships are the relationships on a queued deployment.
+// Deployment is the deployment it started, or for a failed or expired one the
+// failed deployment recorded in its place.
+type QueuedDeploymentRelationships struct {
+	Environment Relationship `json:"environment"`
+	Deployment  Relationship `json:"deployment"`
 }
 
 // ---------------------------------------------------------------------
@@ -1054,16 +1274,19 @@ type CacheTypesResponse struct {
 }
 
 type CacheTypeInfo struct {
-	Type                string          `json:"type"`
-	Label               string          `json:"label"`
-	Regions             []string        `json:"regions"`
-	Sizes               []CacheSizeInfo `json:"sizes"`
-	SupportsAutoUpgrade bool            `json:"supports_auto_upgrade"`
+	Type                   string          `json:"type"`
+	Label                  string          `json:"label"`
+	Regions                []string        `json:"regions"`
+	Sizes                  []CacheSizeInfo `json:"sizes"`
+	SupportsAutoUpgrade    bool            `json:"supports_auto_upgrade"`
+	SupportsEvictionPolicy bool            `json:"supports_eviction_policy"`
+	SupportsHibernation    bool            `json:"supports_hibernation"`
 }
 
 type CacheSizeInfo struct {
-	Value string `json:"value"`
-	Label string `json:"label"`
+	Value               string `json:"value"`
+	Label               string `json:"label"`
+	SupportsHibernation bool   `json:"supports_hibernation"`
 }
 
 // QueueStatusValue holds the managed-queue status. The public spec types it as
@@ -1150,11 +1373,24 @@ type InstanceRelationships struct {
 	Environment Relationship `json:"environment"`
 }
 
+// ApplicationRelationships are the relationships on an application resource
+// object.
+type ApplicationRelationships struct {
+	// DefaultEnvironment is the environment the application was created with,
+	// unless another was made the default since. The API refuses to delete it.
+	DefaultEnvironment Relationship `json:"defaultEnvironment"`
+}
+
 // EnvironmentRelationships are the relationships on an environment resource
 // object.
 type EnvironmentRelationships struct {
 	Application Relationship `json:"application"`
 	Branch      Relationship `json:"branch"`
+	// The attachments are pointers so that "not included in the response"
+	// (nil) stays apart from "included and detached" (data: null).
+	Database             *Relationship `json:"database,omitempty"`
+	Cache                *Relationship `json:"cache,omitempty"`
+	WebsocketApplication *Relationship `json:"websocketApplication,omitempty"`
 }
 
 // DatabaseSnapshotRelationships are the relationships on a database snapshot.
@@ -1184,4 +1420,70 @@ type DomainRelationships struct {
 // BackgroundProcessRelationships are the relationships on a background process.
 type BackgroundProcessRelationships struct {
 	Instance Relationship `json:"instance"`
+}
+
+// ---------------------------------------------------------------------
+// WebSocket server types, database presets and Resend (read-only)
+// ---------------------------------------------------------------------
+
+// WebsocketServerType is one entry of GET /websocket-servers/types, a flat
+// {"data": [...]} document with no paginator.
+type WebsocketServerType struct {
+	Type           string                    `json:"type"`
+	Label          string                    `json:"label"`
+	Available      bool                      `json:"available"`
+	Regions        []string                  `json:"regions"`
+	MaxConnections []WebsocketConnectionTier `json:"max_connections"`
+}
+
+// WebsocketConnectionTier is a max_connections value a server can be given.
+// Available says whether the organization's plan includes it.
+type WebsocketConnectionTier struct {
+	Value     int64  `json:"value"`
+	Label     string `json:"label"`
+	Available bool   `json:"available"`
+}
+
+// DatabasePreset is one entry of GET /databases/presets. Config is a free-form
+// object whose keys depend on the database type; it can be sent as the
+// cluster's config.
+type DatabasePreset struct {
+	Key    string          `json:"key"`
+	Label  string          `json:"label"`
+	Config json.RawMessage `json:"config"`
+}
+
+type ResendDomainData struct {
+	ID         string                 `json:"id"`
+	Type       string                 `json:"type"`
+	Attributes ResendDomainAttributes `json:"attributes"`
+}
+
+type ResendDomainAttributes struct {
+	Name           string               `json:"name"`
+	Region         string               `json:"region"`
+	Status         string               `json:"status"`
+	Records        []ResendDomainRecord `json:"records"`
+	LastVerifiedAt *string              `json:"last_verified_at"`
+	CreatedAt      *string              `json:"created_at"`
+}
+
+// ResendDomainRecord is a DNS record a sending domain needs. TTL is a string
+// ("Auto"), and only MX records carry a priority.
+type ResendDomainRecord struct {
+	Record   string `json:"record"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	TTL      string `json:"ttl"`
+	Status   string `json:"status"`
+	Value    string `json:"value"`
+	Priority *int64 `json:"priority"`
+}
+
+// ReusableResendKey is one entry of GET /environments/{id}/resend/keys: a
+// sending key from another environment, and how many environments use it.
+type ReusableResendKey struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	EnvironmentCount int64  `json:"environment_count"`
 }

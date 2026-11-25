@@ -235,7 +235,7 @@ func TestEveryListMethodPaginates(t *testing.T) {
 		"ListDatabaseClusters":      func() (int, error) { v, e := c.ListDatabaseClusters(ctx); return len(v), e },
 		"ListDatabases":             func() (int, error) { v, e := c.ListDatabases(ctx, "db-1"); return len(v), e },
 		"ListDatabaseSnapshots":     func() (int, error) { v, e := c.ListDatabaseSnapshots(ctx, "db-1"); return len(v), e },
-		"ListDedicatedClusters":     func() (int, error) { v, e := c.ListDedicatedClusters(ctx); return len(v), e },
+		"ListDedicatedClusters":     func() (int, error) { v, e := c.ListDedicatedClusters(ctx, nil); return len(v), e },
 		"ListStorageBuckets":        func() (int, error) { v, e := c.ListStorageBuckets(ctx); return len(v), e },
 		"ListStorageBucketKeys":     func() (int, error) { v, e := c.ListStorageBucketKeys(ctx, "fls-1"); return len(v), e },
 		"ListWebsocketServers":      func() (int, error) { v, e := c.ListWebsocketServers(ctx); return len(v), e },

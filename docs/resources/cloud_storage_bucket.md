@@ -10,12 +10,34 @@ description: |-
 
 Manages a Laravel Cloud object storage bucket.
 
+~> **Beta:** This provider is in beta and may change between releases.
+
 ## Example Usage
 
 ```terraform
-resource "laravel_cloud_storage_bucket" "example" {
-  name     = "my-app-assets"
-  key_name = "primary"
+# A private bucket for user uploads, with its first access key.
+resource "laravel_cloud_storage_bucket" "uploads" {
+  name     = "my-app-uploads"
+  key_name = "app"
+}
+
+# A public bucket for assets the browser loads directly.
+resource "laravel_cloud_storage_bucket" "assets" {
+  name          = "my-app-assets"
+  key_name      = "deploy"
+  visibility    = "public"
+  location_hint = "enam"
+
+  cors_settings = {
+    allowed_origins = ["https://example.com"]
+    allowed_methods = ["GET", "HEAD"]
+    allowed_headers = ["*"]
+    max_age_seconds = 3600
+  }
+}
+
+output "assets_url" {
+  value = laravel_cloud_storage_bucket.assets.url
 }
 ```
 
@@ -24,15 +46,15 @@ resource "laravel_cloud_storage_bucket" "example" {
 
 ### Required
 
-- `key_name` (String) Name for the initial access key (3-40 characters).
-- `name` (String) Bucket name (3-40 characters, lowercase alphanumeric with hyphens/underscores).
+- `key_name` (String) Name for the initial access key (2-40 characters). Changing it renames the key in place.
+- `name` (String) Bucket name (2-40 characters, lowercase alphanumeric with hyphens/underscores).
 
 ### Optional
 
 - `allowed_origins` (List of String, Deprecated) Allowed CORS origins.
 - `cors_settings` (Attributes) CORS configuration for the bucket. (see [below for nested schema](#nestedatt--cors_settings))
-- `jurisdiction` (String) Bucket jurisdiction: 'default' or 'eu'. Defaults to 'default'.
-- `key_permission` (String) Permission for the initial key: 'read_write' or 'read_only'. Defaults to 'read_write'.
+- `jurisdiction` (String) Bucket jurisdiction: 'default', 'eu' or 'us'. Defaults to 'default'.
+- `key_permission` (String) Permission for the initial key: 'read_write' or 'read_only'. Defaults to 'read_write'. A key's permission cannot change, so changing it replaces the initial key with a new one, which has new credentials; the bucket and its contents are kept.
 - `location_hint` (String) Where to place the bucket: automatic, wnam (western North America), enam (eastern North America), weur (western Europe), eeur (eastern Europe), apac (Asia-Pacific) or oc (Oceania). The platform defaults to automatic, the only value allowed outside the default jurisdiction. Changing it forces a new bucket.
 - `visibility` (String) Bucket visibility: 'private' or 'public'. Defaults to 'private'.
 
@@ -41,6 +63,7 @@ resource "laravel_cloud_storage_bucket" "example" {
 - `created_at` (String)
 - `endpoint` (String) Bucket S3 endpoint URL.
 - `id` (String) The ID of this resource.
+- `key_id` (String) ID of the initial access key, which the provider renames or replaces when key_name or key_permission changes. Changing key_permission gives it a new ID.
 - `status` (String) Bucket status.
 - `url` (String) Bucket public URL.
 

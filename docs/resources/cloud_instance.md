@@ -10,6 +10,8 @@ description: |-
 
 Manages a Laravel Cloud instance (compute workload).
 
+~> **Beta:** This provider is in beta and may change between releases.
+
 ## Example Usage
 
 ```terraform
@@ -24,20 +26,75 @@ resource "laravel_cloud_environment" "example" {
   application_id = laravel_cloud_application.example.id
   name           = "production"
   branch         = "main"
-
-  php_version  = "8.4:1"
-  node_version = "22"
-
-  uses_push_to_deploy = true
+  php_version    = "8.4:1"
 }
 
-resource "laravel_cloud_instance" "example" {
+# Laravel Cloud creates an app instance with every environment. type = "app"
+# takes it over instead of creating another, and destroy leaves it to the
+# environment.
+resource "laravel_cloud_instance" "app" {
   environment_id = laravel_cloud_environment.example.id
-  name           = "web"
-  size           = "flex.c-1vcpu-256mb"
-  scaling_type   = "custom"
-  min_replicas   = 1
-  max_replicas   = 1
+  name           = "App"
+  type           = "app"
+  size           = "flex-1gb"
+
+  scaling_type                     = "custom"
+  min_replicas                     = 1
+  max_replicas                     = 3
+  scaling_cpu_threshold_percentage = 70
+
+  uses_octane         = true
+  hibernation_timeout = 0 # never hibernate
+}
+
+# A managed queue for the jobs the app dispatches without naming a queue.
+# Its workers scale on queue depth between min_replicas and max_replicas, and
+# to zero when the queue is empty. Sizes are the current-generation mq.* sizes
+# the laravel_cloud_instance_sizes data source lists with instance_class
+# "managed_queue". Laravel Cloud sets their visibility timeout (180 seconds)
+# and shutdown timeout (90 seconds). The other queues are created after it,
+# because Laravel Cloud makes an environment's first queue its default.
+resource "laravel_cloud_instance" "default_queue" {
+  environment_id = laravel_cloud_environment.example.id
+  name           = "default"
+  type           = "managed_queue"
+  size           = "mq.flex.256mb"
+  is_default     = true
+
+  scaling_type = "custom"
+  min_replicas = 0
+  max_replicas = 5
+}
+
+# A queue with larger workers for heavy jobs, which the app dispatches with
+# ->onQueue('exports').
+resource "laravel_cloud_instance" "exports_queue" {
+  environment_id = laravel_cloud_environment.example.id
+  name           = "exports"
+  type           = "managed_queue"
+  size           = "mq.flex.2gb"
+
+  scaling_type = "custom"
+  min_replicas = 0
+  max_replicas = 2
+
+  depends_on = [laravel_cloud_instance.default_queue]
+}
+
+# A FIFO queue delivers jobs once and in order. Laravel Cloud names it
+# "orders.fifo"; dispatch to it with ->onQueue('orders.fifo').
+resource "laravel_cloud_instance" "orders_queue" {
+  environment_id = laravel_cloud_environment.example.id
+  name           = "orders"
+  type           = "managed_queue"
+  size           = "mq.flex.512mb"
+  fifo           = true
+
+  scaling_type = "custom"
+  min_replicas = 0
+  max_replicas = 1
+
+  depends_on = [laravel_cloud_instance.default_queue]
 }
 ```
 
@@ -47,34 +104,38 @@ resource "laravel_cloud_instance" "example" {
 ### Required
 
 - `environment_id` (String) Parent environment ID.
-- `name` (String) Instance name (3-40 characters).
+- `name` (String) Instance name (3-40 characters). Changing a managed queue's name replaces the queue.
 - `scaling_type` (String) Scaling type (none, custom, auto).
-- `size` (String) Instance size (e.g. flex.c-1vcpu-256mb).
+- `size` (String) Instance size (such as flex-512mb).
 
 ### Optional
 
-- `hibernation_timeout` (Number) Hibernation timeout in seconds (1-60). The create route ignores it, so on create the provider applies it with a follow-up update.
+- `fifo` (Boolean) Whether the managed queue is a FIFO queue, which delivers jobs exactly once and in order. Only for managed queues, on organizations with current-generation queues. Laravel Cloud adds a ".fifo" suffix to the queue's name, which can then have at most 34 characters; name is set without it. Changing it replaces the queue.
+- `hibernation_timeout` (Number) Minutes of inactivity (1-60) before the app hibernates (scales to zero). Set 0 to turn hibernation off. Only for app instances, which Laravel Cloud creates with the environment, so set type = "app" to manage it. Use it instead of the environment's deprecated sleep_timeout, which writes the same setting but cannot turn hibernation off.
 - `is_default` (Boolean) Whether this managed queue is the environment's default, the one a job goes to when it names no queue. Set true to make it the default; only managed_queue instances can be. It cannot be set false: the default moves when another queue is made the default.
-- `max_replicas` (Number) Maximum number of replicas. Only applicable to the "custom" scaling type; the API rejects it for "auto".
-- `min_replicas` (Number) Minimum number of replicas. Only applicable to the "custom" scaling type; the API rejects it for "auto", and it does not apply to managed queues, which always scale to zero when idle.
-- `probes` (Attributes) Custom health checks for an app instance's web process. Only app instances accept them, and only on plans with health checks; manage one by importing the environment's app instance. The checks configured here replace all existing ones, and a check left out uses the platform default. When unset, Terraform leaves the instance's health checks alone, including any the platform set up itself; removing the attribute once set resets every check to the platform default. (see [below for nested schema](#nestedatt--probes))
-- `scaling_cpu_threshold_percentage` (Number) CPU scaling threshold (50-95).
-- `scaling_memory_threshold_percentage` (Number) Memory scaling threshold (50-95).
-- `shutdown_timeout` (Number) Queue shutdown timeout in seconds (managed_queue).
-- `sleep_with_app` (Boolean) Whether the instance sleeps with the app (managed_queue).
-- `type` (String) Instance type (service or managed_queue). Defaults to service when not set.
-- `uses_inertia_ssr` (Boolean) Whether the instance uses Inertia SSR. The create route ignores it, so on create the provider applies it with a follow-up update.
-- `uses_octane` (Boolean) Whether the instance uses Laravel Octane. The create route ignores it, so on create the provider applies it with a follow-up update.
-- `uses_scheduler` (Boolean)
-- `visibility_timeout` (Number) Queue visibility timeout in seconds (managed_queue).
+- `max_replicas` (Number) Maximum number of replicas. Set it only for the "custom" scaling type: for "auto" the platform sets it to the plan's replica limit, and for "none" to 1.
+- `min_replicas` (Number) Minimum number of replicas. Set it only for the "custom" scaling type: for "auto" and "none" the platform sets it to 1. Required for custom scaling except on managed queues, where it is the minimum number of workers: optional on current-generation (mq.*) sizes, where 0 lets the queue scale to zero when idle, and rejected on previous-generation sizes, which always scale to zero.
+- `paused` (Boolean) Whether the managed queue is paused, which stops it dispatching jobs to its workers. Set true to pause it and false to resume it. Only for managed_queue instances; null for others.
+- `polling_interval` (Number) Queue polling interval in seconds (1-60). Only for previous-generation managed queues (sizes such as mq-pro-256mb), which require it; current-generation (mq.*) sizes have no polling interval.
+- `probes` (Attributes) Custom health checks for an app instance's web process. Only app instances accept them, and only on plans with health checks; set type = "app" to manage the environment's app instance. The checks configured here replace all existing ones, and a check left out uses the platform default. When unset, Terraform leaves the instance's health checks alone, including any the platform set up itself; removing the attribute once set resets every check to the platform default. (see [below for nested schema](#nestedatt--probes))
+- `scaling_cpu_threshold_percentage` (Number) CPU usage, in percent (50-95), above which the instance scales out. Leave unset for the platform default. Not allowed with scaling_type "none".
+- `scaling_memory_threshold_percentage` (Number) Memory usage, in percent (50-95), above which the instance scales out. Leave unset for the platform default. Not allowed with scaling_type "none".
+- `shutdown_timeout` (Number) Queue shutdown timeout in seconds (managed_queue). Laravel Cloud applies a custom value only for organizations with the advanced managed queues entitlement, and otherwise manages it itself: setting it then fails the apply. Leave it unset to let the platform choose.
+- `sleep_with_app` (Boolean) Whether the instance's replicas scale to zero along with the app, waking when it does. Only for service instances.
+- `type` (String) Instance type (service, managed_queue or app). Defaults to service when not set. Laravel Cloud creates an environment's app instance with the environment, so app takes over that instance instead of creating one, and destroy leaves it to the environment.
+- `uses_inertia_ssr` (Boolean) Whether the app runs an Inertia SSR server. Only for app instances, which Laravel Cloud creates with the environment: set type = "app" to manage it. Changing it also changes the environment's build command.
+- `uses_octane` (Boolean) Whether the app is served by Laravel Octane. Only for app instances, which Laravel Cloud creates with the environment: set type = "app" to manage it. The same setting as the environment's uses_octane: set it in one place.
+- `uses_scheduler` (Boolean) Whether the instance runs the Laravel scheduler. Leave unset to keep the current setting: a new instance starts without it, and an adopted app instance keeps what it has.
+- `visibility_timeout` (Number) Queue visibility timeout in seconds (managed_queue). Laravel Cloud applies a custom value only for organizations with the advanced managed queues entitlement, and otherwise manages it itself: setting it then fails the apply. Leave it unset to let the platform choose.
 
 ### Read-Only
 
 - `created_at` (String)
 - `id` (String) The ID of this resource.
-- `paused` (Boolean) Whether the instance is paused.
-- `polling_interval` (Number) Queue polling interval in seconds (managed_queue). Read-only: the API reports this value but accepts it in neither the create nor the update request, so it is managed by the platform.
 - `queue_status` (String) Raw queue status JSON (managed_queue).
+- `queue_type` (String) The managed queue's type: standard or fifo. Null for other instance types.
+- `retire_at` (String) When the instance's size is scheduled to be retired because it is being discontinued.
+- `retired_at` (String) When the instance was retired because its size is no longer supported. A retired queue stops processing jobs until its size is upgraded.
 
 <a id="nestedatt--probes"></a>
 ### Nested Schema for `probes`

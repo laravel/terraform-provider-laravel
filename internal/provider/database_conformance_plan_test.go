@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 )
 
@@ -268,4 +269,93 @@ resource "laravel_cloud_database_cluster" "db" {
   config = jsonencode({ size = "mysql-flex-1gb" })
 }
 `, baseURL)
+}
+
+// TestDatabaseClusterStorageAutoscalePlan: with
+// storage_autoscale_max_gb set, the platform grows storage by itself and the
+// API refuses to shrink it, so the configured storage is a minimum: the grown
+// value must plan no change, and an update to another key must not send the
+// smaller value back. Without autoscaling, grown storage is still drift.
+func TestDatabaseClusterStorageAutoscalePlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+
+	grow := func(name string, storage float64) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, attrs := range f.objects[clusterType] {
+			if attrs["name"] == name {
+				attrs["config"].(map[string]any)["storage"] = storage
+				return
+			}
+		}
+		t.Fatalf("no cluster named %s", name)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: databaseClusterAutoscaleConfig(baseURL, 0)},
+			{
+				PreConfig: func() { grow("autoscaled", 15) },
+				Config:    databaseClusterAutoscaleConfig(baseURL, 0),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			{
+				Config: databaseClusterAutoscaleConfig(baseURL, 1),
+				Check: func(*terraform.State) error {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					patches := f.patches[clusterType]
+					cfg := patches[len(patches)-1]["config"].(map[string]any)
+					if _, sent := cfg["storage"]; sent || cfg["retention_days"] != float64(1) {
+						return fmt.Errorf("last cluster PATCH config = %v, want retention_days 1 and no storage", cfg)
+					}
+					return nil
+				},
+			},
+			{
+				PreConfig:          func() { grow("fixed", 15) },
+				Config:             databaseClusterAutoscaleConfig(baseURL, 1),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+		},
+	})
+}
+
+func databaseClusterAutoscaleConfig(baseURL string, retentionDays int) string {
+	return fmt.Sprintf(`
+provider "laravel" {
+  token    = "test-token"
+  base_url = %[1]q
+}
+
+resource "laravel_cloud_database_cluster" "autoscaled" {
+  name          = "autoscaled"
+  region        = "us-east-2"
+  type          = "laravel_mysql"
+  version       = "8.4"
+  force_destroy = true
+  config = jsonencode({
+    size                     = "mysql-flex-512mb"
+    storage                  = 10
+    storage_autoscale_max_gb = 50
+    retention_days           = %[2]d
+  })
+}
+
+resource "laravel_cloud_database_cluster" "fixed" {
+  name          = "fixed"
+  region        = "us-east-2"
+  type          = "laravel_mysql"
+  version       = "8.4"
+  force_destroy = true
+  config = jsonencode({
+    size    = "mysql-flex-512mb"
+    storage = 10
+  })
+}
+`, baseURL, retentionDays)
 }

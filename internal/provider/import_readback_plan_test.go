@@ -110,8 +110,12 @@ resource "laravel_cloud_environment" "env" {
 	phpMajor := func() string {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		// The application's default environment is "13 x"; this test's is
+		// "production".
 		for _, e := range f.envs {
-			return e.Attributes.PHPMajorVersion
+			if e.Attributes.Name == "production" {
+				return e.Attributes.PHPMajorVersion
+			}
 		}
 		return ""
 	}

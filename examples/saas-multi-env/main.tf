@@ -1,5 +1,5 @@
 # ===========================================================================
-# Acme Invoicing -- a multi-tenant SaaS with a production and a staging
+# Acme Invoicing: a multi-tenant SaaS with a production and a staging
 # environment behind one application.
 #
 # The shape here is the one most teams land on: both environments track the
@@ -100,7 +100,7 @@ resource "laravel_cloud_environment" "production" {
   node_version = "22"
 
   # Attaching the cache and database here is what injects their connection
-  # details into the environment -- you do not repeat the credentials in
+  # details into the environment. You do not repeat the credentials in
   # laravel_cloud_environment_variables.
   cache_id    = laravel_cloud_cache.production.id
   database_id = laravel_cloud_database.production.id
@@ -113,9 +113,12 @@ resource "laravel_cloud_environment" "production" {
   color = "green"
 }
 
+# The app instance Laravel Cloud creates with the environment, taken over
+# rather than created.
 resource "laravel_cloud_instance" "production_web" {
   environment_id = laravel_cloud_environment.production.id
   name           = "web"
+  type           = "app"
   size           = "flex.c-2vcpu-1gb"
   uses_octane    = true
 
@@ -138,14 +141,16 @@ resource "laravel_cloud_domain" "production" {
   cloudflare_strategy = "none"
 
   # Read dns_records off this resource to see exactly what to create at your
-  # DNS provider -- see outputs.tf.
+  # DNS provider. See outputs.tf.
 }
 
 resource "laravel_cloud_environment_variables" "production" {
   environment_id = laravel_cloud_environment.production.id
 
-  # This resource owns the environment's entire variable set: anything set in
-  # the dashboard but missing here is removed on apply.
+  # This resource sets the variables listed here and deletes a variable when
+  # it is removed from this map. Variables set in the dashboard and never
+  # listed here are left alone, but a key listed here overwrites the
+  # dashboard's value on every apply.
   variables = {
     APP_ENV   = "production"
     APP_DEBUG = "false"
@@ -183,20 +188,23 @@ resource "laravel_cloud_environment" "staging" {
 
   uses_push_to_deploy = true
 
-  # Let staging fall asleep quickly -- it spends most of the week idle.
-  sleep_timeout = 5
-
   color = "orange"
 }
 
+# The app instance Laravel Cloud creates with the environment, taken over
+# rather than created.
 resource "laravel_cloud_instance" "staging_web" {
   environment_id = laravel_cloud_environment.staging.id
   name           = "web"
-  size           = "flex.c-1vcpu-256mb"
+  type           = "app"
+  size           = "flex-512mb"
 
   scaling_type = "custom"
   min_replicas = 1
   max_replicas = 1
+
+  # Staging hibernates after 5 idle minutes. It is idle most of the week.
+  hibernation_timeout = 5
 }
 
 resource "laravel_cloud_environment_variables" "staging" {

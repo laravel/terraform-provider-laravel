@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -39,16 +42,19 @@ type EnvironmentResourceModel struct {
 	Branch                     types.String `tfsdk:"branch"`
 	Slug                       types.String `tfsdk:"slug"`
 	Status                     types.String `tfsdk:"status"`
+	Running                    types.Bool   `tfsdk:"running"`
 	Color                      types.String `tfsdk:"color"`
 	ClusterID                  types.String `tfsdk:"cluster_id"`
 	PHPVersion                 types.String `tfsdk:"php_version"`
 	PHPMajorVersion            types.String `tfsdk:"php_major_version"`
 	VanityDomain               types.String `tfsdk:"vanity_domain"`
+	VanityHostname             types.String `tfsdk:"vanity_hostname"`
 	NodeVersion                types.String `tfsdk:"node_version"`
 	BuildCommand               types.String `tfsdk:"build_command"`
 	DeployCommand              types.String `tfsdk:"deploy_command"`
 	UsesPushToDeploy           types.Bool   `tfsdk:"uses_push_to_deploy"`
 	UsesDeployHook             types.Bool   `tfsdk:"uses_deploy_hook"`
+	DeployHookURL              types.String `tfsdk:"deploy_hook_url"`
 	UsesVanityDomain           types.Bool   `tfsdk:"uses_vanity_domain"`
 	UsesOctane                 types.Bool   `tfsdk:"uses_octane"`
 	UsesPurgeEdgeCacheOnDeploy types.Bool   `tfsdk:"uses_purge_edge_cache_on_deploy"`
@@ -79,6 +85,14 @@ type EnvironmentResourceModel struct {
 	ResponseHeadersHSTSPreload           types.Bool           `tfsdk:"response_headers_hsts_preload"`
 	FirewallBlockPath                    types.Bool           `tfsdk:"firewall_block_path"`
 	FirewallBrowserIntegrityCheck        types.Bool           `tfsdk:"firewall_browser_integrity_check"`
+
+	PostDeployCommand     types.String `tfsdk:"post_deploy_command"`
+	DisplayName           types.String `tfsdk:"display_name"`
+	Framework             types.String `tfsdk:"framework"`
+	Language              types.String `tfsdk:"language"`
+	UsesHibernation       types.Bool   `tfsdk:"uses_hibernation"`
+	CreatedFromAutomation types.Bool   `tfsdk:"created_from_automation"`
+	PullRequest           types.Object `tfsdk:"pull_request"`
 }
 
 // FilesystemKeyModel attaches a bucket to the environment through one of its
@@ -136,12 +150,22 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"running": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Description: "Whether the environment is running. Set false to stop it, which cancels a deployment in " +
+					"progress, and true to start it again, which deploys the latest commit; Terraform waits for that " +
+					"deployment to succeed. Only an environment that has been deployed can be stopped. Leave unset to " +
+					"leave it as it is.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
+			},
 			"color": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
 				Description: "Environment color (blue, green, orange, purple, red, yellow, cyan, gray). " +
-					"Write-only: the API accepts this but never reports it back, so a change made " +
-					"outside Terraform cannot be detected and state keeps the configured value.",
+					"Leave unset to keep the color Laravel Cloud picked when it created the environment.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -158,7 +182,7 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"php_version": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
-				Description: "PHP version to run, in the API's \"major:minor\" form (e.g. \"8.4:1\"). " +
+				Description: "PHP version to run, in the API's \"major:minor\" form (such as \"8.4:1\"). " +
 					"The API reports only the major version (see php_major_version), so an import " +
 					"derives this from it. A version changed outside Terraform is not detected.",
 				PlanModifiers: []planmodifier.String{
@@ -167,7 +191,7 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 			"php_major_version": schema.StringAttribute{
 				Computed:    true,
-				Description: "Major PHP version reported by the API (e.g. \"8.4\").",
+				Description: "Major PHP version reported by the API (such as \"8.4\").",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -175,9 +199,24 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"vanity_domain": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
-				Description: "Vanity domain hostname for the environment (3-100 characters). " +
-					"Set through the API's dedicated vanity-domain endpoint rather than the " +
-					"environment update body. Leave unset to keep the assigned default.",
+				Description: "Subdomain label of the environment's vanity domain, such as \"my-app\" " +
+					"for my-app.laravel.cloud: 3 to 63 lowercase letters, numbers and dashes, not " +
+					"starting or ending with a dash. The full hostname is in vanity_hostname. " +
+					"Leave unset to keep the assigned default. The API allows one change every 30 minutes.",
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(3, 63),
+					stringvalidator.RegexMatches(vanityLabelPattern,
+						"must be a single subdomain label (lowercase letters, numbers and dashes, "+
+							"not starting or ending with a dash), such as \"my-app\", not a full hostname"),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"vanity_hostname": schema.StringAttribute{
+				Computed:    true,
+				Description: "Full vanity domain hostname, such as \"my-app.laravel.cloud\".",
+				// ModifyPlan marks it unknown when vanity_domain changes.
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -191,9 +230,10 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"build_command": schema.StringAttribute{
-				Optional:    true,
-				Computed:    true,
-				Description: "Custom build command (max 2000 chars).",
+				Optional: true,
+				Computed: true,
+				Description: "Custom build command (max 2000 chars). Leave unset to keep the framework's default, or for a " +
+					"static site to build nothing.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -204,6 +244,74 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Description: "Custom deploy command (max 2000 chars).",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"post_deploy_command": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				Description: "Commands that run after a deployment goes live, one per line, such as " +
+					"\"php artisan queue:restart\" (max 2000 chars). A failure does not roll the deployment back. " +
+					"Only organizations with post-deploy commands enabled can set it, and not on preview or static " +
+					"environments; where Laravel Cloud does not offer it, the plan warns and the apply fails. Null when not reported.",
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 2000),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+					postDeployAvailable{},
+				},
+			},
+			"display_name": schema.StringAttribute{
+				Computed:    true,
+				Description: "Name shown in the dashboard: the name, or a preview environment's pull request title.",
+				PlanModifiers: []planmodifier.String{
+					followsAttributes{"name"},
+				},
+			},
+			"framework": schema.StringAttribute{
+				Computed:    true,
+				Description: "Framework Laravel Cloud detected in the branch (such as laravel, nextjs).",
+				PlanModifiers: []planmodifier.String{
+					followsAttributes{"branch"},
+				},
+			},
+			"language": schema.StringAttribute{
+				Computed:    true,
+				Description: "Language of the environment (such as php, javascript).",
+				PlanModifiers: []planmodifier.String{
+					followsAttributes{"branch"},
+				},
+			},
+			"uses_hibernation": schema.BoolAttribute{
+				Computed: true,
+				Description: "Whether the environment hibernates when idle. Set it with hibernation_timeout on the app " +
+					"instance (laravel_cloud_instance with type = \"app\"), which also turns it off, or the deprecated sleep_timeout here.",
+				PlanModifiers: []planmodifier.Bool{
+					followsAttributes{"sleep_timeout"},
+				},
+			},
+			"created_from_automation": schema.BoolAttribute{
+				Computed:    true,
+				Description: "Whether the environment is a preview environment created for a pull request.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"pull_request": schema.SingleNestedAttribute{
+				Computed:    true,
+				Description: "The pull request a preview environment deploys. Null for other environments.",
+				Attributes: map[string]schema.Attribute{
+					"number":        schema.Int64Attribute{Computed: true, Description: "Pull request number."},
+					"url":           schema.StringAttribute{Computed: true, Description: "Pull request URL."},
+					"title":         schema.StringAttribute{Computed: true, Description: "Pull request title."},
+					"source_branch": schema.StringAttribute{Computed: true, Description: "Branch the pull request merges from."},
+					"target_branch": schema.StringAttribute{Computed: true, Description: "Branch the pull request merges into."},
+					"status":        schema.StringAttribute{Computed: true, Description: "open, closed or merged."},
+					"draft":         schema.BoolAttribute{Computed: true, Description: "Whether the pull request is a draft."},
+				},
+				PlanModifiers: []planmodifier.Object{
+					// Follows nothing: keeps the prior value, like UseStateForUnknown.
+					followsAttributes{},
 				},
 			},
 			"uses_push_to_deploy": schema.BoolAttribute{
@@ -219,6 +327,14 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
 				},
+			},
+			"deploy_hook_url": schema.StringAttribute{
+				Computed:  true,
+				Sensitive: true,
+				Description: "URL that deploys the environment when it receives a POST request, such as from CI. " +
+					"Null while uses_deploy_hook is false, or when the API token lacks permission to edit deploy hooks. " +
+					"Anyone with the URL can deploy.",
+				// ModifyPlan keeps it unless uses_deploy_hook changes.
 			},
 			"uses_vanity_domain": schema.BoolAttribute{
 				Optional: true,
@@ -246,8 +362,8 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"timeout": schema.Int64Attribute{
 				Optional: true,
 				Computed: true,
-				Description: "Request timeout (5-60 seconds). Write-only: the API accepts this " +
-					"but never reports it back, so drift cannot be detected.",
+				Description: "Seconds the environment waits for the application to respond before timing out (5-60). " +
+					"Applies on the next deployment. Leave unset to keep the platform default.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -255,8 +371,16 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"sleep_timeout": schema.Int64Attribute{
 				Optional: true,
 				Computed: true,
-				Description: "Sleep timeout (1-60). Write-only: the API accepts this but never " +
-					"reports it back, so drift cannot be detected.",
+				Description: "Minutes without requests before the environment hibernates (1-60). Only instance " +
+					"sizes that can hibernate (Flex) take it: on a Pro size Laravel Cloud turns hibernation off " +
+					"instead, and the apply fails. The API reports whether hibernation is on but not this value, " +
+					"so hibernation turned off outside Terraform shows in the next plan, and a changed value does not. " +
+					"It is the same setting as the app instance's hibernation_timeout (laravel_cloud_instance), so set it in " +
+					"only one place. The API cannot turn hibernation off through the environment; use the instance for that. " +
+					"Deprecated: use hibernation_timeout on a laravel_cloud_instance with type = \"app\".",
+				DeprecationMessage: "Use hibernation_timeout on a laravel_cloud_instance with type = \"app\", which takes over " +
+					"the environment's app instance and can also turn hibernation off (0). sleep_timeout will be removed " +
+					"in a future major version.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -264,8 +388,8 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"shutdown_timeout": schema.Int64Attribute{
 				Optional: true,
 				Computed: true,
-				Description: "Shutdown timeout (1-600). Write-only: the API accepts this but " +
-					"never reports it back, so drift cannot be detected.",
+				Description: "Seconds to wait before stopping the previous deployment's instances, so they can finish " +
+					"their requests and jobs (1-600). Applies on the next deployment. Leave unset to keep the platform default.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -281,7 +405,8 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"database_id": schema.StringAttribute{
 				Optional: true,
 				Description: "ID of the database to attach (a laravel_cloud_database, not its cluster). " +
-					"Removing it detaches the database.",
+					"Removing it detaches the database. A detach or another database attached outside Terraform " +
+					"shows in the next plan; left unset, the attachment is not managed.",
 				Validators: []validator.String{
 					stringvalidator.ConflictsWith(path.MatchRoot("database_schema_id")),
 				},
@@ -292,12 +417,15 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				DeprecationMessage: "database_schema_id is renamed to database_id. Rename the attribute; the attached database is unchanged.",
 			},
 			"cache_id": schema.StringAttribute{
-				Optional:    true,
-				Description: "Cache to attach.",
+				Optional: true,
+				Description: "Cache to attach. Removing it detaches the cache. A detach or another cache attached " +
+					"outside Terraform shows in the next plan; left unset, the attachment is not managed.",
 			},
 			"websocket_application_id": schema.StringAttribute{
-				Optional:    true,
-				Description: "WebSocket application (laravel_cloud_websocket_application) to attach. Removing it detaches the application.",
+				Optional: true,
+				Description: "WebSocket application (laravel_cloud_websocket_application) to attach. Removing it detaches " +
+					"the application. A detach or another application attached outside Terraform shows in the next plan; " +
+					"left unset, the attachment is not managed.",
 			},
 			"created_at": schema.StringAttribute{
 				Computed: true,
@@ -316,11 +444,18 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 			},
 			"serving_mode": schema.StringAttribute{
+				Optional: true,
 				Computed: true,
 				Description: "How the environment is served: \"process\" (an application server) or \"static\" " +
-					"(files served directly). Fixed when the environment is created. Null when the API does not report it.",
+					"(files served directly, for a static site). Leave unset to let Laravel Cloud decide: a new environment " +
+					"of an application that already has a static environment is static too. It cannot be changed after " +
+					"creation, so changing it forces a new environment. Null when the API does not report it.",
+				Validators: []validator.String{
+					stringvalidator.OneOf("process", "static"),
+				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+					stringplanmodifier.RequiresReplaceIfConfigured(),
 				},
 			},
 			"serving_root": schema.StringAttribute{
@@ -338,7 +473,7 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"start_command": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
-				Description: "Command that starts a dynamic application that is not PHP, e.g. \"gunicorn myproject.wsgi\" " +
+				Description: "Command that starts a dynamic application that is not PHP, such as \"gunicorn myproject.wsgi\" " +
 					"(max 255 chars). Required by the API for dynamic JavaScript, Python, Ruby, Go, Rust and Java " +
 					"applications, and rejected for PHP and static ones.",
 				Validators: []validator.String{
@@ -508,7 +643,7 @@ func (r *EnvironmentResource) Configure(_ context.Context, req resource.Configur
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected resource configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	r.client = c
@@ -542,7 +677,7 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		resp.Diagnostics.AddError(
 			"Error listing existing environments",
 			"Laravel Cloud creates a default environment alongside an application, so the existing "+
-				"environments must be checked before creating one -- otherwise a duplicate is created. "+
+				"environments must be checked before creating one. Otherwise the provider creates a duplicate. "+
 				"Listing them failed: "+err.Error(),
 		)
 		return
@@ -566,10 +701,26 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		)
 	}
 
+	// Nothing is created yet, so an adopted environment served differently
+	// from the configuration is an error rather than a replacement later.
+	if adopted && isSet(plan.ServingMode) && !plan.ServingMode.Equal(servingModeFromAPI(env)) {
+		resp.Diagnostics.AddAttributeError(path.Root("serving_mode"), "serving_mode cannot be applied to the existing environment",
+			fmt.Sprintf("An environment named %q already exists, served as %q, and the serving mode can only be chosen when "+
+				"an environment is created. For the application's default environment, set serving_mode on "+
+				"laravel_cloud_application instead.", wantName, servingModeFromAPI(env).ValueString()))
+		return
+	}
+
 	if env == nil {
 		createReq := client.CreateEnvironmentRequest{
 			Name:   wantName,
 			Branch: plan.Branch.ValueString(),
+		}
+		if isSet(plan.ServingMode) {
+			createReq.Serving = &client.ServingRequest{Mode: plan.ServingMode.ValueString(), Root: *nullableStringRequest(resolvedNull(plan.ServingRoot))}
+		}
+		if isSet(plan.BuildCommand) {
+			createReq.BuildCommand = plan.BuildCommand.ValueStringPointer()
 		}
 		if !plan.ClusterID.IsNull() {
 			v := plan.ClusterID.ValueString()
@@ -577,7 +728,7 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		}
 		createReq.EdgeNetworkID = plan.EdgeNetworkID.ValueStringPointer()
 
-		created, err := r.client.CreateEnvironment(ctx, appID, createReq)
+		created, err := createEnvironment(ctx, r.client, appID, createReq)
 		if err != nil {
 			resp.Diagnostics.AddError("Error creating environment", err.Error())
 			return
@@ -587,10 +738,12 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 
 	// Set server-generated fields from the API response.
 	plan.ID = types.StringValue(env.ID)
-	plan.Slug = types.StringValue(env.Attributes.Slug)
+	// A configured slug is sent in the follow-up update below: the create
+	// endpoint takes none.
+	setUnknownStringFromAPI(&plan.Slug, env.Attributes.Slug)
 	plan.Status = types.StringValue(env.Attributes.Status)
 	plan.PHPMajorVersion = types.StringValue(env.Attributes.PHPMajorVersion)
-	plan.VanityDomain = types.StringPointerValue(env.Attributes.VanityDomain)
+	setVanityFromAPI(&plan, env)
 	plan.CreatedAt = types.StringPointerValue(env.Attributes.CreatedAt)
 
 	// Snapshot the plan BEFORE filling unknowns. We use origPlan to decide
@@ -608,18 +761,19 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	setUnknownBoolFromAPI(&plan.UsesDeployHook, env.Attributes.UsesDeployHook)
 	setUnknownBoolFromAPI(&plan.UsesOctane, env.Attributes.UsesOctane)
 	setUnknownStringFromAPI(&plan.CacheStrategy, env.Attributes.NetworkSettings.Cache.Strategy)
+	setUnknownStringPtrFromAPI(&plan.Color, env.Attributes.Color)
+	setUnknownInt64PtrFromAPI(&plan.Timeout, env.Attributes.Timeout)
+	setUnknownInt64PtrFromAPI(&plan.ShutdownTimeout, env.Attributes.ShutdownTimeout)
 	setUnknownSettingsFromAPI(&plan, env)
+	setUnknownDetailsFromAPI(&plan, env)
 
 	// The remaining Optional+Computed attributes are write-only: the API
 	// accepts them on PATCH but never returns them, so there is no value to
 	// adopt. Resolve them to null rather than to a fabricated zero value,
 	// which would then be re-sent on every apply.
-	resolveUnknownStringToNull(&plan.Color)
 	resolveUnknownBoolToNull(&plan.UsesVanityDomain)
 	resolveUnknownBoolToNull(&plan.UsesPurgeEdgeCacheOnDeploy)
-	resolveUnknownInt64ToNull(&plan.Timeout)
 	resolveUnknownInt64ToNull(&plan.SleepTimeout)
-	resolveUnknownInt64ToNull(&plan.ShutdownTimeout)
 
 	// If the user specified values that differ from API defaults, attempt
 	// to PATCH the environment so the remote state matches the plan.
@@ -634,12 +788,15 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	// retries it, so this is a warning -- matching how the settings PATCH below
 	// already handles the same situation.
 	if !configuredVanity.IsNull() && !configuredVanity.IsUnknown() {
-		if err := applyVanityDomain(ctx, r.client, env.ID, configuredVanity); err != nil {
+		updated, err := applyVanityDomain(ctx, r.client, env.ID, configuredVanity)
+		if err != nil {
 			resp.Diagnostics.AddWarning(
 				"Could not set the vanity domain after creating the environment",
 				"The environment was created, but setting its vanity domain failed: "+err.Error()+
 					". The configured value is kept in state; run 'terraform apply' again to retry.",
 			)
+		} else if updated != nil {
+			setVanityFromAPI(&plan, updated)
 		}
 		plan.VanityDomain = configuredVanity
 	}
@@ -655,7 +812,7 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		patchReq.NightwatchToken = nullableStringRequest(wo)
 	}
 	if patchReq != nil {
-		patched, err := r.client.UpdateEnvironment(ctx, env.ID, *patchReq)
+		patched, err := updateEnvironmentWhenReady(ctx, r.client, env.ID, *patchReq)
 		if err == nil && patched != nil {
 			// Read-only values the PATCH changed must come from its response.
 			// php_version is sent as "8.4:1" and reported back only as a major
@@ -667,6 +824,22 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 			plan.Status = types.StringValue(patched.Attributes.Status)
 			setUnknownStringPtrFromAPI(&plan.BuildCommand, patched.Attributes.BuildCommand)
 			setUnknownStringPtrFromAPI(&plan.DeployCommand, patched.Attributes.DeployCommand)
+			setUnknownStringPtrFromAPI(&plan.DeployHookURL, patched.Attributes.DeployHookURL)
+			if patched.Attributes.UsesHibernation != nil {
+				plan.UsesHibernation = types.BoolPointerValue(patched.Attributes.UsesHibernation)
+			}
+			// The configured value stays in state for now; the next refresh
+			// records null, so the next plan shows it and the update fails.
+			if patchReq.PostDeployCommand != nil && !patched.Attributes.PostDeployCommand.Reported {
+				resp.Diagnostics.AddAttributeWarning(path.Root("post_deploy_command"), postDeployIgnoredSummary, postDeployIgnoredDetail)
+			}
+			// The environment exists, so this is a warning: an error would
+			// taint it and the next apply would replace it, to the same end.
+			// The next refresh drops sleep_timeout, so the plan shows it again
+			// and the update fails with the same message.
+			if patchReq.SleepTimeout != nil && hibernationOff(patched) {
+				resp.Diagnostics.AddAttributeWarning(path.Root("sleep_timeout"), hibernationRefusedSummary, hibernationRefusedDetail)
+			}
 		}
 		if err != nil {
 			// PATCH failed (e.g. dev server returns HTML). Keep the plan
@@ -697,8 +870,44 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	// made outside Terraform, and pinning that same version later would plan
 	// nothing. A configured one was sent in the PATCH above and stays as planned.
 	resolveUnknownStringToNull(&plan.PHPVersion)
+	// Still unknown when no follow-up update was needed or it failed.
+	setUnknownStringPtrFromAPI(&plan.DeployHookURL, env.Attributes.DeployHookURL)
+
+	// The environment exists, so failing to start or stop it is a warning: an
+	// error would taint it and the next apply would replace it. The usual case
+	// is running = false on an environment that has never been deployed, which
+	// Laravel Cloud cannot stop yet. As with the settings above, the configured
+	// value stays in state, which Terraform requires: the next refresh records
+	// whether the environment really is running, so the next plan offers the
+	// change again, and Update retries it or fails with the API's reason.
+	var runningDiags diag.Diagnostics
+	if !applyRunning(ctx, r.client, env.ID, &plan, environmentRunning(plan.Status.ValueString()), &runningDiags) {
+		resp.Diagnostics.AddAttributeWarning(path.Root("running"), "Could not start or stop the environment after creating it",
+			runningDiags.Errors()[0].Detail()+" The configured value is kept in state, so the next plan shows the "+
+				"change again and 'terraform apply' retries it. An environment that has never been deployed cannot "+
+				"be stopped: deploy it first.")
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// The API refuses to attach a database or cache that is creating or updating
+// ("The selected cache is still being provisioned. Try again in a few
+// seconds."), such as one created or resized earlier in the same apply. These
+// bound how long an environment update retries that. The interval is a
+// variable so the plan tests need not wait.
+const environmentBusyAttempts = 30
+
+var environmentBusyInterval = 10 * time.Second
+
+func updateEnvironmentWhenReady(ctx context.Context, c *client.Client, id string, req client.UpdateEnvironmentRequest) (*client.EnvironmentData, error) {
+	var env *client.EnvironmentData
+	err := client.RetryOnConflict(ctx, environmentBusyAttempts, environmentBusyInterval, func() error {
+		var err error
+		env, err = c.UpdateEnvironment(ctx, id, req)
+		return err
+	}, client.IsBusy)
+	return env, err
 }
 
 // ---------------------------------------------------------------------------
@@ -723,6 +932,12 @@ func setUnknownBoolFromAPI(field *types.Bool, apiVal bool) {
 	}
 }
 
+func setUnknownInt64PtrFromAPI(field *types.Int64, apiVal *int64) {
+	if field.IsUnknown() {
+		*field = types.Int64PointerValue(apiVal)
+	}
+}
+
 func (r *EnvironmentResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state EnvironmentResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -741,6 +956,7 @@ func (r *EnvironmentResource) Read(ctx context.Context, req resource.ReadRequest
 	}
 
 	mapEnvironmentToState(env, &state)
+	resp.Diagnostics.Append(setPostDeployUnavailable(ctx, resp.Private, env)...)
 	// Settings that never reached the API after create are dropped from state,
 	// so the next plan shows them being added and sends them.
 	if pending, d := req.Private.GetKey(ctx, unsentWriteOnlyKey); d.HasError() {
@@ -788,10 +1004,19 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 	// On update the resource is already in state, so Terraform keeps the prior
 	// state when this errors and nothing is orphaned -- a failure here is fatal.
 	if !plan.VanityDomain.Equal(state.VanityDomain) {
-		if err := applyVanityDomain(ctx, r.client, state.ID.ValueString(), plan.VanityDomain); err != nil {
+		updated, err := applyVanityDomain(ctx, r.client, state.ID.ValueString(), plan.VanityDomain)
+		if err != nil {
 			resp.Diagnostics.AddError("Error setting vanity domain", err.Error())
 			return
 		}
+		if updated != nil {
+			setVanityFromAPI(&plan, updated)
+		}
+	}
+	// Only a vanity domain change leaves the hostname unknown, and it was
+	// resolved above; this covers an update that sent nothing.
+	if plan.VanityHostname.IsUnknown() {
+		plan.VanityHostname = state.VanityHostname
 	}
 
 	updateReq := buildEnvironmentUpdateFromStateDiff(plan, state)
@@ -814,13 +1039,29 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 	}
 	if updateReq == nil {
 		// Nothing else changed — just keep state as-is.
-		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		if plan.DeployHookURL.IsUnknown() {
+			plan.DeployHookURL = state.DeployHookURL
+		}
+		keepUnknownDetails(&plan, state)
+		if applyRunning(ctx, r.client, state.ID.ValueString(), &plan, state.Running.ValueBool(), &resp.Diagnostics) {
+			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		}
 		return
 	}
 
-	_, err := r.client.UpdateEnvironment(ctx, state.ID.ValueString(), *updateReq)
+	updated, err := updateEnvironmentWhenReady(ctx, r.client, state.ID.ValueString(), *updateReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating environment", err.Error())
+		return
+	}
+	// Prior state is kept, so the next refresh records what the API did and
+	// the next plan offers the same change again.
+	if updateReq.SleepTimeout != nil && hibernationOff(updated) {
+		resp.Diagnostics.AddAttributeError(path.Root("sleep_timeout"), hibernationRefusedSummary, hibernationRefusedDetail)
+		return
+	}
+	if updateReq.PostDeployCommand != nil && !updated.Attributes.PostDeployCommand.Reported {
+		resp.Diagnostics.AddAttributeError(path.Root("post_deploy_command"), postDeployIgnoredSummary, postDeployIgnoredDetail)
 		return
 	}
 	resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentWriteOnlyKey, nil)...)
@@ -832,7 +1073,14 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 	plan.ID = state.ID
 	plan.ApplicationID = state.ApplicationID
 	plan.CreatedAt = state.CreatedAt
-	plan.Slug = state.Slug
+	plan.Slug = types.StringValue(updated.Attributes.Slug)
+	// Turning the deploy hook on or off creates or drops its URL.
+	setUnknownStringPtrFromAPI(&plan.DeployHookURL, updated.Attributes.DeployHookURL)
+	setUnknownDetailsFromAPI(&plan, updated)
+	// Started after the update, so its deployment has the new settings.
+	if !applyRunning(ctx, r.client, state.ID.ValueString(), &plan, state.Running.ValueBool(), &resp.Diagnostics) {
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -844,6 +1092,34 @@ func (r *EnvironmentResource) Delete(ctx context.Context, req resource.DeleteReq
 	}
 
 	envID := state.ID.ValueString()
+
+	// The API refuses to delete an application's default environment, which
+	// this resource manages when it took over the one created with the
+	// application. Deleting the application deletes it, so it is only dropped
+	// from state here, before anything below changes it: it keeps serving, with
+	// its database, cache and WebSocket application still attached. A
+	// database or cache destroyed in the same apply needs no detach first,
+	// since the API detaches it from its environments when deleting it. Any
+	// failure to tell stops here, before anything changes: guessing "not the
+	// default" would detach a live default environment's resources.
+	isDefault, _, err := r.isDefaultEnvironment(ctx, state)
+	if err != nil {
+		resp.Diagnostics.AddError("Error checking whether the environment is its application's default",
+			"Laravel Cloud cannot delete an application's default environment, and deleting any other environment "+
+				"first detaches its database, cache and WebSocket application, so the provider must know which this "+
+				"is before changing anything. The check failed, and nothing was changed: "+err.Error())
+		return
+	}
+	if isDefault {
+		resp.Diagnostics.AddWarning(
+			"Default environment not deleted",
+			fmt.Sprintf("Environment %q is its application's default environment, which Laravel Cloud cannot delete "+
+				"on its own. It was removed from Terraform state unchanged, still running with its attachments, and "+
+				"is deleted along with the application. To delete it sooner, make another environment the "+
+				"application's default first.", state.Name.ValueString()),
+		)
+		return
+	}
 
 	// Detach database, cache and WebSocket application from the environment
 	// before deleting so downstream resources (database schema, cluster,
@@ -872,6 +1148,37 @@ func (r *EnvironmentResource) Delete(ctx context.Context, req resource.DeleteReq
 	if err := r.client.DeleteEnvironment(ctx, envID); err != nil {
 		resp.Diagnostics.AddError("Error deleting environment", err.Error())
 	}
+}
+
+// isDefaultEnvironment reports whether the environment is its application's
+// default environment, and that application's ID. An imported environment has
+// no application_id in state, so the application is then looked up from the
+// environment. A 404 for either means it no longer exists, so the environment
+// is not a default one; any other failure is returned, since a wrong answer
+// would detach a live default environment's resources.
+func (r *EnvironmentResource) isDefaultEnvironment(ctx context.Context, state EnvironmentResourceModel) (bool, string, error) {
+	appID := state.ApplicationID.ValueString()
+	if appID == "" {
+		env, err := r.client.GetEnvironment(ctx, state.ID.ValueString())
+		if client.IsNotFound(err) {
+			return false, "", nil
+		}
+		if err != nil {
+			return false, "", err
+		}
+		appID = env.Relationships.Application.RelatedID()
+	}
+	if appID == "" {
+		return false, "", nil
+	}
+	app, err := r.client.GetApplication(ctx, appID)
+	if client.IsNotFound(err) {
+		return false, appID, nil
+	}
+	if err != nil {
+		return false, appID, err
+	}
+	return app.Relationships.DefaultEnvironment.RelatedID() == state.ID.ValueString(), appID, nil
 }
 
 func (r *EnvironmentResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
@@ -918,6 +1225,10 @@ func buildEnvironmentUpdateFromStateDiff(plan, state EnvironmentResourceModel) *
 		req.Branch = &v
 		hasUpdates = true
 	}
+	if isSet(plan.Slug) && !plan.Slug.Equal(state.Slug) {
+		req.Slug = plan.Slug.ValueStringPointer()
+		hasUpdates = true
+	}
 	if !plan.Color.Equal(state.Color) {
 		v := plan.Color.ValueString()
 		req.Color = &v
@@ -941,6 +1252,11 @@ func buildEnvironmentUpdateFromStateDiff(plan, state EnvironmentResourceModel) *
 	if !plan.DeployCommand.Equal(state.DeployCommand) {
 		v := plan.DeployCommand.ValueString()
 		req.DeployCommand = &v
+		hasUpdates = true
+	}
+	// Unset keeps what Laravel Cloud has, like the other commands.
+	if isSet(plan.PostDeployCommand) && !plan.PostDeployCommand.Equal(state.PostDeployCommand) {
+		req.PostDeployCommand = nullableStringRequest(plan.PostDeployCommand)
 		hasUpdates = true
 	}
 	if !plan.UsesPushToDeploy.Equal(state.UsesPushToDeploy) {
@@ -1022,6 +1338,36 @@ func (r *EnvironmentResource) ModifyPlan(ctx context.Context, req resource.Modif
 		return
 	}
 
+	// vanity_hostname follows vanity_domain, so a new label means a new
+	// hostname, which only the API can say.
+	if !req.State.Raw.IsNull() {
+		var planVanity, stateVanity types.String
+		resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("vanity_domain"), &planVanity)...)
+		resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("vanity_domain"), &stateVanity)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if !planVanity.Equal(stateVanity) {
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("vanity_hostname"), types.StringUnknown())...)
+		}
+
+		// deploy_hook_url only changes with uses_deploy_hook. It is often null,
+		// which UseStateForUnknown would not carry over, so it is kept here.
+		var planHook, stateHook types.Bool
+		var stateHookURL types.String
+		resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("uses_deploy_hook"), &planHook)...)
+		resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("uses_deploy_hook"), &stateHook)...)
+		resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("deploy_hook_url"), &stateHookURL)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if planHook.Equal(stateHook) {
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("deploy_hook_url"), stateHookURL)...)
+		}
+		modifyRunningPlan(ctx, req, resp)
+		r.refuseDefaultEnvironmentReplacement(ctx, req, resp)
+	}
+
 	var dbID, schemaID types.String
 	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("database_id"), &dbID)...)
 	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("database_schema_id"), &schemaID)...)
@@ -1040,6 +1386,46 @@ func (r *EnvironmentResource) ModifyPlan(ctx context.Context, req resource.Modif
 			"most likely because database_schema_id is listed in lifecycle.ignore_changes. "+
 			"Remove it from ignore_changes (or list database_id there instead).",
 	)
+}
+
+// refuseDefaultEnvironmentReplacement fails the plan when a serving_mode
+// change would replace an application's default environment within the same
+// application. Laravel Cloud cannot delete that environment, so the
+// replacement's delete would only drop it from state, and the create would
+// then find it again, still served the old way, and fail: the apply would end
+// with the environment no longer in state. When the application is replaced
+// too, its application_id is unknown at plan time and Cloud creates a new
+// default environment, so nothing is refused. The API is asked only when
+// serving_mode changes.
+func (r *EnvironmentResource) refuseDefaultEnvironmentReplacement(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	var planServing, stateServing types.String
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("serving_mode"), &planServing)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("serving_mode"), &stateServing)...)
+	if resp.Diagnostics.HasError() || !isSet(planServing) || !isSet(stateServing) || planServing.Equal(stateServing) || r.client == nil {
+		return
+	}
+	var planApp types.String
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("application_id"), &planApp)...)
+	var state EnvironmentResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() || planApp.IsUnknown() {
+		return
+	}
+	isDefault, appID, err := r.isDefaultEnvironment(ctx, state)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("serving_mode"), "Error checking whether the environment is its application's default",
+			"Changing serving_mode replaces the environment, which Laravel Cloud cannot do for an application's "+
+				"default environment, and the check failed: "+err.Error())
+		return
+	}
+	if !isDefault || planApp.ValueString() != appID {
+		return
+	}
+	resp.Diagnostics.AddAttributeError(path.Root("serving_mode"), "serving_mode cannot be changed on the default environment",
+		fmt.Sprintf("Changing serving_mode replaces the environment, but %q is its application's default environment, "+
+			"which Laravel Cloud cannot delete, so the replacement would fail after removing it from Terraform state. "+
+			"Keep serving_mode = %q, or make another environment the application's default first.",
+			state.Name.ValueString(), stateServing.ValueString()))
 }
 
 // databaseID returns the attached database from database_id, falling back to
@@ -1073,6 +1459,10 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 		req.Name = &v
 		hasUpdates = true
 	}
+	if isSet(plan.Slug) && plan.Slug.ValueString() != env.Attributes.Slug {
+		req.Slug = plan.Slug.ValueStringPointer()
+		hasUpdates = true
+	}
 	// Branch is write-only (not in the API response). On adoption we must
 	// always send it so the existing environment picks up the desired branch.
 	if adopted && !plan.Branch.IsNull() && !plan.Branch.IsUnknown() {
@@ -1091,10 +1481,8 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 		req.NodeVersion = &v
 		hasUpdates = true
 	}
-	// color is write-only: it is never echoed back, so it cannot be compared
-	// against the response. Send it whenever the user set it.
-	if v := plan.Color.ValueString(); !plan.Color.IsNull() && !plan.Color.IsUnknown() {
-		req.Color = &v
+	if isSet(plan.Color) && !plan.Color.Equal(types.StringPointerValue(env.Attributes.Color)) {
+		req.Color = plan.Color.ValueStringPointer()
 		hasUpdates = true
 	}
 	if !plan.UsesPushToDeploy.IsNull() && !plan.UsesPushToDeploy.IsUnknown() && plan.UsesPushToDeploy.ValueBool() != env.Attributes.UsesPushToDeploy {
@@ -1107,7 +1495,7 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 		req.UsesOctane = &v
 		hasUpdates = true
 	}
-	if !plan.Timeout.IsNull() && !plan.Timeout.IsUnknown() {
+	if isSet(plan.Timeout) && !plan.Timeout.Equal(types.Int64PointerValue(env.Attributes.Timeout)) {
 		v := int(plan.Timeout.ValueInt64())
 		req.Timeout = &v
 		hasUpdates = true
@@ -1117,7 +1505,7 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 		req.SleepTimeout = &v
 		hasUpdates = true
 	}
-	if !plan.ShutdownTimeout.IsNull() && !plan.ShutdownTimeout.IsUnknown() {
+	if isSet(plan.ShutdownTimeout) && !plan.ShutdownTimeout.Equal(types.Int64PointerValue(env.Attributes.ShutdownTimeout)) {
 		v := int(plan.ShutdownTimeout.ValueInt64())
 		req.ShutdownTimeout = &v
 		hasUpdates = true
@@ -1144,6 +1532,10 @@ func buildEnvironmentUpdateFromDiff(plan EnvironmentResourceModel, env *client.E
 			req.DeployCommand = &v
 			hasUpdates = true
 		}
+	}
+	if isSet(plan.PostDeployCommand) && !plan.PostDeployCommand.Equal(types.StringPointerValue(env.Attributes.PostDeployCommand.Value)) {
+		req.PostDeployCommand = nullableStringRequest(plan.PostDeployCommand)
+		hasUpdates = true
 	}
 	if dbID := databaseID(plan); !dbID.IsNull() && !dbID.IsUnknown() {
 		req.DatabaseSchemaID = client.AttachID(dbID.ValueString())
@@ -1201,15 +1593,17 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 	state.Name = types.StringValue(env.Attributes.Name)
 	state.Slug = types.StringValue(env.Attributes.Slug)
 	state.Status = types.StringValue(env.Attributes.Status)
+	state.Running = types.BoolValue(environmentRunning(env.Attributes.Status))
 	// php_version is not echoed by the API in the form it is sent, so it is
 	// left untouched here to preserve the configured value; the read-only
 	// major version is surfaced via php_major_version instead. An import
 	// seeds it, see ImportState.
 	state.PHPMajorVersion = types.StringValue(env.Attributes.PHPMajorVersion)
-	state.VanityDomain = types.StringPointerValue(env.Attributes.VanityDomain)
+	setVanityFromAPI(state, env)
 	state.NodeVersion = types.StringValue(env.Attributes.NodeVersion)
 	state.UsesPushToDeploy = types.BoolValue(env.Attributes.UsesPushToDeploy)
 	state.UsesDeployHook = types.BoolValue(env.Attributes.UsesDeployHook)
+	state.DeployHookURL = types.StringPointerValue(env.Attributes.DeployHookURL)
 	state.UsesOctane = types.BoolValue(env.Attributes.UsesOctane)
 	// cache_strategy is readable only from network_settings; there is no
 	// top-level attribute of that name in the response.
@@ -1217,14 +1611,62 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 	state.CreatedAt = types.StringPointerValue(env.Attributes.CreatedAt)
 	state.BuildCommand = types.StringPointerValue(env.Attributes.BuildCommand)
 	state.DeployCommand = types.StringPointerValue(env.Attributes.DeployCommand)
+	keepStringIfAbsent(&state.Color, env.Attributes.Color)
+	keepInt64IfAbsent(&state.Timeout, env.Attributes.Timeout)
+	keepInt64IfAbsent(&state.ShutdownTimeout, env.Attributes.ShutdownTimeout)
+	if state.DatabaseID.IsNull() {
+		readAttachment(&state.DatabaseSchemaID, env.Relationships.Database)
+	} else {
+		readAttachment(&state.DatabaseID, env.Relationships.Database)
+	}
+	readAttachment(&state.CacheID, env.Relationships.Cache)
+	readAttachment(&state.WebsocketApplicationID, env.Relationships.WebsocketApplication)
+	// sleep_timeout is not reported, but hibernation being off means there is
+	// none, so a configured one shows up in the next plan.
+	if hibernationOff(env) {
+		state.SleepTimeout = types.Int64Null()
+	}
 	mapSettingsToState(env, state)
+	mapDetailsToState(env, state)
 
-	// color, timeout, sleep_timeout, shutdown_timeout,
-	// uses_purge_edge_cache_on_deploy and uses_vanity_domain are write-only:
-	// PATCH accepts them but the response never carries them back. Writing a
-	// zero value here would fight the configuration on every refresh, so the
-	// configured values are left in place and drift on them is not detectable.
+	// sleep_timeout, uses_purge_edge_cache_on_deploy and uses_vanity_domain
+	// are write-only: PATCH accepts them but the response never carries them
+	// back. Writing a zero value here would fight the configuration on every
+	// refresh, so the configured values are left in place and drift on them is
+	// not detectable.
 }
+
+// readAttachment records the attachment the API reports for one the
+// configuration manages, so a detach or a different attachment made outside
+// Terraform shows in the next plan. One the configuration never set stays
+// null: that leaves an attachment made in the dashboard alone rather than
+// planning to detach it. A response without the relationship changes nothing.
+func readAttachment(dst *types.String, rel *client.Relationship) {
+	if rel == nil || dst.IsNull() {
+		return
+	}
+	if id := rel.RelatedID(); id != "" {
+		*dst = types.StringValue(id)
+	} else {
+		*dst = types.StringNull()
+	}
+}
+
+// hibernationOff reports whether the API says sleep mode is off. After an
+// update that sent sleep_timeout, that means the API refused it: for an
+// instance size that cannot hibernate it answers 200 but turns sleep mode and
+// the periodic wake-up off instead.
+func hibernationOff(env *client.EnvironmentData) bool {
+	return env != nil && env.Attributes.UsesHibernation != nil && !*env.Attributes.UsesHibernation
+}
+
+const (
+	hibernationRefusedSummary = "Laravel Cloud turned hibernation off instead of applying sleep_timeout"
+	hibernationRefusedDetail  = "The environment's app instance has a size that cannot hibernate (Pro sizes cannot), so " +
+		"Laravel Cloud accepted sleep_timeout but turned hibernation and the periodic wake-up " +
+		"(hibernation_wake_up_interval) off. Move the app instance to a Flex size, or remove sleep_timeout and " +
+		"hibernation_wake_up_interval from the configuration."
+)
 
 // phpVersionFromMajor rebuilds php_version from the major version the API
 // reports: php_version is written as "8.4:1" but read back only as "8.4", and
@@ -1259,18 +1701,38 @@ func resolveUnknownInt64ToNull(v *types.Int64) {
 	}
 }
 
-// applyVanityDomain points the environment at the configured vanity hostname.
+// vanityLabelPattern is the API's rule for a vanity domain name: one
+// lowercase DNS label.
+var vanityLabelPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// setVanityFromAPI records the environment's vanity domain. The API takes a
+// subdomain label but reports the full hostname, whose zone differs between
+// organizations (laravel.cloud, laravel-demo.cloud, ...), so vanity_domain is
+// the hostname's first label and vanity_hostname the whole of it.
+func setVanityFromAPI(m *EnvironmentResourceModel, env *client.EnvironmentData) {
+	host := env.Attributes.VanityDomain
+	if host == nil || *host == "" {
+		m.VanityDomain = types.StringNull()
+		m.VanityHostname = types.StringNull()
+		return
+	}
+	label, _, _ := strings.Cut(*host, ".")
+	m.VanityDomain = types.StringValue(label)
+	m.VanityHostname = types.StringValue(*host)
+}
+
+// applyVanityDomain points the environment at the configured vanity domain
+// label and returns the environment the API reported back.
 //
 // The API exposes this as PUT /environments/{id}/vanity-domain rather than a
 // field on the environment update body, so it is a separate call. A null value
 // means "keep whatever the platform assigned" -- there is no endpoint to clear
 // one, so nothing is sent.
-func applyVanityDomain(ctx context.Context, c *client.Client, environmentID string, vanity types.String) error {
+func applyVanityDomain(ctx context.Context, c *client.Client, environmentID string, vanity types.String) (*client.EnvironmentData, error) {
 	if vanity.IsNull() || vanity.IsUnknown() || vanity.ValueString() == "" {
-		return nil
+		return nil, nil
 	}
-	_, err := c.SetVanityDomain(ctx, environmentID, client.UpdateVanityDomainRequest{
+	return c.SetVanityDomain(ctx, environmentID, client.UpdateVanityDomainRequest{
 		Name: vanity.ValueString(),
 	})
-	return err
 }

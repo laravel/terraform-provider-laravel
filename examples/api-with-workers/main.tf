@@ -1,9 +1,9 @@
 # ===========================================================================
-# Acme Ledger -- a queue-heavy JSON API with a scheduler and a Reverb
+# Acme Ledger: a queue-heavy JSON API with a scheduler and a Reverb
 # websocket tier.
 #
 # The web instance stays small because it does almost nothing but accept
-# requests and push jobs. The work happens on a managed queue instance, and
+# requests and push jobs. The work happens on managed queues, and
 # clients watch it land over websockets instead of polling.
 # ===========================================================================
 
@@ -24,10 +24,13 @@ resource "laravel_cloud_environment" "production" {
   php_version  = "8.4:1"
   node_version = "22"
 
-  cache_id = laravel_cloud_cache.queue.id
+  cache_id = laravel_cloud_cache.cache.id
 
   uses_push_to_deploy = true
-  uses_octane         = true
+
+  # Octane keeps the framework booted between requests, which is most of the
+  # latency on a JSON API this thin.
+  uses_octane = true
 
   deploy_command = "php artisan migrate --force && php artisan config:cache && php artisan event:cache"
 
@@ -35,17 +38,15 @@ resource "laravel_cloud_environment" "production" {
   timeout = 30
 }
 
-# Redis-compatible cache, used here as the queue backend as well as the cache.
-resource "laravel_cloud_cache" "queue" {
-  name                 = "acme-ledger-queue"
+# Valkey cache for the cache store and sessions. Jobs go to the managed
+# queues below, not here.
+resource "laravel_cloud_cache" "cache" {
+  name                 = "acme-ledger-cache"
   type                 = "laravel_valkey"
   region               = var.region
-  size                 = "valkey-flex-500mb"
+  size                 = "valkey-flex-1gb"
   auto_upgrade_enabled = true
   is_public            = false
-
-  # Jobs must not be evicted under memory pressure the way cache entries can.
-  eviction_policy = "noeviction"
 }
 
 resource "laravel_cloud_domain" "api" {
@@ -57,80 +58,78 @@ resource "laravel_cloud_domain" "api" {
 
 # --- Web tier --------------------------------------------------------------
 
+# The app instance Laravel Cloud creates with the environment; type = "app"
+# takes it over.
 resource "laravel_cloud_instance" "web" {
   environment_id = laravel_cloud_environment.production.id
   name           = "web"
-  size           = "flex.c-1vcpu-512mb"
+  type           = "app"
+  size           = "flex-1gb"
 
-  # Octane keeps the framework booted between requests, which is most of the
-  # latency on a JSON API this thin.
-  uses_octane = true
-
+  # Octane is turned on with the environment's uses_octane, above.
   scaling_type                     = "auto"
   scaling_cpu_threshold_percentage = 65
 }
 
 # --- Queue tier ------------------------------------------------------------
 
-# A managed_queue instance scales to zero when the queue drains, so an idle
-# night costs nothing. min_replicas does not apply to it for that reason.
-resource "laravel_cloud_instance" "queue" {
+# Managed queues: each runs its own workers, which scale on queue depth and
+# to zero when the queue drains, so an idle night costs nothing. Laravel
+# Cloud sets QUEUE_CONNECTION=cloud once the first queue is deployed, and a
+# job has 180 seconds before the queue hands it to another worker.
+
+# Jobs dispatched without a queue name land here.
+resource "laravel_cloud_instance" "queue_default" {
   environment_id = laravel_cloud_environment.production.id
-  name           = "queue"
+  name           = "ledger-default"
   type           = "managed_queue"
-  size           = "flex.c-1vcpu-512mb"
-  scaling_type   = "auto"
+  size           = "mq.flex.512mb"
+  is_default     = true
 
-  # Give a job 5 minutes to finish before the queue hands it to someone else,
-  # and 2 minutes to wind down when a replica is being taken away.
-  visibility_timeout = 300
-  shutdown_timeout   = 120
-
-  # Follow the app to sleep -- there is nothing to process while it is down.
-  sleep_with_app = true
+  scaling_type = "custom"
+  min_replicas = 0
+  max_replicas = 10
 }
 
-# The default worker, reading the two queues in priority order.
-resource "laravel_cloud_background_process" "worker" {
-  instance_id = laravel_cloud_instance.queue.id
-  type        = "worker"
-  processes   = 4
+# Payment jobs, dispatched with ->onQueue('ledger-high'), get their own
+# workers so a backlog of reports cannot hold them up.
+resource "laravel_cloud_instance" "queue_high" {
+  environment_id = laravel_cloud_environment.production.id
+  name           = "ledger-high"
+  type           = "managed_queue"
+  size           = "mq.flex.256mb"
 
-  config = jsonencode({
-    connection = "redis"
-    queue      = "ledger-high,ledger-default"
-    tries      = 3
-    backoff    = 30
-    timeout    = 120
-    sleep      = 3
-    rest       = 0
-    force      = false
-  })
+  scaling_type = "custom"
+  min_replicas = 0
+  max_replicas = 5
+
+  depends_on = [laravel_cloud_instance.queue_default]
 }
 
-# A long-lived daemon that is not a queue worker: it streams the bank feed and
-# writes transactions as they arrive. `command` is required when type is
-# "custom".
-resource "laravel_cloud_background_process" "bank_feed" {
-  instance_id = laravel_cloud_instance.queue.id
-  type        = "custom"
-  processes   = 1
-  command     = "php artisan ledger:stream-bank-feed --timeout=0"
-}
-
-# --- Scheduler -------------------------------------------------------------
+# --- Scheduler and daemons -------------------------------------------------
 
 # One dedicated instance runs the scheduler. Running it on the web tier means
 # every replica fires the same command.
 resource "laravel_cloud_instance" "scheduler" {
   environment_id = laravel_cloud_environment.production.id
   name           = "scheduler"
-  size           = "flex.c-1vcpu-256mb"
+  size           = "flex-512mb"
   uses_scheduler = true
 
   scaling_type = "custom"
   min_replicas = 1
   max_replicas = 1
+}
+
+# A long-lived daemon that is not a queue worker: it streams the bank feed and
+# writes transactions as they arrive. It runs on the single scheduler
+# replica, so there is exactly one stream. `command` is required when type is
+# "custom".
+resource "laravel_cloud_background_process" "bank_feed" {
+  instance_id = laravel_cloud_instance.scheduler.id
+  type        = "custom"
+  processes   = 1
+  command     = "php artisan ledger:stream-bank-feed --timeout=0"
 }
 
 # --- Websocket tier --------------------------------------------------------
@@ -156,7 +155,7 @@ resource "laravel_cloud_websocket_application" "ledger" {
   ]
 
   ping_interval    = 30
-  activity_timeout = 120
+  activity_timeout = 60
 }
 
 # --- Wiring ----------------------------------------------------------------
@@ -164,8 +163,10 @@ resource "laravel_cloud_websocket_application" "ledger" {
 resource "laravel_cloud_environment_variables" "production" {
   environment_id = laravel_cloud_environment.production.id
 
-  # This resource owns the environment's entire variable set: anything set in
-  # the dashboard but missing here is removed on apply.
+  # This resource sets the variables listed here and deletes a variable when
+  # it is removed from this map. Variables set in the dashboard and never
+  # listed here are left alone, but a key listed here overwrites the
+  # dashboard's value on every apply.
   variables = {
     APP_ENV   = "production"
     APP_DEBUG = "false"
@@ -174,9 +175,8 @@ resource "laravel_cloud_environment_variables" "production" {
     LOG_CHANNEL = "stderr"
     LOG_LEVEL   = "warning"
 
-    CACHE_STORE      = "redis"
-    QUEUE_CONNECTION = "redis"
-    SESSION_DRIVER   = "redis"
+    CACHE_STORE    = "redis"
+    SESSION_DRIVER = "redis"
 
     # Reverb credentials come off the websocket application rather than being
     # copied in by hand.

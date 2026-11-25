@@ -112,7 +112,7 @@ func (r *DatabaseSnapshotResource) Configure(_ context.Context, req resource.Con
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected resource configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	r.client = c
@@ -133,7 +133,14 @@ func (r *DatabaseSnapshotResource) Create(ctx context.Context, req resource.Crea
 		createReq.Description = &v
 	}
 
-	snapshot, err := r.client.CreateDatabaseSnapshot(ctx, plan.ClusterID.ValueString(), createReq)
+	// The cluster refuses snapshots while it is busy, such as while it is
+	// still being created in the same apply.
+	var snapshot *client.DatabaseSnapshotData
+	err := client.RetryOnConflict(ctx, databaseBusyAttempts, databaseBusyInterval, func() error {
+		var err error
+		snapshot, err = r.client.CreateDatabaseSnapshot(ctx, plan.ClusterID.ValueString(), createReq)
+		return err
+	}, client.IsBusy)
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating database snapshot", err.Error())
 		return
@@ -175,7 +182,14 @@ func (r *DatabaseSnapshotResource) Delete(ctx context.Context, req resource.Dele
 		return
 	}
 
-	if err := r.client.DeleteDatabaseSnapshot(ctx, state.ID.ValueString()); err != nil {
+	err := client.RetryOnConflict(ctx, databaseBusyAttempts, databaseBusyInterval, func() error {
+		err := r.client.DeleteDatabaseSnapshot(ctx, state.ID.ValueString())
+		if client.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}, client.IsBusy)
+	if err != nil {
 		resp.Diagnostics.AddError("Error deleting database snapshot", err.Error())
 	}
 }

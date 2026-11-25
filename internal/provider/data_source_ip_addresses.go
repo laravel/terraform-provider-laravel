@@ -40,7 +40,7 @@ func (d *IPAddressesDataSource) Schema(_ context.Context, _ datasource.SchemaReq
 			},
 			"region": schema.StringAttribute{
 				Optional: true,
-				Description: "Limit the result to a single region, e.g. \"us-east-1\". " +
+				Description: "Limit the result to a single region, such as \"us-east-1\". " +
 					"Omit to return the addresses for every region. An unknown region is rejected by the API.",
 			},
 			"ip_addresses": schema.ListAttribute{
@@ -59,7 +59,7 @@ func (d *IPAddressesDataSource) Configure(_ context.Context, req datasource.Conf
 	}
 	c, ok := req.ProviderData.(*client.Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Data Source Configure Type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected data source configure type", fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData))
 		return
 	}
 	d.client = c

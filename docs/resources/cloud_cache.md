@@ -10,16 +10,53 @@ description: |-
 
 Manages a Laravel Cloud cache (Valkey/Redis).
 
+~> **Beta:** This provider is in beta and may change between releases.
+
 ## Example Usage
 
 ```terraform
+# A Laravel Valkey cache that scales to zero after 5 idle minutes.
 resource "laravel_cloud_cache" "example" {
-  name                 = "my-valkey"
+  name                 = "my-app-cache"
   type                 = "laravel_valkey"
   region               = "us-east-2"
   size                 = "valkey-flex-250mb"
   auto_upgrade_enabled = true
   is_public            = false
+
+  uses_hibernation    = true
+  hibernation_timeout = 5
+}
+
+# A cache that must never drop keys under memory pressure, such as one that
+# holds locks or rate limiter counters.
+resource "laravel_cloud_cache" "locks" {
+  name                 = "my-app-locks"
+  type                 = "laravel_valkey"
+  region               = "us-east-2"
+  size                 = "valkey-pro.1gb"
+  auto_upgrade_enabled = true
+  is_public            = false
+  eviction_policy      = "noeviction"
+}
+
+# An AWS ElastiCache cache on one of the organization's dedicated (Private
+# Cloud) clusters. Pin the cluster: without cluster_id the API picks one of the
+# region's clusters in no defined order.
+data "laravel_cloud_dedicated_clusters" "elasticache" {
+  region = "us-east-2"
+  type   = "elasticache-clusters"
+  status = "active"
+}
+
+resource "laravel_cloud_cache" "elasticache" {
+  name                 = "my-app-elasticache"
+  type                 = "aws_elasticache_valkey"
+  region               = "us-east-2"
+  size                 = "elasticache.cache.t4g.micro"
+  auto_upgrade_enabled = false # not supported for ElastiCache
+  cluster_id           = data.laravel_cloud_dedicated_clusters.elasticache.clusters[0].id
+  # is_public is left out: ElastiCache caches are always private.
 }
 ```
 
@@ -28,17 +65,19 @@ resource "laravel_cloud_cache" "example" {
 
 ### Required
 
-- `auto_upgrade_enabled` (Boolean) Enable automatic upgrades.
-- `is_public` (Boolean) Whether the cache is publicly accessible.
+- `auto_upgrade_enabled` (Boolean) Enable automatic upgrades. The ElastiCache types do not support it, so set it to false for them.
 - `name` (String) Cache name (3-40 characters, lowercase alphanumeric with hyphens/underscores).
 - `region` (String) Cloud region.
-- `size` (String) Cache size (250mb to 500gb).
-- `type` (String) Cache type (upstash_redis, laravel_valkey).
+- `size` (String) Cache size, which depends on the type. laravel_valkey takes valkey-flex-* sizes (250mb to 2.5gb, which can scale to zero) or valkey-pro.* sizes (250mb to 50gb); the ElastiCache types take an elasticache.* node type, such as elasticache.cache.t4g.micro. The laravel_cloud_cache_types data source lists the sizes each type accepts.
+- `type` (String) Cache type: laravel_valkey, or aws_elasticache_valkey or aws_elasticache_redis, which run on one of the organization's dedicated (Private Cloud) ElastiCache clusters. The laravel_cloud_cache_types data source lists the types, their regions and sizes. upstash_redis is deprecated and the API no longer creates it.
 
 ### Optional
 
-- `cluster_id` (String) Dedicated cluster ID, from the laravel_cloud_dedicated_clusters data source. Only cache types that run on a dedicated cluster accept it, and the cluster must be in the cache's region. When omitted for such a type, the API picks the organization's dedicated cluster in that region. Changing this forces a new cache: the API's update endpoint does not accept it, and it is never reported back, so an imported cache leaves it null.
-- `eviction_policy` (String) Eviction policy (Valkey only, defaults to allkeys-lru).
+- `cluster_id` (String) Dedicated ElastiCache cluster ID, from the laravel_cloud_dedicated_clusters data source (type elasticache-clusters). Only the ElastiCache types accept it, and the cluster must be active and in the cache's region. When omitted, the API picks one of the organization's dedicated ElastiCache clusters in that region, in no defined order, so set it when the organization has more than one there. Create-only: no API endpoint reports a cache's cluster, so Terraform cannot read it back, detect a cache on another cluster, or fill it in on import. An imported cache leaves it null, and adding it to the configuration afterwards records it without replacing the cache. Changing a recorded value forces a new cache, as the update endpoint does not accept it.
+- `eviction_policy` (String) Eviction policy, for cache types that support one (supports_eviction_policy in the laravel_cloud_cache_types data source). When omitted, the API uses allkeys-lru for those types and reports null for the rest.
+- `hibernation_timeout` (Number) Idle minutes before the cache sleeps, 1 to 60. Required when uses_hibernation is true, and not allowed otherwise: the API clears it while scale to zero is off.
+- `is_public` (Boolean) Whether the cache is publicly accessible. Required for laravel_valkey. ElastiCache caches are always private: leave it out or set it to false, because the API stores false whatever is sent and refuses to change it.
+- `uses_hibernation` (Boolean) Scale to zero: the cache sleeps after hibernation_timeout idle minutes. Only sizes whose supports_hibernation is true in the laravel_cloud_cache_types data source accept it (the Laravel Valkey Flex sizes). When omitted, the API's default applies, which is false: unlike the dashboard, the API does not turn it on for Flex caches.
 
 ### Read-Only
 
