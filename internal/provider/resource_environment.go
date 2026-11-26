@@ -200,7 +200,8 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 					"your own IAM role enabled. Takes effect on the next deployment. Removing it removes the role from the " +
 					"environment. A role changed or removed outside Terraform shows in the next plan; left unset, the role " +
 					"is not managed, so one set in the dashboard stays. After an import, the first plan shows a configured " +
-					"role being added; applying that only records it.",
+					"role being added, and applying it sets that role: this changes nothing only when the environment " +
+					"already has it.",
 				Validators: []validator.String{
 					stringvalidator.LengthAtMost(255),
 					stringvalidator.RegexMatches(awsRoleArnPattern,
@@ -1015,7 +1016,11 @@ func (r *EnvironmentResource) Read(ctx context.Context, req resource.ReadRequest
 		state.NightwatchToken = types.StringNull()
 		state.NightwatchTokenWOVersion = types.Int64Null()
 		state.FilesystemKeys = nil
-		state.AwsRoleArn = types.StringNull()
+		// A reported role was read back above, and may be one an adopted
+		// environment already had, which the failed update never carried.
+		if !env.Attributes.AwsRoleArn.Reported {
+			state.AwsRoleArn = types.StringNull()
+		}
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }

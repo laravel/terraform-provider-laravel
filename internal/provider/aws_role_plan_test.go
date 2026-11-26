@@ -42,36 +42,42 @@ resource "laravel_cloud_environment" "worker" {
 `
 }
 
-// fakeWorkerRole is the AWS role the fake holds for the worker environment,
-// and setFakeWorkerRole changes it as the dashboard would.
-func fakeWorkerRole(f *fakeCloud) string {
+// fakeEnvRole is the AWS role the fake holds for the named environment, and
+// setFakeEnvRole changes it as the dashboard would.
+func fakeEnvRole(f *fakeCloud, name string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, e := range f.envs {
-		if e.Attributes.Name == "worker" {
+		if e.Attributes.Name == name {
 			return ptrValue(e.Attributes.AwsRoleArn.Value)
 		}
 	}
 	return ""
 }
 
-func setFakeWorkerRole(f *fakeCloud, role *string) {
+func setFakeEnvRole(f *fakeCloud, name string, role *string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, e := range f.envs {
-		if e.Attributes.Name == "worker" {
+		if e.Attributes.Name == name {
 			e.Attributes.AwsRoleArn.Value = role
 		}
 	}
 }
 
-func workerRoleIs(f *fakeCloud, want string) resource.TestCheckFunc {
+func envRoleIs(f *fakeCloud, name, want string) resource.TestCheckFunc {
 	return func(*terraform.State) error {
-		if got := fakeWorkerRole(f); got != want {
-			return fmt.Errorf("worker AWS role on the platform = %q, want %q", got, want)
+		if got := fakeEnvRole(f, name); got != want {
+			return fmt.Errorf("%s AWS role on the platform = %q, want %q", name, got, want)
 		}
 		return nil
 	}
+}
+
+func setFakeWorkerRole(f *fakeCloud, role *string) { setFakeEnvRole(f, "worker", role) }
+
+func workerRoleIs(f *fakeCloud, want string) resource.TestCheckFunc {
+	return envRoleIs(f, "worker", want)
 }
 
 // TestEnvironmentAwsRolePlan: environment create does not take the role, so
@@ -236,5 +242,62 @@ func TestEnvironmentAwsRoleRefusedPlan(t *testing.T) {
 				},
 			},
 		})
+	})
+}
+
+// TestEnvironmentAwsRoleAdoptedFailedUpdatePlan: taking over an environment
+// that already has the configured role sends no role, so when the update
+// after it fails, the role the API reports must stay recorded. Dropping it
+// with the settings that never arrived made removing it from the
+// configuration later send nothing, leaving the role on the environment.
+func TestEnvironmentAwsRoleAdoptedFailedUpdatePlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	f.byoiam = true
+	app := providerCfg(baseURL) + `
+resource "laravel_cloud_application" "app" {
+  name       = "role-app"
+  repository = "acme/role-app"
+  region     = "us-east-2"
+  cluster_id = "dc-1"
+}
+`
+	production := func(role string) string {
+		if role != "" {
+			role = fmt.Sprintf("  aws_role_arn     = %q\n", role)
+		}
+		return app + fmt.Sprintf(`
+resource "laravel_cloud_environment" "production" {
+  application_id   = laravel_cloud_application.app.id
+  name             = "production"
+  branch           = "main"
+  nightwatch_token = %q
+%s}
+`, testNightwatchToken, role)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: app},
+			{
+				// The default environment already has the role. The update
+				// after taking it over carries only the token, and fails.
+				PreConfig: func() {
+					setFakeEnvRole(f, "production", ptr(awsRoleA))
+					f.mu.Lock()
+					f.failEnvUpdates = 1
+					f.mu.Unlock()
+				},
+				Config:             production(awsRoleA),
+				ExpectNonEmptyPlan: true,
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("laravel_cloud_environment.production", tfjsonpath.New("aws_role_arn"), knownvalue.StringExact(awsRoleA)),
+				},
+			},
+			{
+				Config: production(""),
+				Check:  envRoleIs(f, "production", ""),
+			},
+		},
 	})
 }
