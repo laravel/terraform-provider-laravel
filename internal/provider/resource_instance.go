@@ -125,7 +125,8 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 					"An environment on a dedicated cluster takes only dedicated sizes, such as dedicated.c-1vcpu-2gb " +
 					"for a service or mq.dedicated.flex.256mb for a managed queue; Laravel Cloud answers any other " +
 					"size there with \"The size value is invalid.\" The laravel_cloud_instance_sizes data source " +
-					"lists every size.",
+					"lists the service sizes for shared compute and every managed queue size, but not the dedicated " +
+					"service sizes: the Laravel Cloud dashboard shows those.",
 			},
 			"scaling_type": schema.StringAttribute{
 				Required:    true,

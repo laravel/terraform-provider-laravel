@@ -3,12 +3,12 @@
 page_title: "laravel_cloud_instance_sizes Data Source - Laravel Cloud"
 subcategory: ""
 description: |-
-  Lists available instance sizes.
+  Lists available instance sizes: the service sizes for shared compute and every managed queue size. It does not list the dedicated service sizes (dedicated.), which an environment on a dedicated cluster needs; the Laravel Cloud dashboard shows those. Such an environment takes only the managed queue sizes whose cpu_type is dedicated (mq.dedicated.).
 ---
 
 # laravel_cloud_instance_sizes (Data Source)
 
-Lists available instance sizes.
+Lists available instance sizes: the service sizes for shared compute and every managed queue size. It does not list the dedicated service sizes (dedicated.*), which an environment on a dedicated cluster needs; the Laravel Cloud dashboard shows those. Such an environment takes only the managed queue sizes whose cpu_type is dedicated (mq.dedicated.*).
 
 ~> **Beta:** This provider is in beta and may change between releases.
 
@@ -45,4 +45,4 @@ Read-Only:
 - `instance_class` (String) Which instance class this size belongs to: "general" for service instances, "managed_queue" for managed queues.
 - `label` (String) Human-friendly label.
 - `memory_mib` (Number) Memory in MiB.
-- `name` (String) Size identifier (such as flex-512mb, mq.flex.256mb, dedicated.c-1vcpu-2gb). Sizes whose cpu_type is dedicated are the only ones an environment on a dedicated cluster takes.
+- `name` (String) Size identifier (such as flex-512mb or mq.flex.256mb).
