@@ -65,7 +65,7 @@ func (f *fakeCloud) registerInternalNetworkingRoutes(mux *http.ServeMux) {
 				AccessLevel:    &level,
 				EnvironmentIDs: req.EnvironmentIDs,
 			}
-			writeJSON(w, http.StatusOK, environmentDoc(env))
+			writeJSON(w, http.StatusOK, f.environmentDoc(env))
 		}
 	}
 	mux.HandleFunc("POST "+route, write(true))

@@ -60,6 +60,9 @@ type fakeCloud struct {
 	// postDeploy is whether the organization has post-deploy commands. Without
 	// them the API ignores post_deploy_command and never reports it.
 	postDeploy bool
+	// byoiam is whether the organization has bring your own IAM role, which
+	// an environment's AWS role needs.
+	byoiam bool
 
 	// Generic JSON:API store used by every resource other than applications
 	// and environments (which have bespoke handlers above). Keyed by
@@ -495,17 +498,55 @@ func (f *fakeCloud) listEnvironments(w http.ResponseWriter, r *http.Request) {
 	out := []client.EnvironmentData{}
 	for _, envID := range f.appEnvs[appID] {
 		if env, ok := f.envs[envID]; ok {
-			out = append(out, *env)
+			out = append(out, f.environmentView(env))
 		}
 	}
 	writeJSON(w, http.StatusOK, client.ListDocument[client.EnvironmentData]{Data: out})
 }
 
+// environmentView is an environment as the API reports it. Like the API, it
+// reports the AWS role and its trust policy only for an environment on a
+// dedicated cluster in an organization with bring your own IAM role.
+func (f *fakeCloud) environmentView(env *client.EnvironmentData) client.EnvironmentData {
+	view := *env
+	view.Attributes.AwsRoleArn = client.ReportedString{}
+	view.Attributes.AwsTrustPolicy = nil
+	if f.byoiam && env.Attributes.ClusterID != nil {
+		view.Attributes.AwsRoleArn = client.ReportedString{Reported: true, Value: env.Attributes.AwsRoleArn.Value}
+		view.Attributes.AwsTrustPolicy = ptr(fakeTrustPolicy(env.ID))
+	}
+	return view
+}
+
+// fakeTrustPolicy is the trust policy an environment's AWS role must have.
+func fakeTrustPolicy(envID string) string {
+	return `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::111111111111:role/workload"},` +
+		`"Action":["sts:AssumeRole","sts:TagSession"],"Condition":{"StringEquals":{"sts:ExternalId":"` + envID + `"}}}]}`
+}
+
+// awsRoleError is the API's 422 for an aws_role_arn it refuses. Null and the
+// current role always pass.
+func (f *fakeCloud) awsRoleError(env *client.EnvironmentData, req client.UpdateEnvironmentRequest) error {
+	r := req.AwsRoleArn
+	if r == nil || r.Null || ptrValue(env.Attributes.AwsRoleArn.Value) == r.Value {
+		return nil
+	}
+	switch {
+	case !regexp.MustCompile(`^arn:aws:iam::\d{12}:role/[\w+=,.@/-]+$`).MatchString(r.Value):
+		return fmt.Errorf("the AWS role ARN must be a valid IAM role ARN")
+	case !f.byoiam:
+		return fmt.Errorf("an AWS role needs bring your own IAM role, which is not enabled for this organization")
+	case env.Attributes.ClusterID == nil:
+		return fmt.Errorf("an AWS role is available only for an environment on a dedicated cluster")
+	}
+	return nil
+}
+
 // environmentDoc renders an environment the way the API does for
 // include=application,branch: the branch is a relationship, so its name is
 // only reachable through the document's included section.
-func environmentDoc(env *client.EnvironmentData) client.Document[client.EnvironmentData] {
-	doc := client.Document[client.EnvironmentData]{Data: *env}
+func (f *fakeCloud) environmentDoc(env *client.EnvironmentData) client.Document[client.EnvironmentData] {
+	doc := client.Document[client.EnvironmentData]{Data: f.environmentView(env)}
 	if id := env.Relationships.Branch.RelatedID(); id != "" {
 		attrs, _ := json.Marshal(map[string]string{"name": env.BranchName})
 		doc.Included = append(doc.Included, client.ResourceObject{
@@ -559,7 +600,7 @@ func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 	env := f.newEnvironment(appID, req.Name, req.Branch)
 	env.Attributes.ClusterID = req.ClusterID
 	f.serveEnvironment(env, serving, build)
-	writeJSON(w, http.StatusCreated, environmentDoc(env))
+	writeJSON(w, http.StatusCreated, f.environmentDoc(env))
 }
 
 // newEnvironment stores a freshly created environment. The caller holds f.mu.
@@ -666,7 +707,7 @@ func (f *fakeCloud) setVanityDomain(w http.ResponseWriter, r *http.Request) {
 	}
 	host := req.Name + "." + fakeVanityZone
 	env.Attributes.VanityDomain = &host
-	writeJSON(w, http.StatusOK, environmentDoc(env))
+	writeJSON(w, http.StatusOK, f.environmentDoc(env))
 }
 
 func (f *fakeCloud) getEnvironment(w http.ResponseWriter, r *http.Request) {
@@ -695,7 +736,7 @@ func (f *fakeCloud) getEnvironment(w http.ResponseWriter, r *http.Request) {
 	if f.hideVariables {
 		env.Attributes.EnvironmentVariables = nil
 	}
-	doc := environmentDoc(env)
+	doc := f.environmentDoc(env)
 	include := r.URL.Query().Get("include")
 	for name, rel := range map[string]**client.Relationship{
 		"database":             &doc.Data.Relationships.Database,
@@ -752,8 +793,18 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("environment not found"))
 		return
 	}
+	if err := f.awsRoleError(env, req); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err)
+		return
+	}
 	f.envUpdates = append(f.envUpdates, req)
 	a := &env.Attributes
+	if req.AwsRoleArn != nil {
+		a.AwsRoleArn.Value = nil
+		if !req.AwsRoleArn.Null {
+			a.AwsRoleArn.Value = ptr(req.AwsRoleArn.Value)
+		}
+	}
 	if req.Branch != nil {
 		env.BranchName = *req.Branch
 		env.Relationships.Branch = client.Relationship{
@@ -853,7 +904,7 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 	}
 	// Branch is write-only and not part of the API response, so it is accepted
 	// and discarded.
-	writeJSON(w, http.StatusOK, environmentDoc(env))
+	writeJSON(w, http.StatusOK, f.environmentDoc(env))
 }
 
 func (f *fakeCloud) deleteEnvironment(w http.ResponseWriter, r *http.Request) {

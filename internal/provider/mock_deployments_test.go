@@ -192,5 +192,5 @@ func (f *fakeCloud) stopEnvironment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	env.Attributes.Status = "stopped"
-	writeJSON(w, http.StatusOK, environmentDoc(env))
+	writeJSON(w, http.StatusOK, f.environmentDoc(env))
 }

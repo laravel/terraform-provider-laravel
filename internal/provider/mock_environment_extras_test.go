@@ -42,7 +42,7 @@ func (f *fakeCloud) registerEnvironmentExtraRoutes(mux *http.ServeMux) {
 		for _, item := range list {
 			f.secrets.attached[id][item.(string)] = true
 		}
-		writeJSON(w, http.StatusOK, environmentDoc(env))
+		writeJSON(w, http.StatusOK, f.environmentDoc(env))
 	})
 
 	mux.HandleFunc("DELETE /environments/{id}/secrets/{secret}", func(w http.ResponseWriter, r *http.Request) {
@@ -55,7 +55,7 @@ func (f *fakeCloud) registerEnvironmentExtraRoutes(mux *http.ServeMux) {
 			return
 		}
 		delete(f.secrets.attached[id], sid)
-		writeJSON(w, http.StatusOK, environmentDoc(env))
+		writeJSON(w, http.StatusOK, f.environmentDoc(env))
 	})
 
 	// The sending keys an environment can reuse are those of the other
@@ -123,7 +123,7 @@ func (f *fakeCloud) registerEnvironmentExtraRoutes(mux *http.ServeMux) {
 			keyName = *req.KeyName
 		}
 		env.Attributes.Resend = &client.EnvironmentResend{FromAddress: req.FromAddress, FromName: req.FromName, KeyName: keyName}
-		writeJSON(w, http.StatusOK, environmentDoc(env))
+		writeJSON(w, http.StatusOK, f.environmentDoc(env))
 	})
 
 	mux.HandleFunc("PATCH /environments/{id}/resend", func(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +146,7 @@ func (f *fakeCloud) registerEnvironmentExtraRoutes(mux *http.ServeMux) {
 		}
 		env.Attributes.Resend.FromAddress = req.FromAddress
 		env.Attributes.Resend.FromName = req.FromName
-		writeJSON(w, http.StatusOK, environmentDoc(env))
+		writeJSON(w, http.StatusOK, f.environmentDoc(env))
 	})
 
 	mux.HandleFunc("DELETE /environments/{id}/resend", func(w http.ResponseWriter, r *http.Request) {
@@ -248,6 +248,9 @@ func restoreNulls(req *client.UpdateEnvironmentRequest, body map[string]any) {
 	}
 	if isNull("post_deploy_command") {
 		req.PostDeployCommand = &client.NullableString{Null: true}
+	}
+	if isNull("aws_role_arn") {
+		req.AwsRoleArn = &client.NullableString{Null: true}
 	}
 }
 

@@ -152,6 +152,12 @@ type EnvironmentAttributes struct {
 	// ClusterID is the dedicated cluster the environment runs on, as
 	// environment create takes it; null on shared compute.
 	ClusterID *string `json:"cluster_id"`
+	// AwsRoleArn and AwsTrustPolicy are reported only for an environment on a
+	// dedicated cluster, in an organization with bring your own IAM role, to a
+	// token that may view the environment. The role is then null when none is
+	// set.
+	AwsRoleArn     ReportedString `json:"aws_role_arn,omitzero"`
+	AwsTrustPolicy *string        `json:"aws_trust_policy,omitempty"`
 	// DeployHookURL is null when the deploy hook is off or the token lacks the
 	// environment_deploy_hook.edit permission.
 	DeployHookURL *string `json:"deploy_hook_url"`
@@ -358,6 +364,8 @@ type UpdateEnvironmentRequest struct {
 	HibernationWakeUpInterval *NullableInt `json:"hibernation_wake_up_interval,omitempty"`
 	// NightwatchToken null disconnects Nightwatch.
 	NightwatchToken *NullableString `json:"nightwatch_token,omitempty"`
+	// AwsRoleArn null removes the role. Only environment update takes it.
+	AwsRoleArn *NullableString `json:"aws_role_arn,omitempty"`
 	// FilesystemKeys replaces every bucket attachment; an empty list detaches
 	// them all. A pointer so that empty list is sent rather than omitted.
 	FilesystemKeys             *[]FilesystemKeyAttachment `json:"filesystem_keys,omitempty"`
