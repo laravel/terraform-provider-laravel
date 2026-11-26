@@ -48,6 +48,15 @@ func TestDoReportsRedirectInsteadOfFollowingIt(t *testing.T) {
 	if strings.Contains(err.Error(), "<!DOCTYPE") {
 		t.Errorf("error should not dump the SPA shell, got %q", err.Error())
 	}
+	// Laravel Cloud answers a throttled request with a 429, so blaming a
+	// redirect on a rate limit sends the user after the wrong cause. The
+	// redirect hides an API error, often a source control failure.
+	if strings.Contains(strings.ToLower(err.Error()), "rate limit") {
+		t.Errorf("error %q blames a rate limit; Laravel Cloud answers those with a 429", err.Error())
+	}
+	if !strings.Contains(err.Error(), "source control provider") {
+		t.Errorf("error %q does not point at the source control connection", err.Error())
+	}
 }
 
 // A 302 is only meaningful for the caller if the Location survives into the

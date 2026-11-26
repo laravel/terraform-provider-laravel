@@ -19,10 +19,15 @@ const defaultBaseURL = "https://cloud.laravel.com/api"
 // from unexpected large responses (e.g. HTML error pages).
 const maxResponseSize = 1 << 20
 
+// defaultUserAgent names the client in Laravel Cloud's request logs when the
+// caller does not give a more specific one with WithUserAgent.
+const defaultUserAgent = "terraform-provider-laravel"
+
 // Client is the Laravel Cloud API client.
 type Client struct {
 	baseURL    string
 	token      string
+	userAgent  string
 	httpClient *http.Client
 	// Client-side pacing; see WithRateLimits. The limiters are nil when
 	// pacing is off.
@@ -33,8 +38,9 @@ type Client struct {
 // NewClient creates a new Laravel Cloud API client.
 func NewClient(token string, opts ...ClientOption) *Client {
 	c := &Client{
-		baseURL: defaultBaseURL,
-		token:   token,
+		baseURL:   defaultBaseURL,
+		token:     token,
+		userAgent: defaultUserAgent,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -66,6 +72,17 @@ type ClientOption func(*Client)
 // WithBaseURL overrides the default API base URL.
 func WithBaseURL(u string) ClientOption {
 	return func(c *Client) { c.baseURL = u }
+}
+
+// WithUserAgent sets the User-Agent header sent with every request, so
+// Laravel Cloud can tell which client and version sent it. An empty value
+// keeps the default.
+func WithUserAgent(ua string) ClientOption {
+	return func(c *Client) {
+		if ua != "" {
+			c.userAgent = ua
+		}
+	}
 }
 
 // WithHTTPClient overrides the default HTTP client.
@@ -160,6 +177,7 @@ func (c *Client) send(ctx context.Context, method, path string, body any, out an
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", c.userAgent)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -188,11 +206,17 @@ func (c *Client) send(ctx context.Context, method, path string, body any, out an
 		if loc == "" {
 			loc = "(no Location header)"
 		}
-		// Laravel Cloud answers a write it throttled this way (with no
-		// rate-limit headers), so say so: it is the likeliest cause.
-		return status, header, fmt.Errorf("%s %s was answered with an unexpected %d redirect to %s; the API did not handle this request. "+
-			"It may be a rate limit: Laravel Cloud answers a write that exceeds one this way. Wait a minute and retry, "+
-			"or lower max_requests_per_minute if other runs share the organization", method, u, resp.StatusCode, loc)
+		// Laravel Cloud answers a throttled request with a 429, so a redirect
+		// is not a rate limit. It means the API turned an error into a
+		// redirect meant for the dashboard, which loses the error message.
+		// The likeliest such error is the API failing to reach the source
+		// control provider, so name it.
+		return status, header, fmt.Errorf("%s %s was answered with an unexpected %d redirect to %s instead of a JSON response, "+
+			"so the API did not complete this request and gave no reason. Laravel Cloud answers some errors this way, "+
+			"such as a failure to reach the source control provider while it looks up a repository: if this request "+
+			"names a repository, check in the Laravel Cloud dashboard that the user who created the API token still "+
+			"has a working connection to the source control provider and access to the repository, then retry",
+			method, u, resp.StatusCode, loc)
 	}
 
 	// Detect non-JSON responses (e.g. HTML error pages, SPA catch-all).

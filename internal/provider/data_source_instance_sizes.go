@@ -54,8 +54,9 @@ func (d *InstanceSizesDataSource) Schema(_ context.Context, _ datasource.SchemaR
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
-							Computed:    true,
-							Description: "Size identifier (such as flex.c-1vcpu-256mb, mq-pro-1gb).",
+							Computed: true,
+							Description: "Size identifier (such as flex-512mb, mq.flex.256mb, dedicated.c-1vcpu-2gb). " +
+								"Sizes whose cpu_type is dedicated are the only ones an environment on a dedicated cluster takes.",
 						},
 						"label": schema.StringAttribute{
 							Computed:    true,

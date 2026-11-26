@@ -84,6 +84,17 @@ func (p *LaravelCloudProvider) Schema(_ context.Context, _ provider.SchemaReques
 	}
 }
 
+// userAgent names the provider version, and the Terraform version when
+// Terraform reports one, in the User-Agent of every API request, so Laravel
+// Cloud's request logs can tell which provider release sent a request.
+func userAgent(terraformVersion, providerVersion string) string {
+	ua := "terraform-provider-laravel/" + providerVersion
+	if terraformVersion != "" {
+		ua = "Terraform/" + terraformVersion + " (+https://www.terraform.io) " + ua
+	}
+	return ua
+}
+
 // rateLimit resolves one pacing setting: the provider attribute if set,
 // otherwise the environment variable, otherwise def.
 func rateLimit(attr types.Int64, env string, def int) (int, error) {
@@ -188,6 +199,7 @@ func (p *LaravelCloudProvider) Configure(ctx context.Context, req provider.Confi
 		return
 	}
 	opts = append(opts, client.WithRateLimits(perMinute, createPerMinute))
+	opts = append(opts, client.WithUserAgent(userAgent(req.TerraformVersion, p.version)))
 
 	c := client.NewClient(token, opts...)
 	resp.DataSourceData = c

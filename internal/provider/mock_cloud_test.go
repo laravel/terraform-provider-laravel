@@ -130,11 +130,17 @@ type fakeCloud struct {
 	queueDeployments int
 	queued           map[string]*fakeQueuedDeployment
 
-	// throttleReads makes that many of the next GETs answer 429 as Laravel
-	// Cloud's rate limiter does, and throttleWrites that many of the next
-	// writes answer the bare 302 to the app root it sends for a throttled
-	// write.
+	// throttleReads and throttleWrites make that many of the next GETs, and
+	// of the next writes, answer 429 as Laravel Cloud's rate limiter does.
 	throttleReads, throttleWrites int
+	// redirectWrites makes that many of the next writes answer a bare 302 to
+	// the app root, as Laravel Cloud does when it renders an error, such as
+	// a failure to reach the source control provider, as a redirect meant for
+	// the dashboard.
+	redirectWrites int
+	// userAgents counts the User-Agent of every request, so tests can assert
+	// on how the provider identifies itself.
+	userAgents map[string]int
 
 	// edgeRules models the rulesets of the dedicated edge network; see
 	// mock_edge_network_rules_test.go.
@@ -155,26 +161,35 @@ type fakeCloud struct {
 }
 
 // throttle wraps the fake's routes with Laravel Cloud's rate-limit responses
-// while throttleReads or throttleWrites last.
+// while throttleReads or throttleWrites last, and with its redirect for an
+// error while redirectWrites lasts.
 func (f *fakeCloud) throttle(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
+		if f.userAgents == nil {
+			f.userAgents = map[string]int{}
+		}
+		f.userAgents[r.UserAgent()]++
 		read := r.Method == http.MethodGet && f.throttleReads > 0
 		write := r.Method != http.MethodGet && f.throttleWrites > 0
+		redirect := r.Method != http.MethodGet && !write && f.redirectWrites > 0
 		if read {
 			f.throttleReads--
 		}
 		if write {
 			f.throttleWrites--
 		}
+		if redirect {
+			f.redirectWrites--
+		}
 		f.mu.Unlock()
 		switch {
-		case read:
+		case read, write:
 			w.Header().Set("Retry-After", "0")
 			w.Header().Set("X-RateLimit-Limit", "120")
 			w.Header().Set("X-RateLimit-Remaining", "0")
 			writeError(w, http.StatusTooManyRequests, fmt.Errorf("Too Many Attempts."))
-		case write:
+		case redirect:
 			w.Header().Set("Location", "https://cloud.laravel.com")
 			w.WriteHeader(http.StatusFound)
 		default:
