@@ -320,3 +320,35 @@ func TestRelationshipReported(t *testing.T) {
 		t.Errorf("unrequested = %+v, missing = %+v, want neither reported", r.Unrequested, r.Missing)
 	}
 }
+
+// The AWS role is reported, possibly as null, only where it applies; a
+// response without it must not read as a removed role.
+func TestEnvironmentAwsRoleDecoding(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload     string
+		reported          bool
+		role, trustPolicy string
+	}{
+		{"set", `{"aws_role_arn": "arn:aws:iam::123456789012:role/app", "aws_trust_policy": "{}"}`, true, "arn:aws:iam::123456789012:role/app", "{}"},
+		{"none set", `{"aws_role_arn": null, "aws_trust_policy": "{}"}`, true, "", "{}"},
+		{"not reported", `{"name": "production"}`, false, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var a EnvironmentAttributes
+			if err := json.Unmarshal([]byte(tc.payload), &a); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			role, policy := "", ""
+			if a.AwsRoleArn.Value != nil {
+				role = *a.AwsRoleArn.Value
+			}
+			if a.AwsTrustPolicy != nil {
+				policy = *a.AwsTrustPolicy
+			}
+			if a.AwsRoleArn.Reported != tc.reported || role != tc.role || policy != tc.trustPolicy {
+				t.Errorf("got reported=%v role=%q policy=%q, want reported=%v role=%q policy=%q",
+					a.AwsRoleArn.Reported, role, policy, tc.reported, tc.role, tc.trustPolicy)
+			}
+		})
+	}
+}
