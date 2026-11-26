@@ -67,14 +67,29 @@ resource "laravel_cloud_environment" "staging" {
 				),
 			},
 			// Lost later, with nothing left to create: the next apply sets it.
+			// Setting it detaches the environments' branches, so the plan after
+			// it sets them again.
 			{
 				PreConfig: func() {
 					f.mu.Lock()
 					f.apps[appID].Attributes.Repository = nil
 					f.mu.Unlock()
 				},
+				Config:             config,
+				Check:              repositoryRestored,
+				ExpectNonEmptyPlan: true,
+			},
+			{
 				Config: config,
-				Check:  repositoryRestored,
+				Check: func(s *terraform.State) error {
+					id := s.RootModule().Resources["laravel_cloud_environment.staging"].Primary.ID
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					if got := f.envs[id].BranchName; got != "main" {
+						return fmt.Errorf("staging branch = %q after the repository was set again, want main", got)
+					}
+					return nil
+				},
 			},
 			// A branch Laravel Cloud has not synced yet, on an application that
 			// has its repository: the create is retried until it is.

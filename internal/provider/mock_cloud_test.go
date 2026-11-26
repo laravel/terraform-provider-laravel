@@ -448,6 +448,16 @@ func (f *fakeCloud) updateApplication(w http.ResponseWriter, r *http.Request) {
 			(provider != "github" || !strings.HasPrefix(*req.Repository, "acme/monorepo")) {
 			app.Attributes.RootDirectory = nil
 		}
+		// The branches belonged to the old repository, so Laravel Cloud
+		// detaches them from every environment.
+		if moved {
+			for _, envID := range f.appEnvs[app.ID] {
+				if env := f.envs[envID]; env != nil {
+					env.Relationships.Branch = client.Relationship{}
+					env.BranchName = ""
+				}
+			}
+		}
 		app.Attributes.Repository = fakeRepository(*req.Repository, provider)
 		app.Attributes.SourceControlProviderType = &provider
 	}
@@ -744,6 +754,12 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 	}
 	f.envUpdates = append(f.envUpdates, req)
 	a := &env.Attributes
+	if req.Branch != nil {
+		env.BranchName = *req.Branch
+		env.Relationships.Branch = client.Relationship{
+			Data: &client.ResourceIdentifier{Type: "branches", ID: "branch-" + env.ID},
+		}
+	}
 	if req.Name != nil {
 		a.Name = *req.Name
 		a.DisplayName = req.Name

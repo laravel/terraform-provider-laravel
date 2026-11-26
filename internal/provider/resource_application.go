@@ -75,7 +75,9 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"repository": schema.StringAttribute{
 				Required: true,
 				Description: "Source code repository (such as laravel/laravel). " +
-					"Use the owner/name form the platform reports: after an import, a URL or different casing shows as a change, and applying it updates the application's repository.",
+					"Use the owner/name form the platform reports: after an import, a URL or different casing shows as a change, and applying it updates the application's repository. " +
+					"Moving to another repository, or to one of the same name on another provider, makes Laravel Cloud detach " +
+					"every environment's branch; the next plan sets each laravel_cloud_environment's branch again.",
 			},
 			"region": schema.StringAttribute{
 				Required:    true,
@@ -106,13 +108,17 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Optional: true,
 				Computed: true,
 				Description: "Source control provider of the application's repository (github, gitlab, gitlab_self_hosted, " +
-					"or bitbucket). Becomes required by the API on March 9, 2026. Leave unset to keep the reported one. " +
+					"or bitbucket). Becomes required by the API on March 9, 2026. Set, it goes with every repository change, " +
+					"and the API token's creator must have connected that provider. Leave unset to let Laravel Cloud find the " +
+					"repository through the organization's connections and record the provider it reports. " +
 					"Changing it points the application at the repository of the same name on the other provider.",
 				Validators: []validator.String{
 					stringvalidator.OneOf("github", "gitlab", "gitlab_self_hosted", "bitbucket"),
 				},
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
+					// Unset, it is the reported provider, which a new repository
+					// may change.
+					followsAttributes{"repository"},
 				},
 			},
 			"starter_kit": schema.StringAttribute{
@@ -438,7 +444,10 @@ func (r *ApplicationResource) Update(ctx context.Context, req resource.UpdateReq
 	}
 	// The API reads source_control_provider_type only to resolve a repository
 	// being changed, and discards it otherwise. So a new provider type goes out
-	// with the repository, which the API then looks up on that provider.
+	// with the repository, which the API then looks up on that provider. Sent,
+	// it also makes the API use the token creator's connection to that provider
+	// rather than the organization's, so it goes only when configured: unset,
+	// it plans unknown whenever the repository changes, and is read back.
 	if isSet(plan.SourceControlProviderType) && !plan.SourceControlProviderType.Equal(state.SourceControlProviderType) &&
 		updateReq.Repository == nil && isSet(plan.Repository) {
 		updateReq.Repository = plan.Repository.ValueStringPointer()

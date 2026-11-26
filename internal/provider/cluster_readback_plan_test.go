@@ -145,6 +145,18 @@ resource "laravel_cloud_environment" "staging" {
 					Config:      config(baseURL, app, `cluster_id = "dc-2"`, ""),
 					ExpectError: refused,
 				},
+				{
+					// Known only after apply, it replaces the environment even
+					// though it turns out to be the same cluster.
+					Config: config(baseURL, app, `cluster_id = "${substr(laravel_cloud_environment.preview.id, 0, 0)}dc-1"`, "") + `
+resource "laravel_cloud_environment" "preview" {
+  application_id = laravel_cloud_application.app.id
+  name           = "preview"
+  branch         = "preview"
+}
+`,
+					ExpectError: refused,
+				},
 			},
 		})
 	})

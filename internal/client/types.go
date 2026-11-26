@@ -1,6 +1,9 @@
 package client
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // ---------------------------------------------------------------------
 // JSON:API envelope types
@@ -1362,6 +1365,34 @@ type EdgeNetworkAttributes struct {
 // string and cannot be inferred from anything else in state.
 type Relationship struct {
 	Data *ResourceIdentifier `json:"data"`
+	// Reported is whether the API sent the data member, which it does for a
+	// requested include. A null one then means nothing is related, whereas a
+	// relationship left out says nothing either way.
+	Reported bool `json:"-"`
+}
+
+// UnmarshalJSON records whether the data member was sent, which a nil Data
+// alone cannot tell.
+func (r *Relationship) UnmarshalJSON(b []byte) error {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(b, &members); err != nil {
+		return err
+	}
+	*r = Relationship{}
+	data, ok := members["data"]
+	if !ok {
+		return nil
+	}
+	r.Reported = true
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil
+	}
+	var id ResourceIdentifier
+	if err := json.Unmarshal(data, &id); err != nil {
+		return err
+	}
+	r.Data = &id
+	return nil
 }
 
 // ResourceIdentifier is a JSON:API resource identifier object.

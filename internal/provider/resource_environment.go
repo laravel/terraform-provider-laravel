@@ -1433,12 +1433,16 @@ func (r *EnvironmentResource) refuseDefaultEnvironmentReplacement(ctx context.Co
 	switch {
 	case isSet(planServing) && isSet(stateServing) && !planServing.Equal(stateServing):
 		attribute, keep = "serving_mode", fmt.Sprintf("Keep serving_mode = %q", stateServing.ValueString())
-	case isSet(configCluster) && !configCluster.Equal(stateCluster):
-		// Only a configured cluster replaces the environment; null in state is
-		// shared compute.
+	case !configCluster.IsNull() && !configCluster.Equal(stateCluster):
+		// Only a configured cluster replaces the environment, and so does one
+		// known only after apply, even if it turns out the same. Null in state
+		// is shared compute.
 		attribute, keep = "cluster_id", "Remove cluster_id to keep it on shared compute"
 		if !stateCluster.IsNull() {
 			keep = fmt.Sprintf("Keep cluster_id = %q", stateCluster.ValueString())
+		}
+		if configCluster.IsUnknown() {
+			keep = "Its value is known only after apply, which replaces the environment even if it turns out the same. " + keep
 		}
 	default:
 		return
@@ -1624,11 +1628,15 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 		state.ApplicationID = types.StringValue(appID)
 	}
 	// branch is Required but is not an attribute on the API side; the name
-	// comes from the included branch object. Only overwrite when the API
-	// reported one, so a response without the include leaves the configured
-	// value intact.
-	if env.BranchName != "" {
+	// comes from the included branch object. A response without the include
+	// leaves the configured value intact. A null branch is one Laravel Cloud
+	// detached, as it does from every environment when the application moves to
+	// another repository; recording that lets the next plan set it again.
+	switch {
+	case env.BranchName != "":
 		state.Branch = types.StringValue(env.BranchName)
+	case env.Relationships.Branch.Reported && env.Relationships.Branch.Data == nil:
+		state.Branch = types.StringNull()
 	}
 	state.Name = types.StringValue(env.Attributes.Name)
 	state.Slug = types.StringValue(env.Attributes.Slug)

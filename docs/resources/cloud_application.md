@@ -45,7 +45,7 @@ resource "laravel_cloud_application" "docs" {
 
 - `name` (String) Application name (3-40 characters).
 - `region` (String) Cloud region (such as us-east-1).
-- `repository` (String) Source code repository (such as laravel/laravel). Use the owner/name form the platform reports: after an import, a URL or different casing shows as a change, and applying it updates the application's repository.
+- `repository` (String) Source code repository (such as laravel/laravel). Use the owner/name form the platform reports: after an import, a URL or different casing shows as a change, and applying it updates the application's repository. Moving to another repository, or to one of the same name on another provider, makes Laravel Cloud detach every environment's branch; the next plan sets each laravel_cloud_environment's branch again.
 
 ### Optional
 
@@ -57,7 +57,7 @@ resource "laravel_cloud_application" "docs" {
 - `serving_root` (String) Directory a static default environment serves, relative to the repository ("." for the top level). Requires serving_mode = "static". Used only when the application is created: change it afterwards with serving_root on laravel_cloud_environment. Changing it here only records the new value. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
 - `slack_channel` (String) Slack channel for application notifications. The organization must have Slack connected. Removing it turns Slack notifications off.
 - `slug` (String) URL-friendly slug.
-- `source_control_provider_type` (String) Source control provider of the application's repository (github, gitlab, gitlab_self_hosted, or bitbucket). Becomes required by the API on March 9, 2026. Leave unset to keep the reported one. Changing it points the application at the repository of the same name on the other provider.
+- `source_control_provider_type` (String) Source control provider of the application's repository (github, gitlab, gitlab_self_hosted, or bitbucket). Becomes required by the API on March 9, 2026. Set, it goes with every repository change, and the API token's creator must have connected that provider. Leave unset to let Laravel Cloud find the repository through the organization's connections and record the provider it reports. Changing it points the application at the repository of the same name on the other provider.
 - `starter_kit` (String) Create the repository from a starter kit instead of using an existing one: laravel, laravel-react, laravel-vue, laravel-livewire, laravel-svelte, nextjs, nuxt, express, go, django, fastapi, rails or astro. repository then names a new GitHub repository (owner/name) to create, which must not exist yet, and source_control_provider_type must be github. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
 
 ### Read-Only
