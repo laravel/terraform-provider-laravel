@@ -42,7 +42,10 @@ func (d *InstanceSizesDataSource) Metadata(_ context.Context, req datasource.Met
 
 func (d *InstanceSizesDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Lists available instance sizes.",
+		Description: "Lists available instance sizes: the service sizes for shared compute and every managed queue " +
+			"size. It does not list the dedicated service sizes (dedicated.*), which an environment on a dedicated " +
+			"cluster needs; the Laravel Cloud dashboard shows those. Such an environment takes only the managed " +
+			"queue sizes whose cpu_type is dedicated (mq.dedicated.*).",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
@@ -55,7 +58,7 @@ func (d *InstanceSizesDataSource) Schema(_ context.Context, _ datasource.SchemaR
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
 							Computed:    true,
-							Description: "Size identifier (such as flex.c-1vcpu-256mb, mq-pro-1gb).",
+							Description: "Size identifier (such as flex-512mb or mq.flex.256mb).",
 						},
 						"label": schema.StringAttribute{
 							Computed:    true,

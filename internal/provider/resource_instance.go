@@ -120,8 +120,13 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"size": schema.StringAttribute{
-				Required:    true,
-				Description: "Instance size (such as flex-512mb).",
+				Required: true,
+				Description: "Instance size, such as flex-512mb for a service or mq.flex.256mb for a managed queue. " +
+					"An environment on a dedicated cluster takes only dedicated sizes, such as dedicated.c-1vcpu-2gb " +
+					"for a service or mq.dedicated.flex.256mb for a managed queue; Laravel Cloud answers any other " +
+					"size there with \"The size value is invalid.\" The laravel_cloud_instance_sizes data source " +
+					"lists the service sizes for shared compute and every managed queue size, but not the dedicated " +
+					"service sizes: the Laravel Cloud dashboard shows those.",
 			},
 			"scaling_type": schema.StringAttribute{
 				Required:    true,
@@ -133,8 +138,11 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Description: "Minimum number of replicas. Set it only for the \"custom\" scaling type: " +
 					"for \"auto\" and \"none\" the platform sets it to 1. Required for custom scaling " +
 					"except on managed queues, where it is the minimum number of workers: optional " +
-					"on current-generation (mq.*) sizes, where 0 lets the queue scale to zero when " +
-					"idle, and rejected on previous-generation sizes, which always scale to zero.",
+					"on current-generation (mq.*) sizes, and rejected on previous-generation sizes, " +
+					"which always scale to zero. On flex queue sizes (mq.flex.* and mq.dedicated.flex.*), " +
+					"0 lets the queue scale to zero when idle; pro queue sizes (mq.pro.* and " +
+					"mq.dedicated.pro.*) keep at least 1 worker unless the organization's plan lets them " +
+					"scale to zero.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},

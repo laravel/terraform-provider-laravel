@@ -19,10 +19,15 @@ const defaultBaseURL = "https://cloud.laravel.com/api"
 // from unexpected large responses (e.g. HTML error pages).
 const maxResponseSize = 1 << 20
 
+// defaultUserAgent names the client in Laravel Cloud's request logs when the
+// caller does not give a more specific one with WithUserAgent.
+const defaultUserAgent = "terraform-provider-laravel"
+
 // Client is the Laravel Cloud API client.
 type Client struct {
 	baseURL    string
 	token      string
+	userAgent  string
 	httpClient *http.Client
 	// Client-side pacing; see WithRateLimits. The limiters are nil when
 	// pacing is off.
@@ -33,8 +38,9 @@ type Client struct {
 // NewClient creates a new Laravel Cloud API client.
 func NewClient(token string, opts ...ClientOption) *Client {
 	c := &Client{
-		baseURL: defaultBaseURL,
-		token:   token,
+		baseURL:   defaultBaseURL,
+		token:     token,
+		userAgent: defaultUserAgent,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -66,6 +72,17 @@ type ClientOption func(*Client)
 // WithBaseURL overrides the default API base URL.
 func WithBaseURL(u string) ClientOption {
 	return func(c *Client) { c.baseURL = u }
+}
+
+// WithUserAgent sets the User-Agent header sent with every request, so
+// Laravel Cloud can tell which client and version sent it. An empty value
+// keeps the default.
+func WithUserAgent(ua string) ClientOption {
+	return func(c *Client) {
+		if ua != "" {
+			c.userAgent = ua
+		}
+	}
 }
 
 // WithHTTPClient overrides the default HTTP client.
@@ -145,12 +162,14 @@ func (c *Client) send(ctx context.Context, method, path string, body any, out an
 		u += "?" + rawQuery
 	}
 
+	var payload []byte
 	var reqBody io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return 0, nil, fmt.Errorf("marshaling request body: %w", err)
 		}
+		payload = b
 		reqBody = bytes.NewReader(b)
 	}
 
@@ -160,6 +179,7 @@ func (c *Client) send(ctx context.Context, method, path string, body any, out an
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", c.userAgent)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -188,11 +208,7 @@ func (c *Client) send(ctx context.Context, method, path string, body any, out an
 		if loc == "" {
 			loc = "(no Location header)"
 		}
-		// Laravel Cloud answers a write it throttled this way (with no
-		// rate-limit headers), so say so: it is the likeliest cause.
-		return status, header, fmt.Errorf("%s %s was answered with an unexpected %d redirect to %s; the API did not handle this request. "+
-			"It may be a rate limit: Laravel Cloud answers a write that exceeds one this way. Wait a minute and retry, "+
-			"or lower max_requests_per_minute if other runs share the organization", method, u, resp.StatusCode, loc)
+		return status, header, redirectError(method, u, resp.StatusCode, loc, payload)
 	}
 
 	// Detect non-JSON responses (e.g. HTML error pages, SPA catch-all).
@@ -264,6 +280,56 @@ func listAll[T any](ctx context.Context, c *Client, path string) ([]T, error) {
 type APIError struct {
 	StatusCode int
 	Body       string
+}
+
+// redirectError reports a redirect the API answered instead of a JSON
+// response. Laravel Cloud answers a throttled request with a 429, so a
+// redirect is not a rate limit.
+//
+// A redirect to the app root is an API error that Laravel Cloud rendered as a
+// redirect back to the dashboard, which drops the error message. For a
+// request that names a repository, the likeliest such error is a failure to
+// reach the source control provider while the API looks the repository up,
+// so only then does the error name it. Any other destination, such as a
+// sign-in page or another API URL, says more about the cause than a guess
+// would, so the error reports just the status and the destination.
+func redirectError(method, u string, status int, loc string, payload []byte) error {
+	msg := fmt.Sprintf("%s %s was answered with an unexpected %d redirect to %s instead of a JSON response, "+
+		"so the API did not complete this request", method, u, status, loc)
+	if !redirectsToAppRoot(loc) {
+		return errors.New(msg)
+	}
+	msg += ". Laravel Cloud answers some errors with a redirect to the dashboard, which drops the error message"
+	if namesRepository(payload) {
+		msg += ". This request names a repository, and the likeliest such error is a failure to reach the source " +
+			"control provider while looking it up: check in the Laravel Cloud dashboard that the user who created " +
+			"the API token still has a working connection to the source control provider and access to the " +
+			"repository, then retry"
+	}
+	return errors.New(msg)
+}
+
+// redirectsToAppRoot reports whether a Location header points at the root of
+// a site, where Laravel Cloud sends a redirect back with no page to go back to.
+func redirectsToAppRoot(loc string) bool {
+	target, err := url.Parse(loc)
+	if err != nil {
+		return false
+	}
+	return (target.Path == "" || target.Path == "/") && target.RawQuery == "" &&
+		(target.Host != "" || strings.HasPrefix(loc, "/"))
+}
+
+// namesRepository reports whether a JSON request body has a top-level
+// repository field, as creating an application, or changing its repository,
+// does.
+func namesRepository(payload []byte) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(payload, &fields) != nil {
+		return false
+	}
+	_, ok := fields["repository"]
+	return ok
 }
 
 func (e *APIError) Error() string {

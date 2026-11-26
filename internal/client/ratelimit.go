@@ -24,8 +24,8 @@ const (
 // throttles as resource creation. Zero turns that limit off.
 //
 // Pacing is how writes stay under the limits: Laravel Cloud answers a
-// throttled write with a 302 rather than a 429, which cannot be told apart
-// from other failures and so cannot be retried safely.
+// throttled request with a 429, and while a throttled read is retried, a
+// write is sent only once, so a write that hits the limit fails the apply.
 //
 // Every client in the process with the same token, base URL and rates shares
 // the same budget, so all the provider instances an acceptance test run

@@ -48,6 +48,56 @@ func TestDoReportsRedirectInsteadOfFollowingIt(t *testing.T) {
 	if strings.Contains(err.Error(), "<!DOCTYPE") {
 		t.Errorf("error should not dump the SPA shell, got %q", err.Error())
 	}
+	// Laravel Cloud answers a throttled request with a 429, so blaming a
+	// redirect on a rate limit sends the user after the wrong cause.
+	if strings.Contains(strings.ToLower(err.Error()), "rate limit") {
+		t.Errorf("error %q blames a rate limit; Laravel Cloud answers those with a 429", err.Error())
+	}
+}
+
+// A 302 to the app root on a request that names a repository is most likely
+// the API failing to reach the source control provider, so the error points
+// at that connection. Any other redirect, or one for a request without a
+// repository, must not send the user after a source control problem.
+func TestDoRedirectNamesSourceControlOnlyForRepositoryAtAppRoot(t *testing.T) {
+	createApp := map[string]any{"name": "app", "region": "us-east-2", "repository": "acme/app"}
+	for _, tc := range []struct {
+		name     string
+		path     string
+		body     any
+		location string
+		wantHint bool
+	}{
+		{"repository, app root", "/applications", createApp, "https://cloud.laravel.com", true},
+		{"repository, relative app root", "/applications", createApp, "/", true},
+		{"repository, sign-in page", "/applications", createApp, "https://cloud.laravel.com/login", false},
+		{"repository, another API URL", "/applications", createApp, "https://cloud.laravel.com/api/applications", false},
+		{"no repository, app root", "/instances/inst-1/background-processes", map[string]any{"type": "worker"}, "/", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Location", tc.location)
+				w.WriteHeader(http.StatusFound)
+			}))
+			defer srv.Close()
+
+			c := NewClient("token", WithBaseURL(srv.URL+"/api"))
+			err := c.do(context.Background(), "POST", tc.path, tc.body, nil)
+			if err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tc.location) {
+				t.Errorf("error %q does not include the Location %q", msg, tc.location)
+			}
+			if got := strings.Contains(msg, "source control provider"); got != tc.wantHint {
+				t.Errorf("source control hint = %v, want %v, in %q", got, tc.wantHint, msg)
+			}
+			if strings.Contains(strings.ToLower(msg), "rate limit") {
+				t.Errorf("error %q blames a rate limit", msg)
+			}
+		})
+	}
 }
 
 // A 302 is only meaningful for the caller if the Location survives into the
