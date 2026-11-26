@@ -202,6 +202,12 @@ resource "laravel_cloud_application" "app" {
 			},
 			{
 				Config: app("laravel/renamed", `source_control_provider_type = "gitlab"`),
+				// Another repository, whose details the apply reads back.
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectUnknownValue(addr, tfjsonpath.New("repository_default_branch")),
+					plancheck.ExpectUnknownValue(addr, tfjsonpath.New("framework")),
+					plancheck.ExpectUnknownValue(addr, tfjsonpath.New("language")),
+				}},
 				Check: lastUpdate(func(req client.UpdateApplicationRequest) error {
 					if req.Repository == nil || *req.Repository != "laravel/renamed" || req.SourceControlProviderType == nil || *req.SourceControlProviderType != "gitlab" {
 						return fmt.Errorf("a provider type change must carry the repository, got %+v", req)
@@ -210,6 +216,7 @@ resource "laravel_cloud_application" "app" {
 				}),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(addr, tfjsonpath.New("source_control_provider_type"), knownvalue.StringExact("gitlab")),
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("repository_default_branch"), knownvalue.StringExact("master")),
 				},
 			},
 			{

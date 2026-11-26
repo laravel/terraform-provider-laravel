@@ -212,14 +212,14 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Computed:    true,
 				Description: "Framework of the default environment, as Laravel Cloud detected it (such as laravel, nextjs).",
 				PlanModifiers: []planmodifier.String{
-					followsAttributes{"repository", "default_environment_id"},
+					followsAttributes{"repository", "source_control_provider_type", "default_environment_id"},
 				},
 			},
 			"language": schema.StringAttribute{
 				Computed:    true,
 				Description: "Language of the default environment (such as php, javascript).",
 				PlanModifiers: []planmodifier.String{
-					followsAttributes{"repository", "default_environment_id"},
+					followsAttributes{"repository", "source_control_provider_type", "default_environment_id"},
 				},
 			},
 			"notes": schema.StringAttribute{
@@ -233,7 +233,7 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Computed:    true,
 				Description: "Default branch of the repository.",
 				PlanModifiers: []planmodifier.String{
-					followsAttributes{"repository"},
+					repositorySource,
 				},
 			},
 			"avatar_url": schema.StringAttribute{
@@ -549,6 +549,12 @@ func rootDirectoryClearedDetail(dir string) string {
 		"configuration to accept the repository root.", dir)
 }
 
+// repositorySource names the attributes that pick the repository Laravel Cloud
+// resolves: changing source_control_provider_type alone sends the current
+// repository with it, which then names the same-named repository on the new
+// provider. Whatever Cloud reads from the repository follows them.
+var repositorySource = followsAttributes{"repository", "source_control_provider_type"}
+
 // rootDirectoryPlanModifier replaces the application when root_directory is
 // changed, except over a directory Laravel Cloud itself cleared, and reads it
 // back when a repository change may clear it.
@@ -567,11 +573,9 @@ func (rootDirectoryPlanModifier) PlanModifyString(ctx context.Context, req planm
 		return
 	}
 	if req.ConfigValue.IsNull() {
-		// Kept from state, but a repository change may clear it.
-		var planRepo, stateRepo types.String
-		resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("repository"), &planRepo)...)
-		resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("repository"), &stateRepo)...)
-		if !req.StateValue.IsNull() && !planRepo.Equal(stateRepo) {
+		// Kept from state, but a new repository may clear it, and so may a new
+		// provider type, which points at the same-named repository there.
+		if !req.StateValue.IsNull() && !repositorySource.keep(ctx, req.State, req.Plan, req.Config, req.ConfigValue) {
 			resp.PlanValue = types.StringUnknown()
 		}
 		return

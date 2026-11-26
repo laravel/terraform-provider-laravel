@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -76,6 +77,89 @@ func TestEnvironmentClusterIDPlan(t *testing.T) {
 				},
 			},
 		},
+	})
+}
+
+// TestEnvironmentDefaultClusterChangePlan: a different cluster replaces an
+// environment, which Laravel Cloud cannot do for an application's default
+// environment: the delete would only drop it from state and the create would
+// find it again where it was. So the plan fails, from shared compute and from
+// a cluster alike, while any other environment is still replaced. Taking over
+// an existing environment on another cluster fails the apply the same way.
+func TestEnvironmentDefaultClusterChangePlan(t *testing.T) {
+	config := func(baseURL, app, production, staging string) string {
+		return providerCfg(baseURL) + fmt.Sprintf(`
+resource "laravel_cloud_application" "app" {
+  name       = "default-cluster-app"
+  repository = "example/app"
+  region     = "us-east-2"
+  %s
+}
+
+resource "laravel_cloud_environment" "production" {
+  application_id = laravel_cloud_application.app.id
+  name           = "production"
+  branch         = "main"
+  %s
+}
+
+resource "laravel_cloud_environment" "staging" {
+  application_id = laravel_cloud_application.app.id
+  name           = "staging"
+  branch         = "main"
+  %s
+}
+`, app, production, staging)
+	}
+	refused := regexp.MustCompile(`cluster_id cannot be changed on the default environment`)
+
+	t.Run("shared compute", func(t *testing.T) {
+		_, baseURL := newFakeCloud(t)
+		resource.Test(t, resource.TestCase{
+			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			Steps: []resource.TestStep{
+				{Config: config(baseURL, "", "", "")},
+				{
+					Config:      config(baseURL, "", `cluster_id = "dc-1"`, ""),
+					ExpectError: refused,
+				},
+				{
+					Config: config(baseURL, "", "", `cluster_id = "dc-1"`),
+					ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("laravel_cloud_environment.staging", plancheck.ResourceActionDestroyBeforeCreate),
+						plancheck.ExpectResourceAction("laravel_cloud_environment.production", plancheck.ResourceActionNoop),
+					}},
+				},
+			},
+		})
+	})
+
+	t.Run("dedicated cluster", func(t *testing.T) {
+		_, baseURL := newFakeCloud(t)
+		const app = `cluster_id = "dc-1"`
+		resource.Test(t, resource.TestCase{
+			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			Steps: []resource.TestStep{
+				{Config: config(baseURL, app, `cluster_id = "dc-1"`, "")},
+				{
+					Config:      config(baseURL, app, `cluster_id = "dc-2"`, ""),
+					ExpectError: refused,
+				},
+			},
+		})
+	})
+
+	t.Run("adoption", func(t *testing.T) {
+		_, baseURL := newFakeCloud(t)
+		resource.Test(t, resource.TestCase{
+			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			Steps: []resource.TestStep{
+				{
+					Config:      config(baseURL, `cluster_id = "dc-1"`, `cluster_id = "dc-2"`, ""),
+					ExpectError: regexp.MustCompile(`cluster_id cannot be applied to the existing environment`),
+				},
+			},
+		})
 	})
 }
 
