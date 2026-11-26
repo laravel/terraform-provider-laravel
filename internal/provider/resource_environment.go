@@ -850,6 +850,8 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		plan.VanityDomain = configuredVanity
 	}
 
+	// Whether the follow-up update failed with the AWS role in it.
+	roleUnsent := false
 	patchReq := buildEnvironmentUpdateFromDiff(origPlan, env, adopted)
 	if wo, d := nightwatchTokenWO(ctx, req.Config); d.HasError() {
 		resp.Diagnostics.Append(d...)
@@ -902,9 +904,15 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 			// nightwatch_token and filesystem_keys are never reported back,
 			// and aws_role_arn is not where Laravel Cloud refuses it, so no
 			// refresh could notice they were not applied and the next plan
-			// would send nothing. Mark them for Read to drop instead.
-			if patchReq.NightwatchToken != nil || patchReq.FilesystemKeys != nil || patchReq.AwsRoleArn != nil {
+			// would send nothing. Mark them for Read to drop instead. The
+			// role has its own mark: one this update did not carry, as on an
+			// adopted environment that already has it, must stay recorded.
+			if patchReq.NightwatchToken != nil || patchReq.FilesystemKeys != nil {
 				resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentWriteOnlyKey, []byte("true"))...)
+			}
+			if patchReq.AwsRoleArn != nil {
+				roleUnsent = true
+				resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentAwsRoleKey, []byte("true"))...)
 			}
 		}
 		// Whether PATCH succeeded or failed, we keep the plan values in
@@ -931,7 +939,15 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	// whether the environment really is running, so the next plan offers the
 	// change again, and Update retries it or fails with the API's reason.
 	var runningDiags diag.Diagnostics
-	if !applyRunning(ctx, r.client, env.ID, &plan, environmentRunning(plan.Status.ValueString()), &runningDiags) {
+	if roleUnsent && isSet(plan.Running) && plan.Running.ValueBool() && !environmentRunning(plan.Status.ValueString()) {
+		// Starting deploys the environment, and a deployment keeps the role
+		// it starts with, so this one would run without the configured role
+		// until the next deployment. The next apply sets the role first.
+		resp.Diagnostics.AddAttributeWarning(path.Root("running"), "Environment not started",
+			"The environment was not started, because its AWS role could not be set and a deployment keeps the role "+
+				"it starts with. The configured value is kept in state, so the next plan shows the change again, and "+
+				"'terraform apply' sets the role and then starts the environment.")
+	} else if !applyRunning(ctx, r.client, env.ID, &plan, environmentRunning(plan.Status.ValueString()), &runningDiags) {
 		resp.Diagnostics.AddAttributeWarning(path.Root("running"), "Could not start or stop the environment after creating it",
 			runningDiags.Errors()[0].Detail()+" The configured value is kept in state, so the next plan shows the "+
 				"change again and 'terraform apply' retries it. An environment that has never been deployed cannot "+
@@ -1016,9 +1032,17 @@ func (r *EnvironmentResource) Read(ctx context.Context, req resource.ReadRequest
 		state.NightwatchToken = types.StringNull()
 		state.NightwatchTokenWOVersion = types.Int64Null()
 		state.FilesystemKeys = nil
-		// A reported role was read back above, and may be one an adopted
-		// environment already had, which the failed update never carried.
-		if !env.Attributes.AwsRoleArn.Reported {
+	}
+	// A role that never reached the API is dropped only while the API does not
+	// report it. A reported one was read back above, so the next plan already
+	// sends the configured role if it differs, and the mark is done.
+	if pending, d := req.Private.GetKey(ctx, unsentAwsRoleKey); d.HasError() {
+		resp.Diagnostics.Append(d...)
+		return
+	} else if len(pending) > 0 {
+		if env.Attributes.AwsRoleArn.Reported {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentAwsRoleKey, nil)...)
+		} else {
 			state.AwsRoleArn = types.StringNull()
 		}
 	}
@@ -1037,9 +1061,13 @@ func nightwatchTokenWO(ctx context.Context, config tfsdk.Config) (types.String, 
 }
 
 // unsentWriteOnlyKey is the private state key that records an environment
-// whose nightwatch_token, filesystem_keys and aws_role_arn failed to reach the
-// API on create. An update that succeeds clears it.
-const unsentWriteOnlyKey = "unsent_write_only"
+// whose nightwatch_token and filesystem_keys failed to reach the API on
+// create, and unsentAwsRoleKey one whose aws_role_arn did. An update that
+// succeeds clears both.
+const (
+	unsentWriteOnlyKey = "unsent_write_only"
+	unsentAwsRoleKey   = "unsent_aws_role"
+)
 
 func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan EnvironmentResourceModel
@@ -1120,6 +1148,7 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 	resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentWriteOnlyKey, nil)...)
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentAwsRoleKey, nil)...)
 
 	// Keep plan values in state rather than overwriting from the API
 	// response. The API may not echo back the values we sent (e.g.

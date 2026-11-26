@@ -143,6 +143,7 @@ func (f *fakeCloud) startEnvironment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("The environment is already running."))
 		return
 	}
+	f.startRoles = append(f.startRoles, ptrValue(env.Attributes.AwsRoleArn.Value))
 	f.seq++
 	id := fmt.Sprintf("deploy-%d", f.seq)
 	attrs := seedDeployment(nil, envID)

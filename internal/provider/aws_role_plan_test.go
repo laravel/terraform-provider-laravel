@@ -245,15 +245,10 @@ func TestEnvironmentAwsRoleRefusedPlan(t *testing.T) {
 	})
 }
 
-// TestEnvironmentAwsRoleAdoptedFailedUpdatePlan: taking over an environment
-// that already has the configured role sends no role, so when the update
-// after it fails, the role the API reports must stay recorded. Dropping it
-// with the settings that never arrived made removing it from the
-// configuration later send nothing, leaving the role on the environment.
-func TestEnvironmentAwsRoleAdoptedFailedUpdatePlan(t *testing.T) {
-	f, baseURL := newFakeCloud(t)
-	f.byoiam = true
-	app := providerCfg(baseURL) + `
+// takeoverConfig manages the application's default environment, production,
+// which Laravel Cloud creates with the application on dedicated cluster dc-1.
+func takeoverConfig(baseURL, extra string) (app, production string) {
+	app = providerCfg(baseURL) + `
 resource "laravel_cloud_application" "app" {
   name       = "role-app"
   repository = "acme/role-app"
@@ -261,18 +256,91 @@ resource "laravel_cloud_application" "app" {
   cluster_id = "dc-1"
 }
 `
-	production := func(role string) string {
-		if role != "" {
-			role = fmt.Sprintf("  aws_role_arn     = %q\n", role)
-		}
-		return app + fmt.Sprintf(`
+	return app, app + `
 resource "laravel_cloud_environment" "production" {
-  application_id   = laravel_cloud_application.app.id
-  name             = "production"
-  branch           = "main"
-  nightwatch_token = %q
-%s}
-`, testNightwatchToken, role)
+  application_id = laravel_cloud_application.app.id
+  name           = "production"
+  branch         = "main"
+` + extra + `}
+`
+}
+
+// TestEnvironmentAwsRoleAdoptedFailedUpdatePlan: taking over an environment
+// that already has the configured role sends no role, so when the update
+// after it fails, the role must stay recorded, whether or not the API reports
+// it by the next refresh. Dropping it with the settings that never arrived
+// made removing it from the configuration later send nothing, leaving the
+// role on the environment.
+func TestEnvironmentAwsRoleAdoptedFailedUpdatePlan(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		reported bool
+	}{
+		{"reported", true},
+		// As once the organization loses bring your own IAM role. Null
+		// still removes a role.
+		{"not reported", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, baseURL := newFakeCloud(t)
+			f.byoiam = true
+			token := fmt.Sprintf("  nightwatch_token = %q\n", testNightwatchToken)
+			app, withRole := takeoverConfig(baseURL, token+fmt.Sprintf("  aws_role_arn     = %q\n", awsRoleA))
+			_, withoutRole := takeoverConfig(baseURL, token)
+
+			resource.Test(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Steps: []resource.TestStep{
+					{Config: app},
+					{
+						// The default environment already has the role. The
+						// update after taking it over carries only the token,
+						// and fails.
+						PreConfig: func() {
+							setFakeEnvRole(f, "production", ptr(awsRoleA))
+							f.mu.Lock()
+							f.failEnvUpdates = 1
+							f.mu.Unlock()
+						},
+						Config:             withRole,
+						ExpectNonEmptyPlan: true,
+						ConfigStateChecks: []statecheck.StateCheck{
+							statecheck.ExpectKnownValue("laravel_cloud_environment.production", tfjsonpath.New("aws_role_arn"), knownvalue.StringExact(awsRoleA)),
+						},
+					},
+					{
+						PreConfig: func() {
+							f.mu.Lock()
+							f.byoiam = tc.reported
+							f.mu.Unlock()
+						},
+						Config: withoutRole,
+						Check:  envRoleIs(f, "production", ""),
+					},
+				},
+			})
+		})
+	}
+}
+
+// TestEnvironmentAwsRoleStartAfterFailedUpdatePlan: starting an environment
+// deploys it, and the deployment keeps the role it starts with. When the
+// update carrying the role fails after taking over a stopped environment,
+// it is not started, so the next apply sets the role and then starts it.
+func TestEnvironmentAwsRoleStartAfterFailedUpdatePlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	f.byoiam = true
+	const addr = "laravel_cloud_environment.production"
+	app, production := takeoverConfig(baseURL, fmt.Sprintf("  running      = true\n  aws_role_arn = %q\n", awsRoleB))
+	started := func(want ...string) resource.TestCheckFunc {
+		return func(*terraform.State) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if fmt.Sprint(f.startRoles) != fmt.Sprint(want) {
+				return fmt.Errorf("environment starts deployed with roles %q, want %q", f.startRoles, want)
+			}
+			return nil
+		}
 	}
 
 	resource.Test(t, resource.TestCase{
@@ -280,23 +348,30 @@ resource "laravel_cloud_environment" "production" {
 		Steps: []resource.TestStep{
 			{Config: app},
 			{
-				// The default environment already has the role. The update
-				// after taking it over carries only the token, and fails.
 				PreConfig: func() {
 					setFakeEnvRole(f, "production", ptr(awsRoleA))
 					f.mu.Lock()
+					defer f.mu.Unlock()
+					for _, e := range f.envs {
+						if e.Attributes.Name == "production" {
+							e.Attributes.Status = "stopped"
+						}
+					}
 					f.failEnvUpdates = 1
-					f.mu.Unlock()
 				},
-				Config:             production(awsRoleA),
+				Config:             production,
 				ExpectNonEmptyPlan: true,
-				ConfigStateChecks: []statecheck.StateCheck{
-					statecheck.ExpectKnownValue("laravel_cloud_environment.production", tfjsonpath.New("aws_role_arn"), knownvalue.StringExact(awsRoleA)),
-				},
+				Check:              started(),
 			},
 			{
-				Config: production(""),
-				Check:  envRoleIs(f, "production", ""),
+				Config: production,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
+				}},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					started(awsRoleB),
+					envRoleIs(f, "production", awsRoleB),
+				),
 			},
 		},
 	})

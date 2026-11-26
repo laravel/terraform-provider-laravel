@@ -63,6 +63,9 @@ type fakeCloud struct {
 	// byoiam is whether the organization has bring your own IAM role, which
 	// an environment's AWS role needs.
 	byoiam bool
+	// startRoles is the AWS role each environment start deployed with, since
+	// a deployment keeps the role it starts with.
+	startRoles []string
 
 	// Generic JSON:API store used by every resource other than applications
 	// and environments (which have bespoke handlers above). Keyed by
