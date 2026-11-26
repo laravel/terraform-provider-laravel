@@ -9,6 +9,13 @@ conventional-commit titles of merged pull requests; do not edit them by hand.
 Earlier entries were written by hand in the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [1.7.0](https://github.com/laravel/terraform-provider-laravel/compare/v1.6.0...v1.7.0) (2026-11-26)
+
+
+### Features
+
+* manage an environment's AWS role ([#43](https://github.com/laravel/terraform-provider-laravel/issues/43)) ([ebf123c](https://github.com/laravel/terraform-provider-laravel/commit/ebf123c55275614c49be65b0ddd0b0f4b38a1b38))
+
 ## [1.6.0](https://github.com/laravel/terraform-provider-laravel/compare/v1.5.1...v1.6.0) (2026-11-26)
 
 
