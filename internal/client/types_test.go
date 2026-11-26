@@ -289,3 +289,34 @@ func TestDocumentEnvelope_Organization(t *testing.T) {
 		t.Errorf("doc.Data = %+v, want id org_1 slug acme", doc.Data)
 	}
 }
+
+// A requested to-one relationship comes back as data: null when nothing is
+// related, which must not read the same as a relationship left out.
+func TestRelationshipReported(t *testing.T) {
+	var env struct {
+		Relationships struct {
+			Branch      Relationship `json:"branch"`
+			Detached    Relationship `json:"detached"`
+			Unrequested Relationship `json:"unrequested"`
+			Missing     Relationship `json:"missing"`
+		} `json:"relationships"`
+	}
+	payload := `{"relationships": {
+		"branch": {"data": {"type": "branches", "id": "br-1"}},
+		"detached": {"data": null},
+		"unrequested": {"links": {}}
+	}}`
+	if err := json.Unmarshal([]byte(payload), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	r := env.Relationships
+	if !r.Branch.Reported || r.Branch.RelatedID() != "br-1" {
+		t.Errorf("branch = %+v, want reported br-1", r.Branch)
+	}
+	if !r.Detached.Reported || r.Detached.Data != nil {
+		t.Errorf("detached = %+v, want reported with no data", r.Detached)
+	}
+	if r.Unrequested.Reported || r.Missing.Reported {
+		t.Errorf("unrequested = %+v, missing = %+v, want neither reported", r.Unrequested, r.Missing)
+	}
+}

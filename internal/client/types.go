@@ -1,6 +1,9 @@
 package client
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // ---------------------------------------------------------------------
 // JSON:API envelope types
@@ -47,6 +50,10 @@ type ApplicationData struct {
 	// Relationships is reported only for what the request includes; see
 	// GetApplication.
 	Relationships ApplicationRelationships `json:"relationships"`
+	// DefaultEnvironmentClusterID is the dedicated cluster the default
+	// environment runs on, resolved from the document's included section by
+	// GetApplication. Nil on shared compute, or when it was not included.
+	DefaultEnvironmentClusterID *string `json:"-"`
 }
 
 type ApplicationAttributes struct {
@@ -67,6 +74,10 @@ type ApplicationAttributes struct {
 	Framework *string `json:"framework"`
 	Language  *string `json:"language"`
 	Notes     *string `json:"notes"`
+	// SourceControlProviderType is the provider of the application's
+	// repository (github, gitlab, gitlab_self_hosted or bitbucket); null
+	// without a connected repository.
+	SourceControlProviderType *string `json:"source_control_provider_type"`
 }
 
 // ApplicationRepository is the response-side repository object on an
@@ -138,6 +149,9 @@ type EnvironmentAttributes struct {
 	Color           *string `json:"color,omitempty"`
 	Timeout         *int64  `json:"timeout,omitempty"`
 	ShutdownTimeout *int64  `json:"shutdown_timeout,omitempty"`
+	// ClusterID is the dedicated cluster the environment runs on, as
+	// environment create takes it; null on shared compute.
+	ClusterID *string `json:"cluster_id"`
 	// DeployHookURL is null when the deploy hook is off or the token lacks the
 	// environment_deploy_hook.edit permission.
 	DeployHookURL *string `json:"deploy_hook_url"`
@@ -1351,6 +1365,34 @@ type EdgeNetworkAttributes struct {
 // string and cannot be inferred from anything else in state.
 type Relationship struct {
 	Data *ResourceIdentifier `json:"data"`
+	// Reported is whether the API sent the data member, which it does for a
+	// requested include. A null one then means nothing is related, whereas a
+	// relationship left out says nothing either way.
+	Reported bool `json:"-"`
+}
+
+// UnmarshalJSON records whether the data member was sent, which a nil Data
+// alone cannot tell.
+func (r *Relationship) UnmarshalJSON(b []byte) error {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(b, &members); err != nil {
+		return err
+	}
+	*r = Relationship{}
+	data, ok := members["data"]
+	if !ok {
+		return nil
+	}
+	r.Reported = true
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil
+	}
+	var id ResourceIdentifier
+	if err := json.Unmarshal(data, &id); err != nil {
+		return err
+	}
+	r.Data = &id
+	return nil
 }
 
 // ResourceIdentifier is a JSON:API resource identifier object.

@@ -75,7 +75,9 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"repository": schema.StringAttribute{
 				Required: true,
 				Description: "Source code repository (such as laravel/laravel). " +
-					"Use the owner/name form the platform reports: after an import, a URL or different casing shows as a change, and applying it updates the application's repository.",
+					"Use the owner/name form the platform reports: after an import, a URL or different casing shows as a change, and applying it updates the application's repository. " +
+					"Moving to another repository, or to one of the same name on another provider, makes Laravel Cloud detach " +
+					"every environment's branch; the next plan sets each laravel_cloud_environment's branch again.",
 			},
 			"region": schema.StringAttribute{
 				Required:    true,
@@ -94,22 +96,29 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 			"cluster_id": schema.StringAttribute{
 				Optional: true,
-				Description: "Dedicated cluster ID. " +
-					"The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.",
+				Computed: true,
+				Description: "ID of the dedicated cluster to create the application's default environment on. Used only " +
+					"when the application is created: changing it afterwards only records the new value, so move an " +
+					"environment with cluster_id on laravel_cloud_environment. An import reads it from the default environment.",
 				PlanModifiers: []planmodifier.String{
-					requiresReplaceUnlessImported(),
-					warnIfNotReported(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"source_control_provider_type": schema.StringAttribute{
 				Optional: true,
-				Description: "Source control provider type (github, gitlab, gitlab_self_hosted, or bitbucket). " +
-					"Becomes required by the API on March 9, 2026. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.",
+				Computed: true,
+				Description: "Source control provider of the application's repository (github, gitlab, gitlab_self_hosted, " +
+					"or bitbucket). Becomes required by the API on March 9, 2026. Set, it goes with every repository change, " +
+					"and the API token's creator must have connected that provider. Leave unset to let Laravel Cloud find the " +
+					"repository through the organization's connections and record the provider it reports. " +
+					"Changing it points the application at the repository of the same name on the other provider.",
 				Validators: []validator.String{
 					stringvalidator.OneOf("github", "gitlab", "gitlab_self_hosted", "bitbucket"),
 				},
 				PlanModifiers: []planmodifier.String{
-					warnIfNotReported(),
+					// Unset, it is the reported provider, which a new repository
+					// may change.
+					followsAttributes{"repository"},
 				},
 			},
 			"starter_kit": schema.StringAttribute{
@@ -209,14 +218,14 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Computed:    true,
 				Description: "Framework of the default environment, as Laravel Cloud detected it (such as laravel, nextjs).",
 				PlanModifiers: []planmodifier.String{
-					followsAttributes{"repository", "default_environment_id"},
+					followsAttributes{"repository", "source_control_provider_type", "default_environment_id"},
 				},
 			},
 			"language": schema.StringAttribute{
 				Computed:    true,
 				Description: "Language of the default environment (such as php, javascript).",
 				PlanModifiers: []planmodifier.String{
-					followsAttributes{"repository", "default_environment_id"},
+					followsAttributes{"repository", "source_control_provider_type", "default_environment_id"},
 				},
 			},
 			"notes": schema.StringAttribute{
@@ -230,7 +239,7 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Computed:    true,
 				Description: "Default branch of the repository.",
 				PlanModifiers: []planmodifier.String{
-					followsAttributes{"repository"},
+					repositorySource,
 				},
 			},
 			"avatar_url": schema.StringAttribute{
@@ -275,13 +284,11 @@ func (r *ApplicationResource) Create(ctx context.Context, req resource.CreateReq
 		Repository: plan.Repository.ValueString(),
 		Region:     plan.Region.ValueString(),
 	}
-	if !plan.ClusterID.IsNull() {
-		v := plan.ClusterID.ValueString()
-		createReq.ClusterID = &v
+	if isSet(plan.ClusterID) {
+		createReq.ClusterID = plan.ClusterID.ValueStringPointer()
 	}
-	if !plan.SourceControlProviderType.IsNull() {
-		v := plan.SourceControlProviderType.ValueString()
-		createReq.SourceControlProviderType = &v
+	if isSet(plan.SourceControlProviderType) {
+		createReq.SourceControlProviderType = plan.SourceControlProviderType.ValueStringPointer()
 	}
 	createReq.StarterKit = plan.StarterKit.ValueStringPointer()
 	if isSet(plan.RootDirectory) {
@@ -323,14 +330,20 @@ func (r *ApplicationResource) Create(ctx context.Context, req resource.CreateReq
 			app = updated
 		}
 	}
-	// The create and update responses carry no relationships.
-	if plan.DefaultEnvironmentID.IsUnknown() {
-		if withEnv, err := r.client.GetApplication(ctx, app.ID); err == nil {
-			plan.DefaultEnvironmentID = defaultEnvironmentFromAPI(withEnv)
-		} else {
-			plan.DefaultEnvironmentID = types.StringNull()
+	// The create and update responses carry no relationships, so the default
+	// environment, and the cluster it runs on, come from a read.
+	if plan.DefaultEnvironmentID.IsUnknown() || plan.ClusterID.IsUnknown() {
+		withEnv, err := r.client.GetApplication(ctx, app.ID)
+		if err != nil {
+			withEnv = &client.ApplicationData{}
 			resp.Diagnostics.AddAttributeWarning(path.Root("default_environment_id"), "Could not read the default environment",
 				"The application was created, but reading it back failed: "+err.Error()+". The next refresh records it.")
+		}
+		if plan.DefaultEnvironmentID.IsUnknown() {
+			plan.DefaultEnvironmentID = defaultEnvironmentFromAPI(withEnv)
+		}
+		if plan.ClusterID.IsUnknown() {
+			plan.ClusterID = types.StringPointerValue(withEnv.DefaultEnvironmentClusterID)
 		}
 	}
 
@@ -382,6 +395,13 @@ func (r *ApplicationResource) Read(ctx context.Context, req resource.ReadRequest
 	state.Language = types.StringPointerValue(app.Attributes.Language)
 	state.Notes = types.StringPointerValue(app.Attributes.Notes)
 	state.RepositoryDefaultBranch = repositoryDefaultBranch(app)
+	state.SourceControlProviderType = types.StringPointerValue(app.Attributes.SourceControlProviderType)
+	// cluster_id only placed the default environment at creation, so a
+	// recorded value stands. With none, as after an import, it is the default
+	// environment's.
+	if state.ClusterID.IsNull() {
+		state.ClusterID = types.StringPointerValue(app.DefaultEnvironmentClusterID)
+	}
 	if app.Attributes.RootDirectory == nil && isSet(state.RootDirectory) {
 		resp.Diagnostics.Append(setRootDirectoryCleared(ctx, resp.Private, state.RootDirectory.ValueString())...)
 	}
@@ -423,11 +443,17 @@ func (r *ApplicationResource) Update(ctx context.Context, req resource.UpdateReq
 		updateReq.DefaultEnvironmentID = plan.DefaultEnvironmentID.ValueStringPointer()
 	}
 	// The API reads source_control_provider_type only to resolve a repository
-	// being changed and discards it otherwise, so it goes out only alongside
-	// one. Adding it on its own then changes nothing, as its plan warning says.
-	if updateReq.Repository != nil && !plan.SourceControlProviderType.IsNull() {
-		v := plan.SourceControlProviderType.ValueString()
-		updateReq.SourceControlProviderType = &v
+	// being changed, and discards it otherwise. So a new provider type goes out
+	// with the repository, which the API then looks up on that provider. Sent,
+	// it also makes the API use the token creator's connection to that provider
+	// rather than the organization's, so it goes only when configured: unset,
+	// it plans unknown whenever the repository changes, and is read back.
+	if isSet(plan.SourceControlProviderType) && !plan.SourceControlProviderType.Equal(state.SourceControlProviderType) &&
+		updateReq.Repository == nil && isSet(plan.Repository) {
+		updateReq.Repository = plan.Repository.ValueStringPointer()
+	}
+	if updateReq.Repository != nil && isSet(plan.SourceControlProviderType) {
+		updateReq.SourceControlProviderType = plan.SourceControlProviderType.ValueStringPointer()
 	}
 
 	app, err := r.client.UpdateApplication(ctx, state.ID.ValueString(), updateReq)
@@ -440,6 +466,11 @@ func (r *ApplicationResource) Update(ctx context.Context, req resource.UpdateReq
 	rememberAppRepository(plan.ID.ValueString(), plan.Repository)
 	plan.Slug = types.StringValue(app.Attributes.Slug)
 	setUnknownApplicationDetails(&plan, app)
+	// The update response doesn't include the default environment. Unknown
+	// means none was recorded or configured; the next refresh fills it in.
+	if plan.ClusterID.IsUnknown() {
+		plan.ClusterID = types.StringNull()
+	}
 	if plan.DefaultEnvironmentID.IsUnknown() {
 		plan.DefaultEnvironmentID = defaultEnvironmentFromAPI(app)
 	}
@@ -527,6 +558,12 @@ func rootDirectoryClearedDetail(dir string) string {
 		"configuration to accept the repository root.", dir)
 }
 
+// repositorySource names the attributes that pick the repository Laravel Cloud
+// resolves: changing source_control_provider_type alone sends the current
+// repository with it, which then names the same-named repository on the new
+// provider. Whatever Cloud reads from the repository follows them.
+var repositorySource = followsAttributes{"repository", "source_control_provider_type"}
+
 // rootDirectoryPlanModifier replaces the application when root_directory is
 // changed, except over a directory Laravel Cloud itself cleared, and reads it
 // back when a repository change may clear it.
@@ -545,11 +582,9 @@ func (rootDirectoryPlanModifier) PlanModifyString(ctx context.Context, req planm
 		return
 	}
 	if req.ConfigValue.IsNull() {
-		// Kept from state, but a repository change may clear it.
-		var planRepo, stateRepo types.String
-		resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("repository"), &planRepo)...)
-		resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("repository"), &stateRepo)...)
-		if !req.StateValue.IsNull() && !planRepo.Equal(stateRepo) {
+		// Kept from state, but a new repository may clear it, and so may a new
+		// provider type, which points at the same-named repository there.
+		if !req.StateValue.IsNull() && !repositorySource.keep(ctx, req.State, req.Plan, req.Config, req.ConfigValue) {
 			resp.PlanValue = types.StringUnknown()
 		}
 		return
@@ -591,6 +626,7 @@ func setUnknownApplicationDetails(plan *ApplicationResourceModel, app *client.Ap
 	setUnknownStringPtrFromAPI(&plan.Framework, app.Attributes.Framework)
 	setUnknownStringPtrFromAPI(&plan.Language, app.Attributes.Language)
 	setUnknownStringPtrFromAPI(&plan.Notes, app.Attributes.Notes)
+	setUnknownStringPtrFromAPI(&plan.SourceControlProviderType, app.Attributes.SourceControlProviderType)
 	if plan.RepositoryDefaultBranch.IsUnknown() {
 		plan.RepositoryDefaultBranch = repositoryDefaultBranch(app)
 	}

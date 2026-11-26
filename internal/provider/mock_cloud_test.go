@@ -282,17 +282,23 @@ func (f *fakeCloud) createApplication(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	// The repository's provider; the fake's default is GitHub.
+	provider := "github"
+	if req.SourceControlProviderType != nil {
+		provider = *req.SourceControlProviderType
+	}
 	f.seq++
 	id := fmt.Sprintf("app-%d", f.seq)
 	app := &client.ApplicationData{
 		ID:   id,
 		Type: "applications",
 		Attributes: client.ApplicationAttributes{
-			Name:          req.Name,
-			Slug:          slugify(req.Name),
-			Region:        req.Region,
-			Repository:    &client.ApplicationRepository{FullName: req.Repository, DefaultBranch: ptr(fakeDefaultBranch(req.Repository))},
-			RootDirectory: req.RootDirectory,
+			Name:                      req.Name,
+			Slug:                      slugify(req.Name),
+			Region:                    req.Region,
+			Repository:                fakeRepository(req.Repository, provider),
+			RootDirectory:             req.RootDirectory,
+			SourceControlProviderType: &provider,
 		},
 	}
 	// starter_kit is create-only and not reported back.
@@ -301,8 +307,10 @@ func (f *fakeCloud) createApplication(w http.ResponseWriter, r *http.Request) {
 
 	// Like the real API, the application comes with a default environment on
 	// the repository's default branch, which the API refuses to delete.
-	branch := fakeDefaultBranch(req.Repository)
+	branch := *app.Attributes.Repository.DefaultBranch
 	env := f.newEnvironment(id, defaultEnvironmentName(branch), branch)
+	// The application's cluster_id places its default environment.
+	env.Attributes.ClusterID = req.ClusterID
 	f.serveEnvironment(env, req.Serving, req.BuildCommand)
 	app.Relationships.DefaultEnvironment = client.Relationship{
 		Data: &client.ResourceIdentifier{Type: "environments", ID: env.ID},
@@ -315,13 +323,19 @@ func (f *fakeCloud) createApplication(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, client.Document[client.ApplicationData]{Data: view})
 }
 
-// fakeDefaultBranch is the default branch of a repository. laravel/laravel's
-// is really 13.x; the fake gives every other repository main.
-func fakeDefaultBranch(repository string) string {
-	if repository == "laravel/laravel" {
-		return "13.x"
+// fakeRepository is the repository of that name on a source-control provider.
+// Its default branch is laravel/laravel's real one, 13.x, on GitHub, main for
+// every other GitHub repository, and master on any other provider, so a
+// provider switch shows another repository.
+func fakeRepository(name, provider string) *client.ApplicationRepository {
+	branch := "main"
+	switch {
+	case provider != "github":
+		branch = "master"
+	case name == "laravel/laravel":
+		branch = "13.x"
 	}
-	return "main"
+	return &client.ApplicationRepository{FullName: name, DefaultBranch: &branch}
 }
 
 // defaultEnvironmentName names an application's default environment the way
@@ -364,7 +378,13 @@ func (f *fakeCloud) getApplication(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("application not found"))
 		return
 	}
-	writeJSON(w, http.StatusOK, client.Document[client.ApplicationData]{Data: f.applicationView(r, app)})
+	doc := client.Document[client.ApplicationData]{Data: f.applicationView(r, app)}
+	// include=defaultEnvironment also puts the environment itself in included.
+	if env := f.envs[doc.Data.Relationships.DefaultEnvironment.RelatedID()]; env != nil {
+		attrs, _ := json.Marshal(env.Attributes)
+		doc.Included = append(doc.Included, client.ResourceObject{ID: env.ID, Type: "environments", Attributes: attrs})
+	}
+	writeJSON(w, http.StatusOK, doc)
 }
 
 func (f *fakeCloud) updateApplication(w http.ResponseWriter, r *http.Request) {
@@ -408,14 +428,38 @@ func (f *fakeCloud) updateApplication(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.Repository != nil {
+		// The provider type tells the API where to look the repository up, so
+		// the same name on another provider is another repository.
+		provider := "github"
+		if p := app.Attributes.SourceControlProviderType; p != nil {
+			provider = *p
+		}
+		moved := req.SourceControlProviderType != nil && *req.SourceControlProviderType != provider
+		if moved {
+			provider = *req.SourceControlProviderType
+		}
+		if cur := app.Attributes.Repository; cur == nil || cur.FullName != *req.Repository {
+			moved = true
+		}
 		// Laravel Cloud clears root_directory when the new repository lacks
 		// that directory. The fake's repositories hold no files, except that
-		// one named like the directory's parent keeps it.
-		if cur := app.Attributes.Repository; (cur == nil || cur.FullName != *req.Repository) &&
-			app.Attributes.RootDirectory != nil && !strings.HasPrefix(*req.Repository, "acme/monorepo") {
+		// GitHub ones named like the directory's parent keep it.
+		if moved && app.Attributes.RootDirectory != nil &&
+			(provider != "github" || !strings.HasPrefix(*req.Repository, "acme/monorepo")) {
 			app.Attributes.RootDirectory = nil
 		}
-		app.Attributes.Repository = &client.ApplicationRepository{FullName: *req.Repository}
+		// The branches belonged to the old repository, so Laravel Cloud
+		// detaches them from every environment.
+		if moved {
+			for _, envID := range f.appEnvs[app.ID] {
+				if env := f.envs[envID]; env != nil {
+					env.Relationships.Branch = client.Relationship{}
+					env.BranchName = ""
+				}
+			}
+		}
+		app.Attributes.Repository = fakeRepository(*req.Repository, provider)
+		app.Attributes.SourceControlProviderType = &provider
 	}
 	if req.DefaultEnvironmentID != nil {
 		app.Relationships.DefaultEnvironment = client.Relationship{
@@ -513,6 +557,7 @@ func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	env := f.newEnvironment(appID, req.Name, req.Branch)
+	env.Attributes.ClusterID = req.ClusterID
 	f.serveEnvironment(env, serving, build)
 	writeJSON(w, http.StatusCreated, environmentDoc(env))
 }
@@ -709,6 +754,12 @@ func (f *fakeCloud) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 	}
 	f.envUpdates = append(f.envUpdates, req)
 	a := &env.Attributes
+	if req.Branch != nil {
+		env.BranchName = *req.Branch
+		env.Relationships.Branch = client.Relationship{
+			Data: &client.ResourceIdentifier{Type: "branches", ID: "branch-" + env.ID},
+		}
+	}
 	if req.Name != nil {
 		a.Name = *req.Name
 		a.DisplayName = req.Name

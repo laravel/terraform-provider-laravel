@@ -62,10 +62,9 @@ func TestApplicationRootDirectoryPlan(t *testing.T) {
 				},
 			},
 			{
-				ResourceName:            addr,
-				ImportState:             true,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"source_control_provider_type"},
+				ResourceName:      addr,
+				ImportState:       true,
+				ImportStateVerify: true,
 			},
 		},
 	})
@@ -311,6 +310,28 @@ func TestApplicationRootDirectoryClearedPlan(t *testing.T) {
 				{Config: applicationConfig(baseURL, `  root_directory = "apps/web"`)},
 				{
 					Config: withRepo(baseURL, "acme/site", ""),
+					ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
+						plancheck.ExpectUnknownValue(addr, tfjsonpath.New("root_directory")),
+					}},
+					ConfigStateChecks: []statecheck.StateCheck{
+						statecheck.ExpectKnownValue(addr, tfjsonpath.New("root_directory"), knownvalue.Null()),
+					},
+				},
+			},
+		})
+	})
+
+	// A new provider type alone points at the same-named repository on that
+	// provider, which may lack the directory just the same.
+	t.Run("provider switch", func(t *testing.T) {
+		_, baseURL := newFakeCloud(t)
+		resource.Test(t, resource.TestCase{
+			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			Steps: []resource.TestStep{
+				{Config: applicationConfig(baseURL, `  root_directory = "apps/web"`)},
+				{
+					Config: strings.Replace(applicationConfig(baseURL, ""), `"github"`, `"gitlab"`, 1),
 					ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
 						plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
 						plancheck.ExpectUnknownValue(addr, tfjsonpath.New("root_directory")),

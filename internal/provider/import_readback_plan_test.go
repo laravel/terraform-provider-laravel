@@ -5,7 +5,11 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
+	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 	"github.com/hashicorp/terraform-plugin-testing/tfversion"
 	"github.com/laravel/terraform-provider-laravel/internal/client"
 )
@@ -145,11 +149,16 @@ resource "laravel_cloud_environment" "env" {
 	})
 }
 
-// source_control_provider_type only tells the API how to resolve a repository
-// being changed; it discards the field otherwise. Adding it on its own must not
-// reach the platform, which is what the plan warning on it promises.
+// source_control_provider_type is reported back, so adding the reported one
+// changes nothing. The API reads it only to resolve a repository, so it goes
+// out with one: with a repository change, and with the current repository when
+// only the provider type changes, which points the application at the
+// repository of that name on the other provider. Only a configured one goes
+// out, since sending it makes the API use the token creator's connection to
+// that provider: unset, a repository change reads it back instead.
 func TestSourceControlProviderTypeSentWithRepositoryPlan(t *testing.T) {
 	f, baseURL := newFakeCloud(t)
+	const addr = "laravel_cloud_application.app"
 	app := func(repository, extra string) string {
 		return providerCfg(baseURL) + `
 resource "laravel_cloud_application" "app" {
@@ -174,15 +183,33 @@ resource "laravel_cloud_application" "app" {
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
-			{Config: app("laravel/laravel", "")},
 			{
-				Config: app("laravel/laravel", `source_control_provider_type = "github"`),
+				Config: app("laravel/laravel", ""),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("source_control_provider_type"), knownvalue.StringExact("github")),
+				},
+			},
+			{
+				// Unset, it stays out of a repository change, which Laravel Cloud
+				// then resolves through the organization's connections, and the
+				// provider it reports is read back.
+				Config: app("laravel/moved", ""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectUnknownValue(addr, tfjsonpath.New("source_control_provider_type")),
+				}},
 				Check: lastUpdate(func(req client.UpdateApplicationRequest) error {
-					if req.SourceControlProviderType != nil {
-						return fmt.Errorf("sent source_control_provider_type %q without a repository change", *req.SourceControlProviderType)
+					if req.Repository == nil || *req.Repository != "laravel/moved" || req.SourceControlProviderType != nil {
+						return fmt.Errorf("an unset provider type must stay out of a repository change, got %+v", req)
 					}
 					return nil
 				}),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("source_control_provider_type"), knownvalue.StringExact("github")),
+				},
+			},
+			{
+				Config:           app("laravel/moved", `source_control_provider_type = "github"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
 			},
 			{
 				Config: app("laravel/renamed", `source_control_provider_type = "github"`),
@@ -192,6 +219,90 @@ resource "laravel_cloud_application" "app" {
 					}
 					return nil
 				}),
+			},
+			{
+				Config: app("laravel/renamed", `source_control_provider_type = "gitlab"`),
+				// Another repository, whose details the apply reads back.
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectUnknownValue(addr, tfjsonpath.New("repository_default_branch")),
+					plancheck.ExpectUnknownValue(addr, tfjsonpath.New("framework")),
+					plancheck.ExpectUnknownValue(addr, tfjsonpath.New("language")),
+				}},
+				Check: lastUpdate(func(req client.UpdateApplicationRequest) error {
+					if req.Repository == nil || *req.Repository != "laravel/renamed" || req.SourceControlProviderType == nil || *req.SourceControlProviderType != "gitlab" {
+						return fmt.Errorf("a provider type change must carry the repository, got %+v", req)
+					}
+					return nil
+				}),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("source_control_provider_type"), knownvalue.StringExact("gitlab")),
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("repository_default_branch"), knownvalue.StringExact("master")),
+				},
+			},
+			{
+				Config:           app("laravel/renamed", `source_control_provider_type = "gitlab"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+		},
+	})
+}
+
+// TestRepositoryMoveRestoresBranchesPlan: Laravel Cloud detaches every
+// environment's branch when the application moves to another repository,
+// including the one of the same name on another provider. The refresh records
+// that, so the next plan sets the configured branch again instead of
+// reporting nothing to do.
+func TestRepositoryMoveRestoresBranchesPlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	const env = "laravel_cloud_environment.staging"
+	config := func(provider string) string {
+		return providerCfg(baseURL) + fmt.Sprintf(`
+resource "laravel_cloud_application" "app" {
+  name                         = "move-app"
+  repository                   = "acme/move-app"
+  region                       = "us-east-2"
+  source_control_provider_type = %q
+}
+
+resource "laravel_cloud_environment" "staging" {
+  application_id = laravel_cloud_application.app.id
+  name           = "staging"
+  branch         = "staging"
+}
+`, provider)
+	}
+	branch := func(want string) resource.TestCheckFunc {
+		return func(s *terraform.State) error {
+			id := s.RootModule().Resources[env].Primary.ID
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if got := f.envs[id].BranchName; got != want {
+				return fmt.Errorf("staging branch = %q, want %q", got, want)
+			}
+			return nil
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config("github")},
+			{
+				Config:             config("gitlab"),
+				Check:              branch(""),
+				ExpectNonEmptyPlan: true,
+			},
+			{
+				Config: config("gitlab"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(env, plancheck.ResourceActionUpdate),
+					plancheck.ExpectResourceAction("laravel_cloud_application.app", plancheck.ResourceActionNoop),
+				}},
+				Check: branch("staging"),
+			},
+			{
+				Config:           config("gitlab"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
 			},
 		},
 	})

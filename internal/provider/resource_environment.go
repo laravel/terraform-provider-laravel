@@ -172,11 +172,22 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 			"cluster_id": schema.StringAttribute{
 				Optional: true,
-				Description: "Dedicated cluster ID. " +
-					"The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.",
+				Computed: true,
+				Description: "ID of the dedicated cluster the environment runs on; null on shared compute. Leave unset to " +
+					"keep where the environment runs. An environment cannot move, so a different cluster replaces it. " +
+					"An application's default environment cannot be replaced, so changing its cluster fails the plan.",
 				PlanModifiers: []planmodifier.String{
-					requiresReplaceUnlessImported(),
-					warnIfNotReported(),
+					stringplanmodifier.UseStateForUnknown(),
+					// Only a configured cluster can differ: unset, the plan is
+					// the prior value, or unknown when that is null (shared
+					// compute), and neither may replace the environment.
+					stringplanmodifier.RequiresReplaceIf(
+						func(_ context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+							resp.RequiresReplace = !req.ConfigValue.IsNull()
+						},
+						"Requires replacement when a configured cluster differs from the one the environment runs on.",
+						"Requires replacement when a configured cluster differs from the one the environment runs on.",
+					),
 				},
 			},
 			"php_version": schema.StringAttribute{
@@ -710,6 +721,18 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 				"laravel_cloud_application instead.", wantName, servingModeFromAPI(env).ValueString()))
 		return
 	}
+	// Likewise for the cluster, which an environment can never leave.
+	if adopted && isSet(plan.ClusterID) && !plan.ClusterID.Equal(types.StringPointerValue(env.Attributes.ClusterID)) {
+		where := "shared compute"
+		if env.Attributes.ClusterID != nil {
+			where = fmt.Sprintf("cluster %q", *env.Attributes.ClusterID)
+		}
+		resp.Diagnostics.AddAttributeError(path.Root("cluster_id"), "cluster_id cannot be applied to the existing environment",
+			fmt.Sprintf("An environment named %q already exists, on %s, and an environment cannot move to another "+
+				"cluster. Set cluster_id to match, or leave it unset. For the application's default environment, "+
+				"cluster_id on laravel_cloud_application chooses the cluster when the application is created.", wantName, where))
+		return
+	}
 
 	if env == nil {
 		createReq := client.CreateEnvironmentRequest{
@@ -722,9 +745,8 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		if isSet(plan.BuildCommand) {
 			createReq.BuildCommand = plan.BuildCommand.ValueStringPointer()
 		}
-		if !plan.ClusterID.IsNull() {
-			v := plan.ClusterID.ValueString()
-			createReq.ClusterID = &v
+		if isSet(plan.ClusterID) {
+			createReq.ClusterID = plan.ClusterID.ValueStringPointer()
 		}
 		createReq.EdgeNetworkID = plan.EdgeNetworkID.ValueStringPointer()
 
@@ -1388,22 +1410,44 @@ func (r *EnvironmentResource) ModifyPlan(ctx context.Context, req resource.Modif
 	)
 }
 
-// refuseDefaultEnvironmentReplacement fails the plan when a serving_mode
-// change would replace an application's default environment within the same
-// application. Laravel Cloud cannot delete that environment, so the
+// refuseDefaultEnvironmentReplacement fails the plan when a serving_mode or
+// cluster_id change would replace an application's default environment within
+// the same application. Laravel Cloud cannot delete that environment, so the
 // replacement's delete would only drop it from state, and the create would
-// then find it again, still served the old way, and fail: the apply would end
-// with the environment no longer in state. When the application is replaced
-// too, its application_id is unknown at plan time and Cloud creates a new
-// default environment, so nothing is refused. The API is asked only when
-// serving_mode changes.
+// then find it again, still served the old way or on the old cluster, and
+// fail: the apply would end with the environment no longer in state. When the
+// application is replaced too, its application_id is unknown at plan time and
+// Cloud creates a new default environment, so nothing is refused. The API is
+// asked only when one of them changes.
 func (r *EnvironmentResource) refuseDefaultEnvironmentReplacement(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	var planServing, stateServing types.String
+	var planServing, stateServing, configCluster, stateCluster types.String
 	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("serving_mode"), &planServing)...)
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("serving_mode"), &stateServing)...)
-	if resp.Diagnostics.HasError() || !isSet(planServing) || !isSet(stateServing) || planServing.Equal(stateServing) || r.client == nil {
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("cluster_id"), &configCluster)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("cluster_id"), &stateCluster)...)
+	if resp.Diagnostics.HasError() || r.client == nil {
 		return
 	}
+
+	var attribute, keep string
+	switch {
+	case isSet(planServing) && isSet(stateServing) && !planServing.Equal(stateServing):
+		attribute, keep = "serving_mode", fmt.Sprintf("Keep serving_mode = %q", stateServing.ValueString())
+	case !configCluster.IsNull() && !configCluster.Equal(stateCluster):
+		// Only a configured cluster replaces the environment, and so does one
+		// known only after apply, even if it turns out the same. Null in state
+		// is shared compute.
+		attribute, keep = "cluster_id", "Remove cluster_id to keep it on shared compute"
+		if !stateCluster.IsNull() {
+			keep = fmt.Sprintf("Keep cluster_id = %q", stateCluster.ValueString())
+		}
+		if configCluster.IsUnknown() {
+			keep = "Its value is known only after apply, which replaces the environment even if it turns out the same. " + keep
+		}
+	default:
+		return
+	}
+
 	var planApp types.String
 	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("application_id"), &planApp)...)
 	var state EnvironmentResourceModel
@@ -1413,19 +1457,19 @@ func (r *EnvironmentResource) refuseDefaultEnvironmentReplacement(ctx context.Co
 	}
 	isDefault, appID, err := r.isDefaultEnvironment(ctx, state)
 	if err != nil {
-		resp.Diagnostics.AddAttributeError(path.Root("serving_mode"), "Error checking whether the environment is its application's default",
-			"Changing serving_mode replaces the environment, which Laravel Cloud cannot do for an application's "+
+		resp.Diagnostics.AddAttributeError(path.Root(attribute), "Error checking whether the environment is its application's default",
+			"Changing "+attribute+" replaces the environment, which Laravel Cloud cannot do for an application's "+
 				"default environment, and the check failed: "+err.Error())
 		return
 	}
 	if !isDefault || planApp.ValueString() != appID {
 		return
 	}
-	resp.Diagnostics.AddAttributeError(path.Root("serving_mode"), "serving_mode cannot be changed on the default environment",
-		fmt.Sprintf("Changing serving_mode replaces the environment, but %q is its application's default environment, "+
+	resp.Diagnostics.AddAttributeError(path.Root(attribute), attribute+" cannot be changed on the default environment",
+		fmt.Sprintf("Changing %s replaces the environment, but %q is its application's default environment, "+
 			"which Laravel Cloud cannot delete, so the replacement would fail after removing it from Terraform state. "+
-			"Keep serving_mode = %q, or make another environment the application's default first.",
-			state.Name.ValueString(), stateServing.ValueString()))
+			"%s, or make another environment the application's default first.",
+			attribute, state.Name.ValueString(), keep))
 }
 
 // databaseID returns the attached database from database_id, falling back to
@@ -1584,11 +1628,15 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 		state.ApplicationID = types.StringValue(appID)
 	}
 	// branch is Required but is not an attribute on the API side; the name
-	// comes from the included branch object. Only overwrite when the API
-	// reported one, so a response without the include leaves the configured
-	// value intact.
-	if env.BranchName != "" {
+	// comes from the included branch object. A response without the include
+	// leaves the configured value intact. A null branch is one Laravel Cloud
+	// detached, as it does from every environment when the application moves to
+	// another repository; recording that lets the next plan set it again.
+	switch {
+	case env.BranchName != "":
 		state.Branch = types.StringValue(env.BranchName)
+	case env.Relationships.Branch.Reported && env.Relationships.Branch.Data == nil:
+		state.Branch = types.StringNull()
 	}
 	state.Name = types.StringValue(env.Attributes.Name)
 	state.Slug = types.StringValue(env.Attributes.Slug)
