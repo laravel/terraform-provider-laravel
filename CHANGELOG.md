@@ -9,6 +9,13 @@ conventional-commit titles of merged pull requests; do not edit them by hand.
 Earlier entries were written by hand in the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [1.6.0](https://github.com/laravel/terraform-provider-laravel/compare/v1.5.1...v1.6.0) (2026-11-26)
+
+
+### Features
+
+* read back cluster_id and source_control_provider_type ([#41](https://github.com/laravel/terraform-provider-laravel/issues/41)) ([8d17b19](https://github.com/laravel/terraform-provider-laravel/commit/8d17b192b5d16e7468b1981bc23d1d87b3c1cba6))
+
 ## [1.5.1](https://github.com/laravel/terraform-provider-laravel/compare/v1.5.0...v1.5.1) (2026-11-25)
 
 
