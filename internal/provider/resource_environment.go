@@ -172,11 +172,21 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 			"cluster_id": schema.StringAttribute{
 				Optional: true,
-				Description: "Dedicated cluster ID. " +
-					"The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.",
+				Computed: true,
+				Description: "ID of the dedicated cluster the environment runs on; null on shared compute. Leave unset to " +
+					"keep where the environment runs. An environment cannot move, so a different cluster replaces it.",
 				PlanModifiers: []planmodifier.String{
-					requiresReplaceUnlessImported(),
-					warnIfNotReported(),
+					stringplanmodifier.UseStateForUnknown(),
+					// Only a configured cluster can differ: unset, the plan is
+					// the prior value, or unknown when that is null (shared
+					// compute), and neither may replace the environment.
+					stringplanmodifier.RequiresReplaceIf(
+						func(_ context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+							resp.RequiresReplace = !req.ConfigValue.IsNull()
+						},
+						"Requires replacement when a configured cluster differs from the one the environment runs on.",
+						"Requires replacement when a configured cluster differs from the one the environment runs on.",
+					),
 				},
 			},
 			"php_version": schema.StringAttribute{
@@ -722,9 +732,8 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		if isSet(plan.BuildCommand) {
 			createReq.BuildCommand = plan.BuildCommand.ValueStringPointer()
 		}
-		if !plan.ClusterID.IsNull() {
-			v := plan.ClusterID.ValueString()
-			createReq.ClusterID = &v
+		if isSet(plan.ClusterID) {
+			createReq.ClusterID = plan.ClusterID.ValueStringPointer()
 		}
 		createReq.EdgeNetworkID = plan.EdgeNetworkID.ValueStringPointer()
 

@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 )
 
@@ -16,7 +17,31 @@ func (c *Client) GetApplication(ctx context.Context, id string) (*ApplicationDat
 	if err := c.do(ctx, "GET", fmt.Sprintf("/applications/%s?include=defaultEnvironment", id), nil, &doc); err != nil {
 		return nil, err
 	}
-	return &doc.Data, nil
+	app := doc.Data
+	app.DefaultEnvironmentClusterID = includedEnvironmentClusterID(doc.Included, app.Relationships.DefaultEnvironment.RelatedID())
+	return &app, nil
+}
+
+// includedEnvironmentClusterID returns the cluster_id of an environment in a
+// document's included section: nil when it was not included, or when it runs
+// on shared compute.
+func includedEnvironmentClusterID(included []ResourceObject, id string) *string {
+	if id == "" {
+		return nil
+	}
+	for _, obj := range included {
+		if obj.Type != "environments" || obj.ID != id {
+			continue
+		}
+		var attrs struct {
+			ClusterID *string `json:"cluster_id"`
+		}
+		if err := json.Unmarshal(obj.Attributes, &attrs); err != nil {
+			return nil
+		}
+		return attrs.ClusterID
+	}
+	return nil
 }
 
 func (c *Client) CreateApplication(ctx context.Context, req CreateApplicationRequest) (*ApplicationData, error) {

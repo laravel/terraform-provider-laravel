@@ -94,22 +94,25 @@ func (r *ApplicationResource) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 			"cluster_id": schema.StringAttribute{
 				Optional: true,
-				Description: "Dedicated cluster ID. " +
-					"The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.",
+				Computed: true,
+				Description: "ID of the dedicated cluster to create the application's default environment on. Used only " +
+					"when the application is created: changing it afterwards only records the new value, so move an " +
+					"environment with cluster_id on laravel_cloud_environment. An import reads it from the default environment.",
 				PlanModifiers: []planmodifier.String{
-					requiresReplaceUnlessImported(),
-					warnIfNotReported(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"source_control_provider_type": schema.StringAttribute{
 				Optional: true,
-				Description: "Source control provider type (github, gitlab, gitlab_self_hosted, or bitbucket). " +
-					"Becomes required by the API on March 9, 2026. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.",
+				Computed: true,
+				Description: "Source control provider of the application's repository (github, gitlab, gitlab_self_hosted, " +
+					"or bitbucket). Becomes required by the API on March 9, 2026. Leave unset to keep the reported one. " +
+					"Changing it points the application at the repository of the same name on the other provider.",
 				Validators: []validator.String{
 					stringvalidator.OneOf("github", "gitlab", "gitlab_self_hosted", "bitbucket"),
 				},
 				PlanModifiers: []planmodifier.String{
-					warnIfNotReported(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"starter_kit": schema.StringAttribute{
@@ -275,13 +278,11 @@ func (r *ApplicationResource) Create(ctx context.Context, req resource.CreateReq
 		Repository: plan.Repository.ValueString(),
 		Region:     plan.Region.ValueString(),
 	}
-	if !plan.ClusterID.IsNull() {
-		v := plan.ClusterID.ValueString()
-		createReq.ClusterID = &v
+	if isSet(plan.ClusterID) {
+		createReq.ClusterID = plan.ClusterID.ValueStringPointer()
 	}
-	if !plan.SourceControlProviderType.IsNull() {
-		v := plan.SourceControlProviderType.ValueString()
-		createReq.SourceControlProviderType = &v
+	if isSet(plan.SourceControlProviderType) {
+		createReq.SourceControlProviderType = plan.SourceControlProviderType.ValueStringPointer()
 	}
 	createReq.StarterKit = plan.StarterKit.ValueStringPointer()
 	if isSet(plan.RootDirectory) {
@@ -323,14 +324,20 @@ func (r *ApplicationResource) Create(ctx context.Context, req resource.CreateReq
 			app = updated
 		}
 	}
-	// The create and update responses carry no relationships.
-	if plan.DefaultEnvironmentID.IsUnknown() {
-		if withEnv, err := r.client.GetApplication(ctx, app.ID); err == nil {
-			plan.DefaultEnvironmentID = defaultEnvironmentFromAPI(withEnv)
-		} else {
-			plan.DefaultEnvironmentID = types.StringNull()
+	// The create and update responses carry no relationships, so the default
+	// environment, and the cluster it runs on, come from a read.
+	if plan.DefaultEnvironmentID.IsUnknown() || plan.ClusterID.IsUnknown() {
+		withEnv, err := r.client.GetApplication(ctx, app.ID)
+		if err != nil {
+			withEnv = &client.ApplicationData{}
 			resp.Diagnostics.AddAttributeWarning(path.Root("default_environment_id"), "Could not read the default environment",
 				"The application was created, but reading it back failed: "+err.Error()+". The next refresh records it.")
+		}
+		if plan.DefaultEnvironmentID.IsUnknown() {
+			plan.DefaultEnvironmentID = defaultEnvironmentFromAPI(withEnv)
+		}
+		if plan.ClusterID.IsUnknown() {
+			plan.ClusterID = types.StringPointerValue(withEnv.DefaultEnvironmentClusterID)
 		}
 	}
 
@@ -382,6 +389,13 @@ func (r *ApplicationResource) Read(ctx context.Context, req resource.ReadRequest
 	state.Language = types.StringPointerValue(app.Attributes.Language)
 	state.Notes = types.StringPointerValue(app.Attributes.Notes)
 	state.RepositoryDefaultBranch = repositoryDefaultBranch(app)
+	state.SourceControlProviderType = types.StringPointerValue(app.Attributes.SourceControlProviderType)
+	// cluster_id only placed the default environment at creation, so a
+	// recorded value stands. With none, as after an import, it is the default
+	// environment's.
+	if state.ClusterID.IsNull() {
+		state.ClusterID = types.StringPointerValue(app.DefaultEnvironmentClusterID)
+	}
 	if app.Attributes.RootDirectory == nil && isSet(state.RootDirectory) {
 		resp.Diagnostics.Append(setRootDirectoryCleared(ctx, resp.Private, state.RootDirectory.ValueString())...)
 	}
@@ -423,11 +437,14 @@ func (r *ApplicationResource) Update(ctx context.Context, req resource.UpdateReq
 		updateReq.DefaultEnvironmentID = plan.DefaultEnvironmentID.ValueStringPointer()
 	}
 	// The API reads source_control_provider_type only to resolve a repository
-	// being changed and discards it otherwise, so it goes out only alongside
-	// one. Adding it on its own then changes nothing, as its plan warning says.
-	if updateReq.Repository != nil && !plan.SourceControlProviderType.IsNull() {
-		v := plan.SourceControlProviderType.ValueString()
-		updateReq.SourceControlProviderType = &v
+	// being changed, and discards it otherwise. So a new provider type goes out
+	// with the repository, which the API then looks up on that provider.
+	if isSet(plan.SourceControlProviderType) && !plan.SourceControlProviderType.Equal(state.SourceControlProviderType) &&
+		updateReq.Repository == nil && isSet(plan.Repository) {
+		updateReq.Repository = plan.Repository.ValueStringPointer()
+	}
+	if updateReq.Repository != nil && isSet(plan.SourceControlProviderType) {
+		updateReq.SourceControlProviderType = plan.SourceControlProviderType.ValueStringPointer()
 	}
 
 	app, err := r.client.UpdateApplication(ctx, state.ID.ValueString(), updateReq)
@@ -440,6 +457,11 @@ func (r *ApplicationResource) Update(ctx context.Context, req resource.UpdateReq
 	rememberAppRepository(plan.ID.ValueString(), plan.Repository)
 	plan.Slug = types.StringValue(app.Attributes.Slug)
 	setUnknownApplicationDetails(&plan, app)
+	// The update response doesn't include the default environment. Unknown
+	// means none was recorded or configured; the next refresh fills it in.
+	if plan.ClusterID.IsUnknown() {
+		plan.ClusterID = types.StringNull()
+	}
 	if plan.DefaultEnvironmentID.IsUnknown() {
 		plan.DefaultEnvironmentID = defaultEnvironmentFromAPI(app)
 	}
@@ -591,6 +613,7 @@ func setUnknownApplicationDetails(plan *ApplicationResourceModel, app *client.Ap
 	setUnknownStringPtrFromAPI(&plan.Framework, app.Attributes.Framework)
 	setUnknownStringPtrFromAPI(&plan.Language, app.Attributes.Language)
 	setUnknownStringPtrFromAPI(&plan.Notes, app.Attributes.Notes)
+	setUnknownStringPtrFromAPI(&plan.SourceControlProviderType, app.Attributes.SourceControlProviderType)
 	if plan.RepositoryDefaultBranch.IsUnknown() {
 		plan.RepositoryDefaultBranch = repositoryDefaultBranch(app)
 	}

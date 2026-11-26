@@ -293,7 +293,12 @@ func (f *fakeCloud) createApplication(w http.ResponseWriter, r *http.Request) {
 			Region:        req.Region,
 			Repository:    &client.ApplicationRepository{FullName: req.Repository, DefaultBranch: ptr(fakeDefaultBranch(req.Repository))},
 			RootDirectory: req.RootDirectory,
+			// The repository's provider; the fake's default is GitHub.
+			SourceControlProviderType: ptr("github"),
 		},
+	}
+	if req.SourceControlProviderType != nil {
+		app.Attributes.SourceControlProviderType = req.SourceControlProviderType
 	}
 	// starter_kit is create-only and not reported back.
 	f.appCreates = append(f.appCreates, req)
@@ -303,6 +308,8 @@ func (f *fakeCloud) createApplication(w http.ResponseWriter, r *http.Request) {
 	// the repository's default branch, which the API refuses to delete.
 	branch := fakeDefaultBranch(req.Repository)
 	env := f.newEnvironment(id, defaultEnvironmentName(branch), branch)
+	// The application's cluster_id places its default environment.
+	env.Attributes.ClusterID = req.ClusterID
 	f.serveEnvironment(env, req.Serving, req.BuildCommand)
 	app.Relationships.DefaultEnvironment = client.Relationship{
 		Data: &client.ResourceIdentifier{Type: "environments", ID: env.ID},
@@ -364,7 +371,13 @@ func (f *fakeCloud) getApplication(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("application not found"))
 		return
 	}
-	writeJSON(w, http.StatusOK, client.Document[client.ApplicationData]{Data: f.applicationView(r, app)})
+	doc := client.Document[client.ApplicationData]{Data: f.applicationView(r, app)}
+	// include=defaultEnvironment also puts the environment itself in included.
+	if env := f.envs[doc.Data.Relationships.DefaultEnvironment.RelatedID()]; env != nil {
+		attrs, _ := json.Marshal(env.Attributes)
+		doc.Included = append(doc.Included, client.ResourceObject{ID: env.ID, Type: "environments", Attributes: attrs})
+	}
+	writeJSON(w, http.StatusOK, doc)
 }
 
 func (f *fakeCloud) updateApplication(w http.ResponseWriter, r *http.Request) {
@@ -416,6 +429,10 @@ func (f *fakeCloud) updateApplication(w http.ResponseWriter, r *http.Request) {
 			app.Attributes.RootDirectory = nil
 		}
 		app.Attributes.Repository = &client.ApplicationRepository{FullName: *req.Repository}
+		// The provider type tells the API where to look the repository up.
+		if req.SourceControlProviderType != nil {
+			app.Attributes.SourceControlProviderType = req.SourceControlProviderType
+		}
 	}
 	if req.DefaultEnvironmentID != nil {
 		app.Relationships.DefaultEnvironment = client.Relationship{
@@ -513,6 +530,7 @@ func (f *fakeCloud) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	env := f.newEnvironment(appID, req.Name, req.Branch)
+	env.Attributes.ClusterID = req.ClusterID
 	f.serveEnvironment(env, serving, build)
 	writeJSON(w, http.StatusCreated, environmentDoc(env))
 }

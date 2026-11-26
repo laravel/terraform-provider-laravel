@@ -60,6 +60,7 @@ func mapDetailsToState(env *client.EnvironmentData, state *EnvironmentResourceMo
 	state.UsesHibernation = types.BoolPointerValue(a.UsesHibernation)
 	state.CreatedFromAutomation = types.BoolValue(a.CreatedFromAutomation)
 	state.PullRequest = pullRequestFromAPI(a.PullRequest)
+	state.ClusterID = types.StringPointerValue(a.ClusterID)
 }
 
 // setUnknownDetailsFromAPI resolves the details the plan left unknown.
@@ -76,6 +77,7 @@ func keepUnknownDetails(plan *EnvironmentResourceModel, src EnvironmentResourceM
 		{&plan.DisplayName, &src.DisplayName},
 		{&plan.Framework, &src.Framework},
 		{&plan.Language, &src.Language},
+		{&plan.ClusterID, &src.ClusterID},
 	} {
 		if f.plan.IsUnknown() {
 			*f.plan = *f.src

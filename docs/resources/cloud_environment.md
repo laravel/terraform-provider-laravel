@@ -104,7 +104,7 @@ resource "laravel_cloud_environment" "staging" {
 - `build_command` (String) Custom build command (max 2000 chars). Leave unset to keep the framework's default, or for a static site to build nothing.
 - `cache_id` (String) Cache to attach. Removing it detaches the cache. A detach or another cache attached outside Terraform shows in the next plan; left unset, the attachment is not managed.
 - `cache_strategy` (String) Cache strategy (default, bypass).
-- `cluster_id` (String) Dedicated cluster ID. The API never reports it back, so the first plan after an import shows it being added; applying that plan only records the value.
+- `cluster_id` (String) ID of the dedicated cluster the environment runs on; null on shared compute. Leave unset to keep where the environment runs. An environment cannot move, so a different cluster replaces it.
 - `color` (String) Environment color (blue, green, orange, purple, red, yellow, cyan, gray). Leave unset to keep the color Laravel Cloud picked when it created the environment.
 - `database_id` (String) ID of the database to attach (a laravel_cloud_database, not its cluster). Removing it detaches the database. A detach or another database attached outside Terraform shows in the next plan; left unset, the attachment is not managed.
 - `database_schema_id` (String, Deprecated) Deprecated alias for database_id.

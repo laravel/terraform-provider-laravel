@@ -62,10 +62,9 @@ func TestApplicationRootDirectoryPlan(t *testing.T) {
 				},
 			},
 			{
-				ResourceName:            addr,
-				ImportState:             true,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"source_control_provider_type"},
+				ResourceName:      addr,
+				ImportState:       true,
+				ImportStateVerify: true,
 			},
 		},
 	})
