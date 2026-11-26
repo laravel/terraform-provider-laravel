@@ -9,6 +9,13 @@ conventional-commit titles of merged pull requests; do not edit them by hand.
 Earlier entries were written by hand in the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [1.7.1](https://github.com/laravel/terraform-provider-laravel/compare/v1.7.0...v1.7.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **client:** explain a 302 from the API instead of blaming a rate limit ([#45](https://github.com/laravel/terraform-provider-laravel/issues/45)) ([aa7acf3](https://github.com/laravel/terraform-provider-laravel/commit/aa7acf32debc8a827b4e16085d12492f18554847))
+
 ## [1.7.0](https://github.com/laravel/terraform-provider-laravel/compare/v1.6.0...v1.7.0) (2026-11-26)
 
 
