@@ -61,6 +61,7 @@ func mapDetailsToState(env *client.EnvironmentData, state *EnvironmentResourceMo
 	state.CreatedFromAutomation = types.BoolValue(a.CreatedFromAutomation)
 	state.PullRequest = pullRequestFromAPI(a.PullRequest)
 	state.ClusterID = types.StringPointerValue(a.ClusterID)
+	state.AwsTrustPolicy = types.StringPointerValue(a.AwsTrustPolicy)
 }
 
 // setUnknownDetailsFromAPI resolves the details the plan left unknown.
@@ -78,6 +79,7 @@ func keepUnknownDetails(plan *EnvironmentResourceModel, src EnvironmentResourceM
 		{&plan.Framework, &src.Framework},
 		{&plan.Language, &src.Language},
 		{&plan.ClusterID, &src.ClusterID},
+		{&plan.AwsTrustPolicy, &src.AwsTrustPolicy},
 	} {
 		if f.plan.IsUnknown() {
 			*f.plan = *f.src

@@ -1,0 +1,378 @@
+package provider
+
+import (
+	"fmt"
+	"regexp"
+	"testing"
+
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
+	"github.com/hashicorp/terraform-plugin-testing/statecheck"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
+)
+
+const (
+	awsRoleA = "arn:aws:iam::123456789012:role/app-a"
+	awsRoleB = "arn:aws:iam::123456789012:role/app-b"
+	awsRoleC = "arn:aws:iam::123456789012:role/set-elsewhere"
+)
+
+func awsRoleConfig(baseURL, cluster, role string) string {
+	env := ""
+	if cluster != "" {
+		env += fmt.Sprintf("  cluster_id   = %q\n", cluster)
+	}
+	if role != "" {
+		env += fmt.Sprintf("  aws_role_arn = %q\n", role)
+	}
+	return providerCfg(baseURL) + `
+resource "laravel_cloud_application" "app" {
+  name       = "role-app"
+  repository = "acme/role-app"
+  region     = "us-east-2"
+}
+
+resource "laravel_cloud_environment" "worker" {
+  application_id = laravel_cloud_application.app.id
+  name           = "worker"
+  branch         = "main"
+` + env + `}
+`
+}
+
+// fakeEnvRole is the AWS role the fake holds for the named environment, and
+// setFakeEnvRole changes it as the dashboard would.
+func fakeEnvRole(f *fakeCloud, name string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, e := range f.envs {
+		if e.Attributes.Name == name {
+			return ptrValue(e.Attributes.AwsRoleArn.Value)
+		}
+	}
+	return ""
+}
+
+func setFakeEnvRole(f *fakeCloud, name string, role *string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, e := range f.envs {
+		if e.Attributes.Name == name {
+			e.Attributes.AwsRoleArn.Value = role
+		}
+	}
+}
+
+func envRoleIs(f *fakeCloud, name, want string) resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		if got := fakeEnvRole(f, name); got != want {
+			return fmt.Errorf("%s AWS role on the platform = %q, want %q", name, got, want)
+		}
+		return nil
+	}
+}
+
+func setFakeWorkerRole(f *fakeCloud, role *string) { setFakeEnvRole(f, "worker", role) }
+
+func workerRoleIs(f *fakeCloud, want string) resource.TestCheckFunc {
+	return envRoleIs(f, "worker", want)
+}
+
+// TestEnvironmentAwsRolePlan: environment create does not take the role, so
+// it follows in the update after it. A role changed or removed outside
+// Terraform shows in the next plan, and removing it from the configuration
+// removes it from the environment.
+func TestEnvironmentAwsRolePlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	f.byoiam = true
+	const addr = "laravel_cloud_environment.worker"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: awsRoleConfig(baseURL, "dc-1", awsRoleA),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					workerRoleIs(f, awsRoleA),
+					func(s *terraform.State) error {
+						id := s.RootModule().Resources[addr].Primary.ID
+						return resource.TestCheckResourceAttr(addr, "aws_trust_policy", fakeTrustPolicy(id))(s)
+					},
+				),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("aws_role_arn"), knownvalue.StringExact(awsRoleA)),
+				},
+			},
+			{
+				Config:           awsRoleConfig(baseURL, "dc-1", awsRoleA),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			},
+			{
+				Config: awsRoleConfig(baseURL, "dc-1", awsRoleB),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
+				}},
+				Check: workerRoleIs(f, awsRoleB),
+			},
+			{
+				// Changed in the dashboard: the plan sets it back.
+				PreConfig: func() { setFakeWorkerRole(f, ptr(awsRoleC)) },
+				Config:    awsRoleConfig(baseURL, "dc-1", awsRoleB),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
+				}},
+				Check: workerRoleIs(f, awsRoleB),
+			},
+			{
+				// Removed in the dashboard: the plan sets it again.
+				PreConfig: func() { setFakeWorkerRole(f, nil) },
+				Config:    awsRoleConfig(baseURL, "dc-1", awsRoleB),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
+				}},
+				Check: workerRoleIs(f, awsRoleB),
+			},
+			{
+				// Not reported, as once the organization loses bring your own
+				// IAM role: the recorded role stands.
+				PreConfig: func() {
+					f.mu.Lock()
+					f.byoiam = false
+					f.mu.Unlock()
+				},
+				Config:           awsRoleConfig(baseURL, "dc-1", awsRoleB),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("aws_role_arn"), knownvalue.StringExact(awsRoleB)),
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("aws_trust_policy"), knownvalue.Null()),
+				},
+			},
+			{
+				PreConfig: func() {
+					f.mu.Lock()
+					f.byoiam = true
+					f.mu.Unlock()
+				},
+				Config: awsRoleConfig(baseURL, "dc-1", ""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
+				}},
+				Check: workerRoleIs(f, ""),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("aws_role_arn"), knownvalue.Null()),
+				},
+			},
+			{
+				// Left unset, a role set in the dashboard is not managed, so
+				// nothing plans to remove it.
+				PreConfig:        func() { setFakeWorkerRole(f, ptr(awsRoleC)) },
+				Config:           awsRoleConfig(baseURL, "dc-1", ""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+				Check:            workerRoleIs(f, awsRoleC),
+			},
+			{
+				// An import does not adopt the role either; the trust policy is
+				// read back.
+				Config:                  awsRoleConfig(baseURL, "dc-1", ""),
+				ResourceName:            addr,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"php_version"},
+			},
+		},
+	})
+}
+
+// TestEnvironmentAwsRoleRefusedPlan: Laravel Cloud refuses a role without
+// bring your own IAM role, and on shared compute. On create the environment
+// exists by then, so the apply warns, and the next plan sends the role again
+// rather than recording one the platform never took.
+func TestEnvironmentAwsRoleRefusedPlan(t *testing.T) {
+	const addr = "laravel_cloud_environment.worker"
+
+	t.Run("not enabled", func(t *testing.T) {
+		f, baseURL := newFakeCloud(t)
+		resource.Test(t, resource.TestCase{
+			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			Steps: []resource.TestStep{
+				{
+					Config:             awsRoleConfig(baseURL, "dc-1", awsRoleA),
+					Check:              workerRoleIs(f, ""),
+					ExpectNonEmptyPlan: true,
+				},
+				{
+					Config:      awsRoleConfig(baseURL, "dc-1", awsRoleA),
+					ExpectError: regexp.MustCompile(`needs\s+bring\s+your\s+own\s+IAM\s+role`),
+				},
+			},
+		})
+	})
+
+	t.Run("shared compute", func(t *testing.T) {
+		f, baseURL := newFakeCloud(t)
+		f.byoiam = true
+		resource.Test(t, resource.TestCase{
+			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			Steps: []resource.TestStep{
+				{
+					Config: awsRoleConfig(baseURL, "", ""),
+					ConfigStateChecks: []statecheck.StateCheck{
+						statecheck.ExpectKnownValue(addr, tfjsonpath.New("aws_trust_policy"), knownvalue.Null()),
+					},
+				},
+				{
+					Config:      awsRoleConfig(baseURL, "", awsRoleA),
+					ExpectError: regexp.MustCompile(`only\s+for\s+an\s+environment\s+on\s+a\s+dedicated\s+cluster`),
+				},
+			},
+		})
+	})
+
+	t.Run("not an ARN", func(t *testing.T) {
+		_, baseURL := newFakeCloud(t)
+		resource.Test(t, resource.TestCase{
+			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			Steps: []resource.TestStep{
+				{
+					Config:      awsRoleConfig(baseURL, "dc-1", "arn:aws:iam::123456789012:user/app"),
+					PlanOnly:    true,
+					ExpectError: regexp.MustCompile(`must\s+be\s+an\s+IAM\s+role\s+ARN`),
+				},
+			},
+		})
+	})
+}
+
+// takeoverConfig manages the application's default environment, production,
+// which Laravel Cloud creates with the application on dedicated cluster dc-1.
+func takeoverConfig(baseURL, extra string) (app, production string) {
+	app = providerCfg(baseURL) + `
+resource "laravel_cloud_application" "app" {
+  name       = "role-app"
+  repository = "acme/role-app"
+  region     = "us-east-2"
+  cluster_id = "dc-1"
+}
+`
+	return app, app + `
+resource "laravel_cloud_environment" "production" {
+  application_id = laravel_cloud_application.app.id
+  name           = "production"
+  branch         = "main"
+` + extra + `}
+`
+}
+
+// TestEnvironmentAwsRoleAdoptedFailedUpdatePlan: taking over an environment
+// that already has the configured role sends no role, so when the update
+// after it fails, the role must stay recorded, whether or not the API reports
+// it by the next refresh. Dropping it with the settings that never arrived
+// made removing it from the configuration later send nothing, leaving the
+// role on the environment.
+func TestEnvironmentAwsRoleAdoptedFailedUpdatePlan(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		reported bool
+	}{
+		{"reported", true},
+		// As once the organization loses bring your own IAM role. Null
+		// still removes a role.
+		{"not reported", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, baseURL := newFakeCloud(t)
+			f.byoiam = true
+			token := fmt.Sprintf("  nightwatch_token = %q\n", testNightwatchToken)
+			app, withRole := takeoverConfig(baseURL, token+fmt.Sprintf("  aws_role_arn     = %q\n", awsRoleA))
+			_, withoutRole := takeoverConfig(baseURL, token)
+
+			resource.Test(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Steps: []resource.TestStep{
+					{Config: app},
+					{
+						// The default environment already has the role. The
+						// update after taking it over carries only the token,
+						// and fails.
+						PreConfig: func() {
+							setFakeEnvRole(f, "production", ptr(awsRoleA))
+							f.mu.Lock()
+							f.failEnvUpdates = 1
+							f.mu.Unlock()
+						},
+						Config:             withRole,
+						ExpectNonEmptyPlan: true,
+						ConfigStateChecks: []statecheck.StateCheck{
+							statecheck.ExpectKnownValue("laravel_cloud_environment.production", tfjsonpath.New("aws_role_arn"), knownvalue.StringExact(awsRoleA)),
+						},
+					},
+					{
+						PreConfig: func() {
+							f.mu.Lock()
+							f.byoiam = tc.reported
+							f.mu.Unlock()
+						},
+						Config: withoutRole,
+						Check:  envRoleIs(f, "production", ""),
+					},
+				},
+			})
+		})
+	}
+}
+
+// TestEnvironmentAwsRoleStartAfterFailedUpdatePlan: starting an environment
+// deploys it, and the deployment keeps the role it starts with. When the
+// update carrying the role fails after taking over a stopped environment,
+// it is not started, so the next apply sets the role and then starts it.
+func TestEnvironmentAwsRoleStartAfterFailedUpdatePlan(t *testing.T) {
+	f, baseURL := newFakeCloud(t)
+	f.byoiam = true
+	const addr = "laravel_cloud_environment.production"
+	app, production := takeoverConfig(baseURL, fmt.Sprintf("  running      = true\n  aws_role_arn = %q\n", awsRoleB))
+	started := func(want ...string) resource.TestCheckFunc {
+		return func(*terraform.State) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if fmt.Sprint(f.startRoles) != fmt.Sprint(want) {
+				return fmt.Errorf("environment starts deployed with roles %q, want %q", f.startRoles, want)
+			}
+			return nil
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: app},
+			{
+				PreConfig: func() {
+					setFakeEnvRole(f, "production", ptr(awsRoleA))
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					for _, e := range f.envs {
+						if e.Attributes.Name == "production" {
+							e.Attributes.Status = "stopped"
+						}
+					}
+					f.failEnvUpdates = 1
+				},
+				Config:             production,
+				ExpectNonEmptyPlan: true,
+				Check:              started(),
+			},
+			{
+				Config: production,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate),
+				}},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					started(awsRoleB),
+					envRoleIs(f, "production", awsRoleB),
+				),
+			},
+		},
+	})
+}

@@ -219,6 +219,11 @@ func addSettingsFromStateDiff(req *client.UpdateEnvironmentRequest, plan, state 
 		req.NightwatchToken = nullableStringRequest(plan.NightwatchToken)
 		changed = true
 	}
+	// Removed from the configuration, null removes the role.
+	if !plan.AwsRoleArn.Equal(state.AwsRoleArn) {
+		req.AwsRoleArn = nullableStringRequest(plan.AwsRoleArn)
+		changed = true
+	}
 	if !filesystemKeysEqual(plan.FilesystemKeys, state.FilesystemKeys) {
 		req.FilesystemKeys = filesystemKeysRequest(plan.FilesystemKeys)
 		changed = true
@@ -285,6 +290,12 @@ func addSettingsFromCreateDiff(req *client.UpdateEnvironmentRequest, plan Enviro
 	}
 	if plan.FilesystemKeys != nil {
 		req.FilesystemKeys = filesystemKeysRequest(plan.FilesystemKeys)
+		changed = true
+	}
+	// Environment create does not take the role, so it follows here, unless an
+	// adopted environment already has it.
+	if r := env.Attributes.AwsRoleArn; isSet(plan.AwsRoleArn) && (!r.Reported || !plan.AwsRoleArn.Equal(types.StringPointerValue(r.Value))) {
+		req.AwsRoleArn = nullableStringRequest(plan.AwsRoleArn)
 		changed = true
 	}
 	for _, f := range []struct {

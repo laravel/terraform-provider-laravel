@@ -45,6 +45,8 @@ type EnvironmentResourceModel struct {
 	Running                    types.Bool   `tfsdk:"running"`
 	Color                      types.String `tfsdk:"color"`
 	ClusterID                  types.String `tfsdk:"cluster_id"`
+	AwsRoleArn                 types.String `tfsdk:"aws_role_arn"`
+	AwsTrustPolicy             types.String `tfsdk:"aws_trust_policy"`
 	PHPVersion                 types.String `tfsdk:"php_version"`
 	PHPMajorVersion            types.String `tfsdk:"php_major_version"`
 	VanityDomain               types.String `tfsdk:"vanity_domain"`
@@ -188,6 +190,31 @@ func (r *EnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 						"Requires replacement when a configured cluster differs from the one the environment runs on.",
 						"Requires replacement when a configured cluster differs from the one the environment runs on.",
 					),
+				},
+			},
+			"aws_role_arn": schema.StringAttribute{
+				Optional: true,
+				Description: "ARN of the IAM role the environment's application assumes to access AWS (such as " +
+					"arn:aws:iam::123456789012:role/laravel-cloud). The role must trust aws_trust_policy. Available on " +
+					"Private Cloud: the environment must run on a dedicated cluster, and the organization must have bring " +
+					"your own IAM role enabled. Takes effect on the next deployment. Removing it removes the role from the " +
+					"environment. A role changed or removed outside Terraform shows in the next plan; left unset, the role " +
+					"is not managed, so one set in the dashboard stays. After an import, the first plan shows a configured " +
+					"role being added, and applying it sets that role: this changes nothing only when the environment " +
+					"already has it.",
+				Validators: []validator.String{
+					stringvalidator.LengthAtMost(255),
+					stringvalidator.RegexMatches(awsRoleArnPattern,
+						"must be an IAM role ARN, such as arn:aws:iam::123456789012:role/laravel-cloud"),
+				},
+			},
+			"aws_trust_policy": schema.StringAttribute{
+				Computed: true,
+				Description: "Trust policy, as JSON, that the IAM role in aws_role_arn must have so the environment can " +
+					"assume it. Null unless the environment runs on a dedicated cluster in an organization with bring " +
+					"your own IAM role enabled.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"php_version": schema.StringAttribute{
@@ -823,6 +850,8 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		plan.VanityDomain = configuredVanity
 	}
 
+	// Whether the follow-up update failed with the AWS role in it.
+	roleUnsent := false
 	patchReq := buildEnvironmentUpdateFromDiff(origPlan, env, adopted)
 	if wo, d := nightwatchTokenWO(ctx, req.Config); d.HasError() {
 		resp.Diagnostics.Append(d...)
@@ -873,10 +902,17 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 					". The planned values are kept in state. Run 'terraform apply' again to retry.",
 			)
 			// nightwatch_token and filesystem_keys are never reported back,
-			// so no refresh could notice they were not applied and the next
-			// plan would send nothing. Mark them for Read to drop instead.
+			// and aws_role_arn is not where Laravel Cloud refuses it, so no
+			// refresh could notice they were not applied and the next plan
+			// would send nothing. Mark them for Read to drop instead. The
+			// role has its own mark: one this update did not carry, as on an
+			// adopted environment that already has it, must stay recorded.
 			if patchReq.NightwatchToken != nil || patchReq.FilesystemKeys != nil {
 				resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentWriteOnlyKey, []byte("true"))...)
+			}
+			if patchReq.AwsRoleArn != nil {
+				roleUnsent = true
+				resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentAwsRoleKey, []byte("true"))...)
 			}
 		}
 		// Whether PATCH succeeded or failed, we keep the plan values in
@@ -903,7 +939,15 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	// whether the environment really is running, so the next plan offers the
 	// change again, and Update retries it or fails with the API's reason.
 	var runningDiags diag.Diagnostics
-	if !applyRunning(ctx, r.client, env.ID, &plan, environmentRunning(plan.Status.ValueString()), &runningDiags) {
+	if roleUnsent && isSet(plan.Running) && plan.Running.ValueBool() && !environmentRunning(plan.Status.ValueString()) {
+		// Starting deploys the environment, and a deployment keeps the role
+		// it starts with, so this one would run without the configured role
+		// until the next deployment. The next apply sets the role first.
+		resp.Diagnostics.AddAttributeWarning(path.Root("running"), "Environment not started",
+			"The environment was not started, because its AWS role could not be set and a deployment keeps the role "+
+				"it starts with. The configured value is kept in state, so the next plan shows the change again, and "+
+				"'terraform apply' sets the role and then starts the environment.")
+	} else if !applyRunning(ctx, r.client, env.ID, &plan, environmentRunning(plan.Status.ValueString()), &runningDiags) {
 		resp.Diagnostics.AddAttributeWarning(path.Root("running"), "Could not start or stop the environment after creating it",
 			runningDiags.Errors()[0].Detail()+" The configured value is kept in state, so the next plan shows the "+
 				"change again and 'terraform apply' retries it. An environment that has never been deployed cannot "+
@@ -989,6 +1033,19 @@ func (r *EnvironmentResource) Read(ctx context.Context, req resource.ReadRequest
 		state.NightwatchTokenWOVersion = types.Int64Null()
 		state.FilesystemKeys = nil
 	}
+	// A role that never reached the API is dropped only while the API does not
+	// report it. A reported one was read back above, so the next plan already
+	// sends the configured role if it differs, and the mark is done.
+	if pending, d := req.Private.GetKey(ctx, unsentAwsRoleKey); d.HasError() {
+		resp.Diagnostics.Append(d...)
+		return
+	} else if len(pending) > 0 {
+		if env.Attributes.AwsRoleArn.Reported {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentAwsRoleKey, nil)...)
+		} else {
+			state.AwsRoleArn = types.StringNull()
+		}
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -1005,8 +1062,12 @@ func nightwatchTokenWO(ctx context.Context, config tfsdk.Config) (types.String, 
 
 // unsentWriteOnlyKey is the private state key that records an environment
 // whose nightwatch_token and filesystem_keys failed to reach the API on
-// create. An update that succeeds clears it.
-const unsentWriteOnlyKey = "unsent_write_only"
+// create, and unsentAwsRoleKey one whose aws_role_arn did. An update that
+// succeeds clears both.
+const (
+	unsentWriteOnlyKey = "unsent_write_only"
+	unsentAwsRoleKey   = "unsent_aws_role"
+)
 
 func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan EnvironmentResourceModel
@@ -1087,6 +1148,7 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 	resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentWriteOnlyKey, nil)...)
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, unsentAwsRoleKey, nil)...)
 
 	// Keep plan values in state rather than overwriting from the API
 	// response. The API may not echo back the values we sent (e.g.
@@ -1669,6 +1731,13 @@ func mapEnvironmentToState(env *client.EnvironmentData, state *EnvironmentResour
 	}
 	readAttachment(&state.CacheID, env.Relationships.Cache)
 	readAttachment(&state.WebsocketApplicationID, env.Relationships.WebsocketApplication)
+	// Like the attachments, the AWS role is followed only once Terraform
+	// manages it: a role set elsewhere is never adopted, so leaving the
+	// attribute unset never plans to remove it. A response without the role,
+	// as for a token that may not view it, keeps the recorded one.
+	if r := env.Attributes.AwsRoleArn; r.Reported && !state.AwsRoleArn.IsNull() {
+		state.AwsRoleArn = types.StringPointerValue(r.Value)
+	}
 	// sleep_timeout is not reported, but hibernation being off means there is
 	// none, so a configured one shows up in the next plan.
 	if hibernationOff(env) {
@@ -1752,6 +1821,9 @@ func resolveUnknownInt64ToNull(v *types.Int64) {
 // vanityLabelPattern is the API's rule for a vanity domain name: one
 // lowercase DNS label.
 var vanityLabelPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// awsRoleArnPattern is the IAM role ARN form Laravel Cloud accepts.
+var awsRoleArnPattern = regexp.MustCompile(`^arn:aws:iam::\d{12}:role/[\w+=,.@/-]+$`)
 
 // setVanityFromAPI records the environment's vanity domain. The API takes a
 // subdomain label but reports the full hostname, whose zone differs between

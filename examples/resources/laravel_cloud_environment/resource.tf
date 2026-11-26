@@ -69,3 +69,30 @@ resource "laravel_cloud_environment" "staging" {
 
   response_headers_robots_tag = "noindex, nofollow"
 }
+
+# Private Cloud: an environment on a dedicated cluster whose application uses
+# an IAM role in your AWS account. The organization needs bring your own IAM
+# role enabled. The role must trust the environment's aws_trust_policy, so the
+# ARN is built from the role's name: taking it from aws_iam_role.worker.arn
+# would make each resource wait for the other. The role takes effect on the
+# next deployment.
+variable "dedicated_cluster_id" {
+  type        = string
+  description = "ID of the Private Cloud cluster the environment runs on."
+}
+
+data "aws_caller_identity" "current" {}
+
+resource "laravel_cloud_environment" "worker" {
+  application_id = laravel_cloud_application.example.id
+  name           = "worker"
+  branch         = "main"
+  cluster_id     = var.dedicated_cluster_id
+
+  aws_role_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/my-app-worker"
+}
+
+resource "aws_iam_role" "worker" {
+  name               = "my-app-worker"
+  assume_role_policy = laravel_cloud_environment.worker.aws_trust_policy
+}
