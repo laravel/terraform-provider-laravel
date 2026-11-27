@@ -990,7 +990,7 @@ func afterManagedQueueCreate(f *fakeCloud, id string) {
 }
 
 // dropQueueTimeoutsIfNotEntitled keeps the platform's visibility and shutdown
-// timeouts on a managed queue, as the API does for an organization without the
+// timeouts on a managed queue, as the API did for an organization without the
 // advanced managed queues entitlement; see queueTimeoutsNotEntitled.
 func dropQueueTimeoutsIfNotEntitled(f *fakeCloud, id string) {
 	attrs := f.objects["instance"][id]

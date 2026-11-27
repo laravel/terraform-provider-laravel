@@ -112,8 +112,9 @@ type fakeCloud struct {
 	refuseBucketKeyDeletes int
 
 	// queueTimeoutsNotEntitled makes the API drop a managed queue's
-	// visibility_timeout and shutdown_timeout and keep its own, as it does for
-	// an organization without the advanced managed queues entitlement.
+	// visibility_timeout and shutdown_timeout and keep its own, as it did for
+	// an organization without the advanced managed queues entitlement before
+	// it rejected them. It exercises the provider's after-the-fact check.
 	queueTimeoutsNotEntitled bool
 
 	// refuseApplicationReads makes GET /applications/{id} answer 403, as for a

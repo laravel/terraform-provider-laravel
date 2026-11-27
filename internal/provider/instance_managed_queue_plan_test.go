@@ -346,10 +346,12 @@ resource "laravel_cloud_instance" "second" {
 	})
 }
 
-// TestInstanceQueueTimeoutsNotEntitledPlan: Laravel Cloud drops a managed
-// queue's visibility_timeout and shutdown_timeout without an error unless the
-// organization has the advanced managed queues entitlement, and keeps its own.
-// Recording that against the configured value used to fail the apply with
+// TestInstanceQueueTimeoutsNotEntitledPlan: Laravel Cloud used to drop a
+// managed queue's visibility_timeout and shutdown_timeout without an error
+// unless the organization had the advanced managed queues entitlement, and
+// keep its own; it now rejects them, and the provider keeps this check in case
+// a value is dropped again. Recording that against the configured value used
+// to fail the apply with
 // "Provider produced inconsistent result after apply". Create must warn, the
 // next apply must fail saying why, and removing the setting must settle it.
 // With the entitlement, a custom value applies as usual.

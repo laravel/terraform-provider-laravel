@@ -184,9 +184,11 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"visibility_timeout": schema.Int64Attribute{
 				Optional: true,
 				Computed: true,
-				Description: "Queue visibility timeout in seconds (managed_queue). Laravel Cloud applies a custom value " +
-					"only for organizations with the advanced managed queues entitlement, and otherwise manages it " +
-					"itself: setting it then fails the apply. Leave it unset to let the platform choose.",
+				Description: "Queue visibility timeout in seconds (managed_queue). On current-generation (mq.*) sizes, " +
+					"a custom value needs the advanced managed queues entitlement: without it, Laravel Cloud manages " +
+					"the value and rejects any other than its own (180), so setting one fails the apply. Leave it " +
+					"unset to let the platform choose. Removing it from an existing queue keeps the current value " +
+					"(a size change can still reset it), so set 180 to go back to the platform's own.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -204,9 +206,12 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"shutdown_timeout": schema.Int64Attribute{
 				Optional: true,
 				Computed: true,
-				Description: "Queue shutdown timeout in seconds (managed_queue). Laravel Cloud applies a custom value " +
-					"only for organizations with the advanced managed queues entitlement, and otherwise manages it " +
-					"itself: setting it then fails the apply. Leave it unset to let the platform choose.",
+				Description: "Queue shutdown timeout in seconds (managed_queue). On current-generation (mq.*) sizes, " +
+					"a custom value needs the advanced managed queues entitlement: without it, Laravel Cloud manages " +
+					"the value and rejects any other than its own (the size's default), so setting one fails the " +
+					"apply. Leave it unset to let the platform choose. Removing it from an existing queue keeps the " +
+					"current value (a size change can still reset it), so set the size's default to go back to the " +
+					"platform's own.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -418,10 +423,11 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 	configuredDefault := plan.IsDefault
 	configuredPaused := plan.Paused
 	mapInstanceToState(inst, &plan)
-	// The instance exists, so a queue timeout the API ignored is a warning,
-	// and the configured value stays in state, which Terraform requires. The
-	// next refresh records what the API kept, so the next plan offers the
-	// change again and Update fails, saying why.
+	// Laravel Cloud rejects a queue timeout it would not apply, so this only
+	// fires if it stored another value anyway. The instance exists, so that is
+	// a warning, and the configured value stays in state, which Terraform
+	// requires. The next refresh records what the API kept, so the next plan
+	// offers the change again and Update fails, saying why.
 	for _, m := range queueTimeoutsNotApplied(configured, plan) {
 		resp.Diagnostics.AddAttributeWarning(path.Root(m.attr), m.attr+" was not applied",
 			m.detail()+" The configured value is kept in state for now, so the next plan shows the difference again.")
@@ -541,11 +547,13 @@ type queueTimeoutNotApplied struct {
 }
 
 // queueTimeoutsNotApplied reports the configured visibility_timeout and
-// shutdown_timeout that the API did not store. Laravel Cloud accepts custom
-// values only from organizations with the advanced managed queues
-// entitlement; for any other it drops them without an error and keeps its
-// own. The public API does not expose the entitlement, so the provider can
-// only tell after the fact, by comparing what was stored with what was set.
+// shutdown_timeout that the API did not store. On current-generation (mq.*)
+// sizes, Laravel Cloud accepts custom values only from organizations with the
+// advanced managed queues entitlement, and rejects them for any other;
+// previous-generation queues take them either way. It used to drop them on
+// create without an error and keep its own, and the public API does not
+// expose the entitlement, so the provider still compares what was stored with
+// what was set, in case a value is dropped again.
 func queueTimeoutsNotApplied(configured, stored InstanceResourceModel) []queueTimeoutNotApplied {
 	var out []queueTimeoutNotApplied
 	for _, a := range []struct {
@@ -567,9 +575,10 @@ func (m queueTimeoutNotApplied) detail() string {
 	if isSet(m.stored) {
 		stored = strconv.FormatInt(m.stored.ValueInt64(), 10)
 	}
-	return fmt.Sprintf("Laravel Cloud kept %s at %s instead of %d. It accepts a custom %s only from organizations "+
-		"with the advanced managed queues entitlement, and otherwise ignores it and manages the value itself. "+
-		"Remove %s from the configuration to let the platform choose.", m.attr, stored, m.configured, m.attr, m.attr)
+	return fmt.Sprintf("Laravel Cloud kept %s at %s instead of %d. On current-generation (mq.*) sizes it accepts "+
+		"a custom %s only from organizations with the advanced managed queues entitlement, and otherwise manages "+
+		"the value itself. Remove %s from the configuration to keep the value Laravel Cloud stored.",
+		m.attr, stored, m.configured, m.attr, m.attr)
 }
 
 // restore puts the configured value back on state.
