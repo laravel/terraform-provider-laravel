@@ -9,6 +9,13 @@ conventional-commit titles of merged pull requests; do not edit them by hand.
 Earlier entries were written by hand in the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [1.7.2](https://github.com/laravel/terraform-provider-laravel/compare/v1.7.1...v1.7.2) (2026-11-27)
+
+
+### Bug Fixes
+
+* **instance:** say Laravel Cloud rejects queue timeouts it won't apply ([#47](https://github.com/laravel/terraform-provider-laravel/issues/47)) ([98c06d9](https://github.com/laravel/terraform-provider-laravel/commit/98c06d9aaa9532019fb231691380445326214275))
+
 ## [1.7.1](https://github.com/laravel/terraform-provider-laravel/compare/v1.7.0...v1.7.1) (2026-11-26)
 
 
