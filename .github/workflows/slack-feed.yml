@@ -1,7 +1,7 @@
 name: Slack Feed
 
 # Posts one line to the maintainers' Slack channel for each new or closed issue,
-# new comment, new or closed pull request, and published release.
+# new comment from a person, new or closed pull request, and published release.
 #
 # Anyone can open an issue or comment here, so this workflow runs on input from
 # strangers while it holds a secret. Keep it that way:
@@ -78,7 +78,11 @@ jobs:
               else "Issue \(item(.issue)) reopened by \(user(.sender))"
               end
             elif $event == "issue_comment" then
-              "\(user(.sender)) \(link(.comment.html_url; "commented")) on \(if .issue.pull_request then "pull request" else "issue" end) \(item(.issue))"
+              # Bots' comments repeat other posts: release-please's "Created
+              # releases" comment says what the release notice already says.
+              if .comment.user.type == "Bot" then empty
+              else "\(user(.sender)) \(link(.comment.html_url; "commented")) on \(if .issue.pull_request then "pull request" else "issue" end) \(item(.issue))"
+              end
             elif $event == "pull_request_target" then
               if .action == "opened" then "Pull request \(item(.pull_request)) opened by \(user(.sender))"
               elif .action == "closed" and .pull_request.merged then "Pull request \(item(.pull_request)) merged by \(user(.pull_request.merged_by // .sender))"
@@ -107,11 +111,24 @@ jobs:
             exit 0
           fi
 
-          # Slack answers "ok", or an error code such as invalid_payload. Neither
-          # contains event text, so the error is safe to print.
-          if ! response=$(curl --silent --show-error --fail-with-body --max-time 20 --retry 3 \
+          # --retry also covers Slack's 429s and honours their Retry-After.
+          # On failure, print the HTTP status and, only when the body is a bare
+          # Slack error code such as invalid_payload, that code. Never the raw
+          # body: the log is public, and a line starting with `::` is a command.
+          response_file="$RUNNER_TEMP/slack-response"
+          status=$(curl --silent --max-time 20 --retry 5 \
+            --output "$response_file" --write-out '%{http_code}' \
             --header 'Content-Type: application/json' --data-binary @- \
-            "$SLACK_WEBHOOK_URL" <<<"$payload"); then
-            echo "::error::Slack did not accept the message: ${response}"
+            "$SLACK_WEBHOOK_URL" <<<"$payload") || {
+            echo "::error::Could not reach Slack (curl exit $?)."
+            exit 1
+          }
+          if [ "$status" != 200 ]; then
+            code=$(head -c 64 "$response_file")
+            if [[ $code =~ ^[a-z_]+$ ]]; then
+              echo "::error::Slack answered HTTP $status ($code)."
+            else
+              echo "::error::Slack answered HTTP $status."
+            fi
             exit 1
           fi
