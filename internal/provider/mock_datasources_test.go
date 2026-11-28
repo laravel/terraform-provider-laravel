@@ -233,24 +233,9 @@ func registerDataSourceRoutes(mux *http.ServeMux) {
 // attributes contain every filter[...] value given, as the API's partial
 // filters do.
 func listFiltered(w http.ResponseWriter, r *http.Request, allowed []string, items []map[string]any) {
-	filters := map[string]string{}
-	for key, values := range r.URL.Query() {
-		name, ok := strings.CutPrefix(key, "filter[")
-		if !ok {
-			continue
-		}
-		name = strings.TrimSuffix(name, "]")
-		permitted := false
-		for _, a := range allowed {
-			permitted = permitted || a == name
-		}
-		if !permitted {
-			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"message": "Requested filter(s) `" + name + "` are not allowed.",
-			})
-			return
-		}
-		filters[name] = values[0]
+	filters, ok := listFilters(w, r, allowed)
+	if !ok {
+		return
 	}
 
 	out := []any{}
@@ -269,4 +254,30 @@ func listFiltered(w http.ResponseWriter, r *http.Request, allowed []string, item
 		"data": out,
 		"meta": map[string]any{"current_page": 1, "last_page": 1, "per_page": 100, "total": len(out)},
 	})
+}
+
+// listFilters reads a list request's filter[...] query parameters. Like the
+// API, it refuses any filter not in allowed with a 400, in which case it has
+// answered the request and reports false.
+func listFilters(w http.ResponseWriter, r *http.Request, allowed []string) (map[string]string, bool) {
+	filters := map[string]string{}
+	for key, values := range r.URL.Query() {
+		name, ok := strings.CutPrefix(key, "filter[")
+		if !ok {
+			continue
+		}
+		name = strings.TrimSuffix(name, "]")
+		permitted := false
+		for _, a := range allowed {
+			permitted = permitted || a == name
+		}
+		if !permitted {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"message": "Requested filter(s) `" + name + "` are not allowed.",
+			})
+			return nil, false
+		}
+		filters[name] = values[0]
+	}
+	return filters, true
 }

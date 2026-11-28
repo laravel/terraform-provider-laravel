@@ -6,8 +6,11 @@ import (
 	"fmt"
 )
 
-func (c *Client) ListEnvironments(ctx context.Context, applicationID string) ([]EnvironmentData, error) {
-	return listAll[EnvironmentData](ctx, c, fmt.Sprintf("/applications/%s/environments", applicationID))
+// ListEnvironments returns an application's environments. filters maps
+// "name", "slug" and "status" to a value each must contain; the API matches
+// them as substrings and accepts no others.
+func (c *Client) ListEnvironments(ctx context.Context, applicationID string, filters map[string]string) ([]EnvironmentData, error) {
+	return listAll[EnvironmentData](ctx, c, fmt.Sprintf("/applications/%s/environments", applicationID)+filterQuery(filters))
 }
 
 // GetEnvironment fetches a single environment.

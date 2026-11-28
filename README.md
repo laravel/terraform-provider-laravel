@@ -96,6 +96,8 @@ token instead of guessing which organization to manage.
 | Data source | Description |
 |---|---|
 | `laravel_cloud_organization` | Current organization details |
+| `laravel_cloud_applications` | Applications in the organization |
+| `laravel_cloud_environments` | Environments of an application |
 | `laravel_cloud_dedicated_clusters` | Available dedicated clusters |
 | `laravel_cloud_instance_sizes` | Available instance sizes |
 | `laravel_cloud_database_types` | Available database types |

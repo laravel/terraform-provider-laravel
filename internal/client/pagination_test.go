@@ -224,8 +224,8 @@ func TestEveryListMethodPaginates(t *testing.T) {
 
 	// Every list method the provider exposes, against a paginated collection.
 	cases := map[string]func() (int, error){
-		"ListApplications":          func() (int, error) { v, e := c.ListApplications(ctx); return len(v), e },
-		"ListEnvironments":          func() (int, error) { v, e := c.ListEnvironments(ctx, "app-1"); return len(v), e },
+		"ListApplications":          func() (int, error) { v, e := c.ListApplications(ctx, nil); return len(v), e },
+		"ListEnvironments":          func() (int, error) { v, e := c.ListEnvironments(ctx, "app-1", nil); return len(v), e },
 		"ListInstances":             func() (int, error) { v, e := c.ListInstances(ctx, "env-1"); return len(v), e },
 		"ListBackgroundProcesses":   func() (int, error) { v, e := c.ListBackgroundProcesses(ctx, "inst-1"); return len(v), e },
 		"ListCaches":                func() (int, error) { v, e := c.ListCaches(ctx); return len(v), e },

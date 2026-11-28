@@ -14,7 +14,7 @@ import (
 // against the live API, and the region/type/status and name/domain/status
 // filters on the dedicated cluster and edge network lists. The reusable
 // Resend keys need an environment, so the test creates an application with a
-// staging environment.
+// staging environment, which the application and environment lists then find.
 func TestAccDataSources_listsAndFilters(t *testing.T) {
 	name := testAccName()
 
@@ -34,6 +34,18 @@ resource "laravel_cloud_environment" "test" {
   application_id = laravel_cloud_application.test.id
   name           = "staging"
   branch         = %[3]q
+}
+
+# The slug and the environment are known only after apply, so both lists are
+# read once the application and its staging environment exist.
+data "laravel_cloud_applications" "test" {
+  slug   = laravel_cloud_application.test.slug
+  region = "us-east-2"
+}
+
+data "laravel_cloud_environments" "staging" {
+  application_id = laravel_cloud_application.test.id
+  name           = laravel_cloud_environment.test.name
 }
 
 data "laravel_cloud_websocket_server_types" "all" {}
@@ -70,6 +82,19 @@ data "laravel_cloud_edge_networks" "none" {
 }
 `, name, testAccRepository(), testAccBranch()),
 				Check: resource.ComposeAggregateTestCheckFunc(
+					testAccCheckListFiltered("data.laravel_cloud_applications.test", "applications", map[string]string{
+						"region": "us-east-2",
+					}),
+					resource.TestCheckTypeSetElemNestedAttrs("data.laravel_cloud_applications.test", "applications.*",
+						map[string]string{"name": name, "region": "us-east-2"}),
+					testAccCheckListFiltered("data.laravel_cloud_environments.staging", "environments", map[string]string{
+						"name": "staging",
+					}),
+					resource.TestCheckTypeSetElemNestedAttrs("data.laravel_cloud_environments.staging", "environments.*",
+						map[string]string{"name": "staging"}),
+					resource.TestCheckTypeSetElemAttrPair("data.laravel_cloud_environments.staging", "environments.*.id",
+						"laravel_cloud_environment.test", "id"),
+
 					resource.TestCheckResourceAttr("data.laravel_cloud_websocket_server_types.all", "types.0.type", "reverb"),
 					resource.TestCheckResourceAttrSet("data.laravel_cloud_websocket_server_types.all", "types.0.max_connections.0.value"),
 

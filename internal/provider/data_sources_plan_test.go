@@ -176,6 +176,145 @@ data "laravel_cloud_edge_networks" "none" {
 		})
 }
 
+// TestApplicationsDataSourcePlan covers the name, region and slug filters, and
+// default_environment_id, which the list reports only when it asks for the
+// defaultEnvironment relationship.
+func TestApplicationsDataSourcePlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	shop := seedApplication(t, baseURL, "shop", "us-east-2")
+	seedApplication(t, baseURL, "shop-admin", "eu-west-1")
+	seedApplication(t, baseURL, "blog", "us-east-2")
+
+	const ds = "data.laravel_cloud_applications"
+	runDataSourcePlan(t, baseURL, `
+data "laravel_cloud_applications" "all" {}
+
+data "laravel_cloud_applications" "shops" {
+  name = "shop"
+}
+
+data "laravel_cloud_applications" "shop" {
+  name   = "shop"
+  region = "us-east-2"
+}
+
+data "laravel_cloud_applications" "blog" {
+  slug = "blog"
+}
+
+data "laravel_cloud_applications" "none" {
+  region = "ap-southeast-1"
+}
+`,
+		[]statecheck.StateCheck{
+			statecheck.ExpectKnownValue(ds+".all", tfjsonpath.New("applications"), knownvalue.ListSizeExact(3)),
+			statecheck.ExpectKnownValue(ds+".shops", tfjsonpath.New("applications"), knownvalue.ListSizeExact(2)),
+			statecheck.ExpectKnownValue(ds+".shop", tfjsonpath.New("applications"), knownvalue.ListExact([]knownvalue.Check{
+				knownvalue.ObjectExact(map[string]knownvalue.Check{
+					"id":                           knownvalue.StringExact(shop.ID),
+					"name":                         knownvalue.StringExact("shop"),
+					"slug":                         knownvalue.StringExact("shop"),
+					"region":                       knownvalue.StringExact("us-east-2"),
+					"repository":                   knownvalue.StringExact("acme/shop"),
+					"repository_default_branch":    knownvalue.StringExact("main"),
+					"source_control_provider_type": knownvalue.StringExact("github"),
+					"root_directory":               knownvalue.Null(),
+					"default_environment_id":       knownvalue.StringExact(shop.Relationships.DefaultEnvironment.RelatedID()),
+					"framework":                    knownvalue.StringExact("laravel"),
+					"language":                     knownvalue.StringExact("php"),
+					"created_at":                   knownvalue.Null(),
+				}),
+			})),
+			statecheck.ExpectKnownValue(ds+".blog", tfjsonpath.New("applications"), knownvalue.ListSizeExact(1)),
+			statecheck.ExpectKnownValue(ds+".blog",
+				tfjsonpath.New("applications").AtSliceIndex(0).AtMapKey("name"), knownvalue.StringExact("blog")),
+			statecheck.ExpectKnownValue(ds+".none", tfjsonpath.New("applications"), knownvalue.ListSizeExact(0)),
+		})
+}
+
+// TestEnvironmentsDataSourcePlan covers listing one application's
+// environments, and the name, slug and status filters.
+func TestEnvironmentsDataSourcePlan(t *testing.T) {
+	_, baseURL := newFakeCloud(t)
+	shop := seedApplication(t, baseURL, "shop", "us-east-2")
+	seedApplication(t, baseURL, "blog", "us-east-2")
+	staging, err := client.NewClient("test-token", client.WithBaseURL(baseURL)).
+		CreateEnvironment(t.Context(), shop.ID, client.CreateEnvironmentRequest{Name: "staging", Branch: "develop"})
+	if err != nil {
+		t.Fatalf("creating the staging environment: %v", err)
+	}
+
+	const ds = "data.laravel_cloud_environments"
+	runDataSourcePlan(t, baseURL, fmt.Sprintf(`
+data "laravel_cloud_environments" "all" {
+  application_id = %[1]q
+}
+
+data "laravel_cloud_environments" "staging" {
+  application_id = %[1]q
+  name           = "stag"
+}
+
+data "laravel_cloud_environments" "production" {
+  application_id = %[1]q
+  slug           = "production"
+  status         = "active"
+}
+
+data "laravel_cloud_environments" "none" {
+  application_id = %[1]q
+  status         = "stopped"
+}
+`, shop.ID),
+		[]statecheck.StateCheck{
+			statecheck.ExpectKnownValue(ds+".all", tfjsonpath.New("id"), knownvalue.StringExact(shop.ID)),
+			// The other application's production environment is not listed.
+			statecheck.ExpectKnownValue(ds+".all", tfjsonpath.New("environments"), knownvalue.ListSizeExact(2)),
+			statecheck.ExpectKnownValue(ds+".staging", tfjsonpath.New("environments"), knownvalue.ListExact([]knownvalue.Check{
+				knownvalue.ObjectExact(map[string]knownvalue.Check{
+					"id":                  knownvalue.StringExact(staging.ID),
+					"name":                knownvalue.StringExact("staging"),
+					"slug":                knownvalue.StringExact("staging"),
+					"display_name":        knownvalue.StringExact("staging"),
+					"status":              knownvalue.StringExact("active"),
+					"cluster_id":          knownvalue.Null(),
+					"php_major_version":   knownvalue.StringExact("8.4"),
+					"node_version":        knownvalue.StringExact("20"),
+					"vanity_hostname":     knownvalue.StringExact(ptrValue(staging.Attributes.VanityDomain)),
+					"framework":           knownvalue.StringExact("laravel"),
+					"language":            knownvalue.StringExact("php"),
+					"uses_push_to_deploy": knownvalue.Bool(false),
+					"created_at":          knownvalue.Null(),
+				}),
+			})),
+			statecheck.ExpectKnownValue(ds+".production", tfjsonpath.New("environments"), knownvalue.ListSizeExact(1)),
+			statecheck.ExpectKnownValue(ds+".production",
+				tfjsonpath.New("environments").AtSliceIndex(0).AtMapKey("id"),
+				knownvalue.StringExact(shop.Relationships.DefaultEnvironment.RelatedID())),
+			statecheck.ExpectKnownValue(ds+".none", tfjsonpath.New("environments"), knownvalue.ListSizeExact(0)),
+		})
+}
+
+// seedApplication creates an application on the fake, outside Terraform, as
+// one made in the dashboard would be.
+func seedApplication(t *testing.T, baseURL, name, region string) *client.ApplicationData {
+	t.Helper()
+	c := client.NewClient("test-token", client.WithBaseURL(baseURL))
+	app, err := c.CreateApplication(t.Context(), client.CreateApplicationRequest{
+		Name: name, Repository: "acme/" + name, Region: region,
+	})
+	if err != nil {
+		t.Fatalf("creating application %s: %v", name, err)
+	}
+	// The create response carries no relationships; the read reports the
+	// default environment.
+	app, err = c.GetApplication(t.Context(), app.ID)
+	if err != nil {
+		t.Fatalf("reading application %s: %v", name, err)
+	}
+	return app
+}
+
 func TestWebsocketServerTypesDataSourcePlan(t *testing.T) {
 	_, baseURL := newFakeCloud(t)
 	const ds = "data.laravel_cloud_websocket_server_types.all"
