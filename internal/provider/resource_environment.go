@@ -710,7 +710,7 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 	// blind is exactly the duplicate this listing exists to prevent, and the
 	// extra environment would be live and billing with nothing in state
 	// pointing at it. Erroring leaves the apply retryable instead.
-	existing, err := r.client.ListEnvironments(ctx, appID)
+	existing, err := r.client.ListEnvironments(ctx, appID, nil)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error listing existing environments",

@@ -238,6 +238,8 @@ func (p *LaravelCloudProvider) Resources(_ context.Context) []func() resource.Re
 func (p *LaravelCloudProvider) DataSources(_ context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewOrganizationDataSource,
+		NewApplicationsDataSource,
+		NewEnvironmentsDataSource,
 		NewDedicatedClustersDataSource,
 		NewInstanceSizesDataSource,
 		NewDatabaseTypesDataSource,

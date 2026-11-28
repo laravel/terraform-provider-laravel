@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -258,6 +259,7 @@ func newFakeCloud(t *testing.T) (*fakeCloud, string) {
 
 	mux := http.NewServeMux()
 	// Applications
+	mux.HandleFunc("GET /applications", f.listApplications)
 	mux.HandleFunc("POST /applications", f.createApplication)
 	mux.HandleFunc("GET /applications/{id}", f.getApplication)
 	mux.HandleFunc("PATCH /applications/{id}", f.updateApplication)
@@ -387,6 +389,43 @@ func (f *fakeCloud) applicationView(r *http.Request, app *client.ApplicationData
 	return out
 }
 
+// listApplications lists the applications in the order they were created,
+// keeping those whose name, region and slug contain each filter value given.
+func (f *fakeCloud) listApplications(w http.ResponseWriter, r *http.Request) {
+	filters, ok := listFilters(w, r, []string{"name", "region", "slug"})
+	if !ok {
+		return
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	ids := make([]string, 0, len(f.apps))
+	for id := range f.apps {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return fakeSeq(ids[i]) < fakeSeq(ids[j]) })
+
+	out := []client.ApplicationData{}
+	for _, id := range ids {
+		app := f.apps[id]
+		if !strings.Contains(app.Attributes.Name, filters["name"]) ||
+			!strings.Contains(app.Attributes.Region, filters["region"]) ||
+			!strings.Contains(app.Attributes.Slug, filters["slug"]) {
+			continue
+		}
+		out = append(out, f.applicationView(r, app))
+	}
+	writeJSON(w, http.StatusOK, client.ListDocument[client.ApplicationData]{Data: out})
+}
+
+// fakeSeq is the sequence number that ends a fake ID such as "app-12", so
+// IDs can be sorted in the order they were created.
+func fakeSeq(id string) int {
+	n, _ := strconv.Atoi(id[strings.LastIndex(id, "-")+1:])
+	return n
+}
+
 func (f *fakeCloud) getApplication(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -509,16 +548,28 @@ func (f *fakeCloud) deleteApplication(w http.ResponseWriter, r *http.Request) {
 // Environment handlers
 // ---------------------------------------------------------------------------
 
+// listEnvironments lists an application's environments, keeping those whose
+// name, slug and status contain each filter value given.
 func (f *fakeCloud) listEnvironments(w http.ResponseWriter, r *http.Request) {
+	filters, ok := listFilters(w, r, []string{"name", "slug", "status"})
+	if !ok {
+		return
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	appID := r.PathValue("id")
 	out := []client.EnvironmentData{}
 	for _, envID := range f.appEnvs[appID] {
-		if env, ok := f.envs[envID]; ok {
-			out = append(out, f.environmentView(env))
+		env, ok := f.envs[envID]
+		if !ok ||
+			!strings.Contains(env.Attributes.Name, filters["name"]) ||
+			!strings.Contains(env.Attributes.Slug, filters["slug"]) ||
+			!strings.Contains(env.Attributes.Status, filters["status"]) {
+			continue
 		}
+		out = append(out, f.environmentView(env))
 	}
 	writeJSON(w, http.StatusOK, client.ListDocument[client.EnvironmentData]{Data: out})
 }

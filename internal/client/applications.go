@@ -6,8 +6,19 @@ import (
 	"fmt"
 )
 
-func (c *Client) ListApplications(ctx context.Context) ([]ApplicationData, error) {
-	return listAll[ApplicationData](ctx, c, "/applications")
+// ListApplications returns the organization's applications. filters maps
+// "name", "region" and "slug" to a value each must contain; the API matches
+// them as substrings and accepts no others. include=defaultEnvironment is
+// asked for, as in GetApplication, so that each application reports its
+// default environment relationship.
+func (c *Client) ListApplications(ctx context.Context, filters map[string]string) ([]ApplicationData, error) {
+	query := filterQuery(filters)
+	if query == "" {
+		query = "?include=defaultEnvironment"
+	} else {
+		query += "&include=defaultEnvironment"
+	}
+	return listAll[ApplicationData](ctx, c, "/applications"+query)
 }
 
 // GetApplication fetches a single application. include=defaultEnvironment is

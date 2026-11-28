@@ -98,7 +98,7 @@ func init() {
 		Name: "laravel_cloud_application",
 		F: func(string) error {
 			c := testAccClient()
-			apps, err := c.ListApplications(ctx)
+			apps, err := c.ListApplications(ctx, nil)
 			if err != nil {
 				return err
 			}
